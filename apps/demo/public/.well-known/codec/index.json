@@ -1,0 +1,105 @@
+{
+  "codec_version": "0.4",
+  "maps": [
+    {
+      "id": "anthropic/claude-3-text",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/anthropic/claude-3-text.json",
+      "hash": "sha256:5fa4892803d536f057912a0c6f296302933559185ca2ee2bae668bb1be795ec7"
+    },
+    {
+      "id": "deepseek-ai/deepseek-v3",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/deepseek-ai/deepseek-v3.json",
+      "hash": "sha256:ececec71bd0b62acd7dd81345d6f45c462a6f34486de24ae22a25cdb8d1ea1df"
+    },
+    {
+      "id": "google/gemma-1",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/google/gemma-1.json",
+      "hash": "sha256:ac805231d73eba2c1b7621998cda18705dab6f32a47267c1ac6201da4ac9f691"
+    },
+    {
+      "id": "google/gemma-2",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/google/gemma-2.json",
+      "hash": "sha256:d5aad63f8c3b4b63ebf29391274f745db308a522b64ed4de9a148d559a8ef799"
+    },
+    {
+      "id": "huggingfacetb/smollm2",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/huggingfacetb/smollm2.json",
+      "hash": "sha256:8bb91e72d05775a013139783577dbc9f4930a2db19704fc90f2ca17c7bef9f60"
+    },
+    {
+      "id": "meta-llama/llama-2",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/meta-llama/llama-2.json",
+      "hash": "sha256:1d35fe6e643b0129d8d376a25391deb7c7104dcb3f445083f87a5c4605e13ff6"
+    },
+    {
+      "id": "meta-llama/llama-3",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/meta-llama/llama-3.json",
+      "hash": "sha256:1df0d6a894b844712979207a0521c3887026f3dde427fb75b2984307a57d797f"
+    },
+    {
+      "id": "microsoft/phi-3",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/microsoft/phi-3.json",
+      "hash": "sha256:2c2449955329eb87d513c3a86acef9eb70f4a5abb09c983564450ae8ab478336"
+    },
+    {
+      "id": "microsoft/phi-4",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/microsoft/phi-4.json",
+      "hash": "sha256:dafb291914b9df318079e63b9dc7d9deefe82a2fe8c3a10e04493dfad5ef99b5"
+    },
+    {
+      "id": "mistralai/codestral",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/mistralai/codestral.json",
+      "hash": "sha256:da65878a6ccb63b51059e24cb2ec31d4892078f3e962b0581fc0d37095327e7c"
+    },
+    {
+      "id": "mistralai/mistral-nemo",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/mistralai/mistral-nemo.json",
+      "hash": "sha256:6d8ab3008e5dbee6c44415bb3e657d72373e95ccd50a0c72700202c42d0ad7b2"
+    },
+    {
+      "id": "mistralai/mistral-v3",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/mistralai/mistral-v3.json",
+      "hash": "sha256:2bdb91583c804301a11873ec16e9fec57af54e4d16a20e7f770510fca5e1d137"
+    },
+    {
+      "id": "mistralai/mixtral",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/mistralai/mixtral.json",
+      "hash": "sha256:cc407d56c902fbe40af34ca585f70c1271227f3167657f8096fe70446bcf9eff"
+    },
+    {
+      "id": "openai/cl100k_base",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/openai/cl100k_base.json",
+      "hash": "sha256:6b78c1733c1eee157b2eced71d6d5ccc47e3e9454f9d8d62a90bd482493a9a80"
+    },
+    {
+      "id": "openai/o200k_base",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/openai/o200k_base.json",
+      "hash": "sha256:d6a6a67a3674a12ab768f14b7d39b12fd924f2f1caa33778cabb5dc3c4d0ee77"
+    },
+    {
+      "id": "openai/p50k_base",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/openai/p50k_base.json",
+      "hash": "sha256:7926b61dcae907cada36ffdc40872663fcbd0bffb71ecdc39461492153c42ab9"
+    },
+    {
+      "id": "openai/p50k_edit",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/openai/p50k_edit.json",
+      "hash": "sha256:427b0db08d91d207539b19bcfad382af3aeb3c84ab9701723ac9337fab7c94ff"
+    },
+    {
+      "id": "openai/r50k_base",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/openai/r50k_base.json",
+      "hash": "sha256:bbbb06e4f44c0317b3282ec98fb07991694ba3d4e82b88d7e77fb44b9209ff32"
+    },
+    {
+      "id": "qwen/qwen2",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/qwen/qwen2.json",
+      "hash": "sha256:62c2f94fcbdb9b49d51632314e64aa65894496bc39751cb90866049657a262ad"
+    },
+    {
+      "id": "tiiuae/falcon",
+      "url": "https://cdn.jsdelivr.net/gh/wdunn001/codec-maps/maps/tiiuae/falcon.json",
+      "hash": "sha256:29831a3d6c40834686db1915f1345909369a062b74310a88b8fd9c191f3c8f82"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "unstable-legion-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Unstable Legion — browser-AI mesh on the Codec wire. Peers run a local LLM in a tab, broadcast capabilities over WebRTC, exchange token streams as Codec binary frames. Three consumption modes: npm core lib, npm React bindings, Module Federation remote.",
+  "license": "BSL-1.1",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:demo": "npm run dev -w @unstable-legion/demo",
+    "dev:mf": "npm run dev -w @unstable-legion/mf"
+  }
+}

@@ -1,0 +1,2915 @@
+{
+  "updatedAt": "2026-05-10T20:59:51.945Z",
+  "source": "https://registry.modelcontextprotocol.io/v0/servers",
+  "entries": [
+    {
+      "name": "ac.inference.sh/mcp",
+      "title": "inference.sh",
+      "description": "Run 150+ AI apps — image, video, audio, LLMs, 3D and more. Browse, execute, stream results.",
+      "version": "1.0.1",
+      "urls": [
+        "https://sh.inference.ac",
+        "https://api.inference.sh/mcp"
+      ]
+    },
+    {
+      "name": "ac.tandem/docs-mcp",
+      "title": "ac.tandem/docs-mcp",
+      "description": "Remote MCP server for Tandem docs, install guides, SDKs, workflows, and agent setup help.",
+      "version": "0.3.2",
+      "urls": [
+        "https://tandem.ac/mcp"
+      ]
+    },
+    {
+      "name": "agency.lona/trading",
+      "title": "agency.lona/trading",
+      "description": "AI-powered trading strategy development: backtesting, market data, and portfolio analysis",
+      "version": "2.0.0",
+      "urls": [
+        "https://mcp.lona.agency/mcp"
+      ]
+    },
+    {
+      "name": "ai.aarna/atars-mcp",
+      "title": "aTars MCP",
+      "description": "Crypto market signals, technical indicators, and sentiment analysis for AI agents.",
+      "version": "0.1.0",
+      "urls": [
+        "https://mcp.aarna.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.abmeter/abmeter",
+      "title": "ABMeter",
+      "description": "Feature flagging and A/B testing platform with AI-first experimentation workflows.",
+      "version": "0.1.0",
+      "urls": [
+        "https://mcp.abmeter.ai"
+      ]
+    },
+    {
+      "name": "ai.adadvisor/mcp-server",
+      "title": "AdAdvisor MCP Server",
+      "description": "Query Meta Ads performance data — accounts, campaigns, ad sets, ads, metrics & settings.",
+      "version": "1.0.1",
+      "urls": [
+        "https://api.adadvisor.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.adramp/google-ads",
+      "title": "ai.adramp/google-ads",
+      "description": "Google Ads MCP server — manage campaigns, keywords, and metrics.",
+      "version": "1.0.3",
+      "urls": [
+        "https://mcp.adramp.ai"
+      ]
+    },
+    {
+      "name": "ai.adweave/meta-ads-mcp",
+      "title": "AdWeave — Meta Ads MCP Server",
+      "description": "Meta Ads MCP server with 47 tools for campaigns, creatives, audiences, and insights.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.adweave.ai/meta-ads-mcp"
+      ]
+    },
+    {
+      "name": "ai.agentdm/agentdm",
+      "title": "AgentDM: Agent to Agent Communication Platform",
+      "description": "Agent communication platform for agent to agent messaging via MCP. Messages, channels, skills.",
+      "version": "2.0.0",
+      "urls": [
+        "https://api.agentdm.ai/mcp/v1/grid"
+      ]
+    },
+    {
+      "name": "ai.agentic-news/mcp",
+      "title": "Agentic News",
+      "description": "AI-powered news intelligence — 21 tools for personalized monitoring, briefings, and semantic search",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.agentic-news.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.agenticshelf/mcp",
+      "title": "Agentic Shelf",
+      "description": "Hosted MCP for e-commerce: live product catalog, stock, and pricing for AI agents.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.agenticshelf.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.alpic.mcp/alpic-mcp",
+      "title": "Alpic",
+      "description": "Manage your projects, debug deployment, and check analytics for any MCP server you host with Alpic",
+      "version": "0.0.1",
+      "urls": [
+        "https://mcp.alpic.ai"
+      ]
+    },
+    {
+      "name": "ai.alpic.test/test-mcp-server",
+      "title": "ai.alpic.test/test-mcp-server",
+      "description": "Alpic Test MCP Server - great server!",
+      "version": "0.0.1",
+      "urls": [
+        "https://test.alpic.ai/"
+      ]
+    },
+    {
+      "name": "ai.anomalyarmor/armor-mcp",
+      "title": "AnomalyArmor",
+      "description": "Data observability tools for engineering teams: alerts, freshness, schema drift, lineage, quality.",
+      "version": "0.6.1",
+      "urls": [
+        "https://mcp.anomalyarmor.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.appdeploy/deploy-app",
+      "title": "AppDeploy",
+      "description": "AppDeploy turns app ideas described in AI chat into live full-stack web applications",
+      "version": "1.0.0",
+      "urls": [
+        "https://api-v2.appdeploy.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.artidrop/artidrop",
+      "title": "ai.artidrop/artidrop",
+      "description": "Publish HTML, Markdown, and multi-file sites as shareable URLs instantly via MCP.",
+      "version": "1.1.0",
+      "urls": [
+        "https://artidrop.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.auteng/docs",
+      "title": "AutEng MCP - Markdown Publishing & Document Share Links",
+      "description": "Publish markdown documents as public share links with mermaid diagram support. Built by AutEng.ai",
+      "version": "1.1.0",
+      "urls": [
+        "https://auteng.ai/mcp/docs"
+      ]
+    },
+    {
+      "name": "ai.auteng/mcp",
+      "title": "AutEng MCP - Markdown Publishing & Document Share Links",
+      "description": "Publish markdown documents as public share links with mermaid diagrams. Built by AutEng.ai",
+      "version": "1.0.1",
+      "urls": [
+        "https://auteng.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.bankee/inferventis-mcp",
+      "title": "Inferventis MCP Server",
+      "description": "Loan & mortgage calculator, compound interest, ROI, crypto prices, FX conversion for AI agents.",
+      "version": "1.0.2",
+      "urls": [
+        "https://mcp-server-295985738387.europe-west1.run.app/mcp"
+      ]
+    },
+    {
+      "name": "ai.baselight/baselight",
+      "title": "ai.baselight/baselight",
+      "description": "Query Baselight's public catalog of 70,000+ datasets — finance, demographics, sports, and more.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.baselight.app/mcp"
+      ]
+    },
+    {
+      "name": "ai.bezal/local-commerce",
+      "title": "Bezal — Local Business Intelligence for AI Agents",
+      "description": "Search 7,000+ local service businesses across America by category, location, or keyword.",
+      "version": "1.0.0",
+      "urls": [
+        "https://app.bezal.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.bluenexus/universal-mcp",
+      "title": "BlueNexus Universal MCP",
+      "description": "Connect your AI to all your data - 200+ sources, intelligently filtered, compliance-ready.",
+      "version": "1.1.2",
+      "urls": [
+        "https://api.bluenexus.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.borealhost/mcp",
+      "title": "BorealHost",
+      "description": "Agent-native web hosting — deploy sites, manage DNS, register domains, scale infrastructure",
+      "version": "0.1.4",
+      "urls": [
+        "https://borealhost.ai/mcp/"
+      ]
+    },
+    {
+      "name": "ai.bringyour/bringyour",
+      "title": "Bring Your AI",
+      "description": "No-data MCP handoff for local Claude Code to Codex harness moves. $49 lifetime.",
+      "version": "1.1.0",
+      "urls": [
+        "https://bringyour.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.buyersense/buyersense",
+      "title": "ai.buyersense/buyersense",
+      "description": "MCP server for the BuyerSense API. Get buyer signals from any MCP client.",
+      "version": "0.1.0",
+      "urls": [
+        "https://mcp.buyersense.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.buywhere/catalog-api",
+      "title": "BuyWhere Product Catalog",
+      "description": "Search 1.5M+ products across 20+ platforms. Compare prices, find deals, browse categories.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.buywhere.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.byteray/byteray-mcp",
+      "title": "ByteRay AI",
+      "description": "Hunt zero-days by talking to binaries. 40+ tools. Hosted, OAuth + SSO, invite: hi@byteray.ai",
+      "version": "1.1.0",
+      "urls": [
+        "https://mcp.byteray.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.childadhd/library",
+      "title": "ai.childadhd/library",
+      "description": "Clinician-reviewed library on ADHD in children — evaluation, treatment, school, parenting.",
+      "version": "1.0.0",
+      "urls": [
+        "https://childadhd.ai/api/mcp/v1"
+      ]
+    },
+    {
+      "name": "ai.childanxiety/library",
+      "title": "ai.childanxiety/library",
+      "description": "Clinician-reviewed library on anxiety, OCD, and phobias in children ages 5–12.",
+      "version": "1.0.0",
+      "urls": [
+        "https://childanxiety.ai/api/mcp/v1"
+      ]
+    },
+    {
+      "name": "ai.childpsychiatry/library",
+      "title": "ai.childpsychiatry/library",
+      "description": "Clinician-reviewed library on child psychiatric evaluation and medication decision-making.",
+      "version": "1.0.0",
+      "urls": [
+        "https://childpsychiatry.ai/api/mcp/v1"
+      ]
+    },
+    {
+      "name": "ai.chinamarketing/intelligence",
+      "title": "China Marketing AI Intelligence MCP",
+      "description": "Remote MCP server for China brand visibility, destination demand, and KOL discovery workflows.",
+      "version": "1.0.1",
+      "urls": [
+        "https://api.chinamarketing.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.cirra/salesforce-mcp",
+      "title": "Cirra AI Salesforce Admin MCP Server",
+      "description": "Comprehensive Salesforce administration and data management capabilities",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.cirra.ai/sfdc/mcp"
+      ]
+    },
+    {
+      "name": "ai.clarid/compliance",
+      "title": "Clarid Compliance",
+      "description": "Check bank marketing for FDIC, NCUA, TILA, Reg DD, Reg Z, UDAAP, and Equal Housing compliance.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.clarid.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.clarid/hmda",
+      "title": "Clarid HMDA Validator",
+      "description": "Validate HMDA LAR files against CFPB edit checks for community banks and credit unions.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.clarid.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/contabo",
+      "title": "Contabo (VPS) MCP Server",
+      "description": "Contabo API (v1.0.0) as MCP tools for cloud provisioning, and management. Powered by HAPI MCP server",
+      "version": "0.6.0",
+      "urls": [
+        "https://contabo.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/hapi-mcp",
+      "title": "HAPI MCP Server",
+      "description": "HAPI MCP server: Dynamically exposes OpenAPI REST APIs as MCP tools for AI assistants",
+      "version": "0.6.0",
+      "urls": [
+        "https://{HAPI_FQDN}:{HAPI_PORT}/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/lenny-rachitsky-podcast",
+      "title": "Lenny Rachitsky Podcast Transcripts MCP Server",
+      "description": "MCP server for structured access to Lenny Rachitsky podcast transcripts. For content creators.",
+      "version": "0.6.0",
+      "urls": [
+        "https://lenny-rachitsky.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/linkedin",
+      "title": "LinkedIn MCP Server",
+      "description": "LinkedIn API as MCP tools to retrieve profile data and publish content. Powered by HAPI MCP.",
+      "version": "1.0.0+0.7.1",
+      "urls": [
+        "https://linkedin.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/openai-tools",
+      "title": "OpenAI Tools MCP Server",
+      "description": "Focused MCP server for OpenAI image/audio generation (v2.0.0). Wraps endpoints via HAPI CLI.",
+      "version": "0.6.0",
+      "urls": [
+        "https://openai-tools.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/petstore",
+      "title": "Petstore MCP Server",
+      "description": "Swagger Petstore API (v1.0.27) as MCP for testing and prototyping powered by the HAPI MCP server",
+      "version": "0.6.0",
+      "urls": [
+        "https://petstore.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/registry",
+      "title": "MCP Registry Server",
+      "description": "Publish and discover MCP servers via the official MCP Registry. Powered by HAPI MCP server.",
+      "version": "1.0.0",
+      "urls": [
+        "https://registry.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/skills-search",
+      "title": "Agent Skills Search Server",
+      "description": "Search and discover Agent Skills from the skills.sh registry. Powered by HAPI MCP server.",
+      "version": "1.0.0",
+      "urls": [
+        "https://skills-sh.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.com.mcp/strava",
+      "title": "HAPI Strava MCP Server",
+      "description": "Strava MCP tools for AI: athletes, activities, segments, clubs, routes. Powered by HAPI MCP server.",
+      "version": "3.0.0+0.7.1",
+      "urls": [
+        "https://strava.run.mcp.com.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.compeller/compel",
+      "title": "Compeller",
+      "description": "Create and track AI music videos and audio-reactive visuals from songs.",
+      "version": "0.5.1",
+      "urls": [
+        "https://compeller.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.complyhat/compliance",
+      "title": "ComplyHat",
+      "description": "MCP for AI compliance documentation across SR 26-2, EU AI Act, NIST AI RMF, and ISO/IEC 42001.",
+      "version": "1.2.0",
+      "urls": [
+        "https://complyhat.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.conveo/conveo",
+      "title": "Conveo",
+      "description": "Qualitative research platform. Design studies, analyze interviews, and generate insights.",
+      "version": "1.0.1",
+      "urls": [
+        "https://app.conveo.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.cookiy/cookiy",
+      "title": "Cookiy",
+      "description": "AI user research via studies, interviews, recruitment, reports, and quantitative surveys.",
+      "version": "1.7.19",
+      "urls": [
+        "https://s-api.cookiy.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.cosmonote/notes",
+      "title": "Cosmonote",
+      "description": "Access your Cosmonote audio notes, transcriptions, summaries, and action items.",
+      "version": "1.0.0",
+      "urls": [
+        "https://nebula.cosmonote.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.datamerge/mcp",
+      "title": "DataMerge MCP",
+      "description": "B2B data enrichment for 375M+ companies: legal entities, corporate hierarchies, and contacts.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.datamerge.ai"
+      ]
+    },
+    {
+      "name": "ai.deepledger/mcp",
+      "title": "DeepLedger — AI Bookkeeper for QuickBooks",
+      "description": "AI bookkeeping for QuickBooks Online — 28 tools for transactions, reports, and bank feeds",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.deepledger.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.djwizard/tvwizard",
+      "title": "TVWizard",
+      "description": "Control Android TV from any AI. 38 MCP tools: playback, recap, recommend, smart-home, schedules.",
+      "version": "0.7.0",
+      "urls": [
+        "https://tv.djwizard.ai/mcp/"
+      ]
+    },
+    {
+      "name": "ai.donethat/donethat",
+      "title": "DoneThat",
+      "description": "Privacy-first work tracking with summaries, reports, coaching, and AI-ready long-term memory.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.donethat.ai/"
+      ]
+    },
+    {
+      "name": "ai.dreamlit/mcp",
+      "title": "Dreamlit",
+      "description": "Create, test, publish, and manage Dreamlit notification workflows from AI clients.",
+      "version": "0.1.0",
+      "urls": [
+        "https://mcp.dreamlit.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.exa/exa",
+      "title": "ai.exa/exa",
+      "description": "Fast, intelligent web search and web crawling.\n\nNew mcp tool: Exa-code is a context tool for coding ",
+      "version": "3.1.3",
+      "urls": [
+        "https://mcp.exa.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.example4/xmp4",
+      "title": "xmp4 — Semantic code knowledge for your stack",
+      "description": "OSS libs in your stack, really used: source, tests, callers. C#, Java, TS, Python, Rust, PHP+.",
+      "version": "1.2.6",
+      "urls": [
+        "https://mcp.example4.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.explorium/mcp-explorium",
+      "title": "ai.explorium/mcp-explorium",
+      "description": "Access live company and contact data from Explorium's AgentSource B2B platform.",
+      "version": "1.0.1",
+      "urls": [
+        "https://mcp-github-registry.explorium.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.fathom.api/mcp",
+      "title": "ai.fathom.api/mcp",
+      "description": "Give your AI assistant real meeting context via Fathom so every output grounded in your work",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.fathom.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.fiber/mcp",
+      "title": "Fiber AI",
+      "description": "Search companies, enrich contacts, and reveal emails and phones from your AI agent.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.fiber.ai/mcp/v2/",
+        "https://mcp.fiber.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.filtrix.mcp/filtrix-ai",
+      "title": "Filtrix AI MCP",
+      "description": "Filtrix MCP for image/video generation. Portal: https://agent.filtrix.ai/",
+      "version": "0.1.0",
+      "urls": [
+        "https://mcp.filtrix.ai/"
+      ]
+    },
+    {
+      "name": "ai.gavelin/mcp",
+      "title": "Gavelin",
+      "description": "Search bills and speaker-attributed hearing transcripts across all 50 US state legislatures.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.gavelin.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.geodesiclabs/governance-platform",
+      "title": "ai.geodesiclabs/governance-platform",
+      "description": "Deterministic AI governance platform. Validates agent outputs, discovers patterns, solves math.",
+      "version": "1.0.0",
+      "urls": [
+        "https://app.geodesiclabs.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.getperspective/mcp",
+      "title": "Perspective AI",
+      "description": "An AI concierge that turns static forms into adaptive AI conversations. From any MCP client.",
+      "version": "0.0.8",
+      "urls": [
+        "https://getperspective.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.gossiper/shopify-admin-mcp",
+      "title": "Gossiper Shopify Admin MCP Server",
+      "description": "Control Shopify Admin tasks with agents or via prompt. Ultra slim integration, fast and secure.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.gossiper.io/mcp"
+      ]
+    },
+    {
+      "name": "ai.helixar/mcp",
+      "title": "Helixar Security",
+      "description": "Security tools for AI agents: scan MCP servers, validate HDP delegation chains, audit releases.",
+      "version": "0.0.1",
+      "urls": [
+        "https://mcp.helixar.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.i18nagent/i18n-agent",
+      "title": "i18n-agent",
+      "description": "AI-powered translation for 48 languages with context-aware quality",
+      "version": "1.16.3",
+      "urls": [
+        "https://mcp.i18nagent.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.inflowpay.app/inflow",
+      "title": "ai.inflowpay.app/inflow",
+      "description": "MCP Server for agents to onboard, pay, and provision services autonomously with InFlow",
+      "version": "1.0.3",
+      "urls": [
+        "https://app.inflowpay.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.jeda/jeda-ai",
+      "title": "ai.jeda/jeda-ai",
+      "description": "Visual AI for strategic thinking — SWOT, flowcharts, mindmaps, Gantt diagrams as polished SVG.",
+      "version": "1.23.40",
+      "urls": [
+        "https://mcp.jeda.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.klavis/strata",
+      "title": "ai.klavis/strata",
+      "description": "MCP server for progressive tool usage at any scale (see https://klavis.ai)",
+      "version": "1.0.0",
+      "urls": [
+        "https://strata.klavis.ai/mcp/"
+      ]
+    },
+    {
+      "name": "ai.kubit/mcp-server",
+      "title": "Kubit",
+      "description": "Bring Kubit into your AI workflow — query your warehouse with natural language",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.kubit.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.lattiq/x402-trading-signals",
+      "title": "Lattiq x402 Trading Signals",
+      "description": "Regime-aware ES1/NQ futures trading signals. HMM + 15 quant strategies. x402 USDC micropayments.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.lattiq.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.law/lawyer-search",
+      "title": "Law.AI — Lawyer Search",
+      "description": "Verified lawyer and attorney search, discovery, and matching for AI — 991K+ US profiles.",
+      "version": "0.2.2",
+      "urls": [
+        "https://mcp.law.ai"
+      ]
+    },
+    {
+      "name": "ai.limitguard.api/trust-intelligence",
+      "title": "LimitGuard Trust Intelligence",
+      "description": "Entity verification, sanctions screening, and trust scoring for AI agents.",
+      "version": "1.0.1",
+      "urls": [
+        "https://api.limitguard.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.llmse/mcp",
+      "title": "ai.llmse/mcp",
+      "description": "Public MCP server for the LLM Search Engine",
+      "version": "1.3.12",
+      "urls": [
+        "https://llmse.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.lucasandersen/mlp-tax",
+      "title": "MLP Tax Computation Engine",
+      "description": "Deterministic MLP tax engine with IRS citations. 6 tools: basis, §751, estate, projections.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.lucasandersen.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.ludo/game-assets",
+      "title": "Ludo AI Game Assets",
+      "description": "Generate game assets with AI: sprites, 3D models, animations, sound effects, music, and voices.",
+      "version": "0.9.0",
+      "urls": [
+        "https://mcp.ludo.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.marketcore/mcp",
+      "title": "MarketCore",
+      "description": "Create on-brand marketing deliverables and GTM docs with AI-powered blueprints and brand guidelines.",
+      "version": "1.0.2",
+      "urls": [
+        "https://mcp.marketcore.ai/"
+      ]
+    },
+    {
+      "name": "ai.mcpanalytics/analytics",
+      "title": "ai.mcpanalytics/analytics",
+      "description": "Analytics for business data: upload CSV or connect GA4/GSC, run ML/stats, get HTML reports.",
+      "version": "1.0.5",
+      "urls": [
+        "https://api.mcpanalytics.ai/auth0"
+      ]
+    },
+    {
+      "name": "ai.meacheal/mrc-data",
+      "title": "MRC Data — China's Apparel Supply Chain Infrastructure",
+      "description": "China's apparel supply chain data for AI: 1,000+ suppliers, 350+ fabrics, 170+ clusters.",
+      "version": "2.2.2",
+      "urls": [
+        "https://api.meacheal.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.meetlark/mcp-server",
+      "title": "ai.meetlark/mcp-server",
+      "description": "Agent-first meeting schedule polls for humans and agents. Create polls, vote, find times.",
+      "version": "1.0.3",
+      "urls": [
+        "https://meetlark.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.meetsquad/squad",
+      "title": "Squad",
+      "description": "Your AI Product Manager. Surface insights, build roadmaps, and plan strategy with 30+ tools.",
+      "version": "3.0.1",
+      "urls": [
+        "https://mcp.meetsquad.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.memestack/mcp",
+      "title": "MemeStack",
+      "description": "Search and browse a curated gallery of memes, infographics, and visual content.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.memestack.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.meminal/meminal",
+      "title": "ai.meminal/meminal",
+      "description": "Memory for deep conversational context across any platform",
+      "version": "1.0.0",
+      "urls": [
+        "https://meminal.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.mino/web-agent",
+      "title": "TinyFish AI Web Agent",
+      "description": "AI-powered web automation. Navigate websites using AI agents for one page or a thousand",
+      "version": "1.0.0",
+      "urls": [
+        "https://mino.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.myriade/myriade",
+      "title": "ai.myriade/myriade",
+      "description": "Explore and query your data warehouse through Myriade's AI data analyst agent.",
+      "version": "1.187.1",
+      "urls": [
+        "https://app.myriade.ai/mcp/"
+      ]
+    },
+    {
+      "name": "ai.namewhisper/ens-tools",
+      "title": "Name Whisper — ENS Intelligence Layer",
+      "description": "34 MCP tools to search, register, manage, value, and trade ENS names. AI-powered intelligence layer.",
+      "version": "1.0.2",
+      "urls": [
+        "https://namewhisper.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.nefesh/human-state",
+      "title": "Nefesh — Real-Time Human State Awareness for AI",
+      "description": "Fuses biometric signals into a stress score (0-100) for AI adaptation. MCP + A2A native.",
+      "version": "4.0.0",
+      "urls": [
+        "https://mcp.nefesh.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.newzai.api/news-mcp",
+      "title": "NewzAI MCP Server",
+      "description": "News MCP: real-time headlines & custom news search across 7 regions. Free, just sign in with Google.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.newzai.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.newzai.api/NewzAI",
+      "title": "NewzAI MCP Server",
+      "description": "News MCP: real-time headlines & custom news search across 7 regions. Free, just sign in with Google.",
+      "version": "1.0.2",
+      "urls": [
+        "https://api.newzai.ai/mcp/"
+      ]
+    },
+    {
+      "name": "ai.nordax/mcp",
+      "title": "Nordax AI Entity Network",
+      "description": "Search and verify 360K+ business entities with trust scores and W3C credentials.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.nordax.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.nothumansearch/search",
+      "title": "Not Human Search",
+      "description": "Search the agentic web. 4,100+ sites, 11 tools incl. check_url + verify_mcp for probe-before-use.",
+      "version": "1.7.1",
+      "urls": [
+        "https://nothumansearch.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.obaron/aeo",
+      "title": "ai.obaron/aeo",
+      "description": "Scan any website for AI readiness — 100-point score across 6 AEO categories in seconds.",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.obaron.ai/aeo/mcp"
+      ]
+    },
+    {
+      "name": "ai.obris/mcp",
+      "title": "Obris",
+      "description": "Stop re-explaining yourself to AI. Save knowledge once, use it in every conversation.",
+      "version": "0.4.0",
+      "urls": [
+        "https://mcp.obris.ai/"
+      ]
+    },
+    {
+      "name": "ai.openmandate/mcp",
+      "title": "OpenMandate",
+      "description": "MCP server for OpenMandate — find cofounders and early teammates beyond your network. 15 tools.",
+      "version": "0.6.0",
+      "urls": [
+        "https://mcp.openmandate.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.optimly/scout",
+      "title": "Scout by Optimly",
+      "description": "Query the AI Brand Directory. Audit brand visibility in ChatGPT, Claude, and Gemini.",
+      "version": "1.0.0",
+      "urls": [
+        "https://scout.optimly.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.packmind/mcp-server",
+      "title": "ai.packmind/mcp-server",
+      "description": "Packmind captures, scales, and enforces your organization's technical decisions.",
+      "version": "1.0.0",
+      "urls": [
+        "https://app.packmind.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.paperlantern/code",
+      "title": "Paper Lantern",
+      "description": "Research intelligence for AI coding agents. 2M+ CS papers with evidence and tradeoffs.",
+      "version": "0.3.1",
+      "urls": [
+        "https://mcp.paperlantern.ai/chat/mcp"
+      ]
+    },
+    {
+      "name": "ai.parallel/search-mcp",
+      "title": "Parallel Search MCP",
+      "description": "The best web search for your AI Agent",
+      "version": "1.0.0",
+      "urls": [
+        "https://search-mcp.parallel.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.parallel/task-mcp",
+      "title": "Parallel Task MCP",
+      "description": "An MCP server for deep research or task groups",
+      "version": "1.0.0",
+      "urls": [
+        "https://task-mcp.parallel.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.parceled/mcp",
+      "title": "ai.parceled/mcp",
+      "description": "Real estate data for AI agents: US parcel boundaries (tiles), owners, sale history, permits, hail.",
+      "version": "1.2.0",
+      "urls": [
+        "https://parceled.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.pictomancer/image-processing",
+      "title": "ai.pictomancer/image-processing",
+      "description": "Image processing for AI agents. Resize, convert, compress, and pipeline images.",
+      "version": "0.3.0",
+      "urls": [
+        "https://api.pictomancer.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.plith/plith",
+      "title": "ai.plith/plith",
+      "description": "AI agent infrastructure: dedup, cost prediction, validation, governance, failure intelligence.",
+      "version": "1.0.0",
+      "urls": [
+        "https://plith.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.preclick/preclick-mcp",
+      "title": "PreClick — An MCP-native URL preflight scanning service for autonomous agents.",
+      "description": "PreClick scans links for threats and confirms intent match with high accuracy before agents click.",
+      "version": "0.3.6",
+      "urls": [
+        "https://preclick.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.primeta/primeta",
+      "title": "Primeta",
+      "description": "Give your AI a face, a voice, and a personality. 3D avatars with custom personas.",
+      "version": "1.0.1",
+      "urls": [
+        "https://primeta.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.radiusos.www/crm",
+      "title": "RadiusOS CRM",
+      "description": "34-tool CRM server — contacts, pipeline, quotes, invoices, scheduling, email, and AI scoring.",
+      "version": "1.0.0",
+      "urls": [
+        "https://www.radiusos.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.raisonn/connect",
+      "title": "ai.raisonn/connect",
+      "description": "AI-native art catalogue. Catalogue works, parse provenance, and generate signed RAIs.",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.raisonn.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.readypermit/geo",
+      "title": "Buildability™ — Property Zoning & Buildability™ Intelligence",
+      "description": "Zoning, ADU eligibility, flood zone, setbacks, and buildability intelligence for U.S. parcels.",
+      "version": "1.2.3",
+      "urls": [
+        "https://rnfonkwthefktfvfwypr.supabase.co/functions/v1/mcp-server"
+      ]
+    },
+    {
+      "name": "ai.reka/mcp",
+      "title": "Reka",
+      "description": "Understand your videos with Reka AI — search, ask questions, and extract insights.",
+      "version": "0.1.9",
+      "urls": [
+        "https://mcp.reka.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.scamverify/mcp",
+      "title": "ScamVerify Threat Verification",
+      "description": "AI-powered scam and threat verification for phone numbers, URLs, texts, and emails.",
+      "version": "1.0.0",
+      "urls": [
+        "https://scamverify.ai/api/mcp"
+      ]
+    },
+    {
+      "name": "ai.scite/mcp",
+      "title": "Scite",
+      "description": "Ground answers in scientific literature. Search full text, evaluate trust, access full-text articles",
+      "version": "1.0.0",
+      "urls": [
+        "https://api.scite.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.searchshop.www/la-luer",
+      "title": "La Luer — AI Skincare Commerce",
+      "description": "Search, compare, and purchase La Luer microcurrent facial devices and skincare products.",
+      "version": "1.0.0",
+      "urls": [
+        "https://searchshopai-mcp.fly.dev/mcp/la-luer"
+      ]
+    },
+    {
+      "name": "ai.seltz/seltz-ai-seltz-mcp",
+      "title": "ai.seltz/seltz-ai-seltz-mcp",
+      "description": "Provides AI assistants with access to Seltz's powerful Web Search capabilities.\n",
+      "version": "1.0.0",
+      "urls": [
+        "https://mcp.seltz.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.simsense/mcp",
+      "title": "SimSense",
+      "description": "Deploy sims to any screen. Control your displays with Claude.",
+      "version": "1.0.1",
+      "urls": [
+        "https://my.simsense.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.simstim/mcp",
+      "title": "SimStim",
+      "description": "Deploy sims to any screen. Control your displays with Claude.",
+      "version": "1.0.1",
+      "urls": [
+        "https://my.simstim.ai/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/222wcnm-bilistalkermcp",
+      "title": "ai.smithery/222wcnm-bilistalkermcp",
+      "description": "Track Bilibili creators and get the latest updates on videos, dynamics, and articles. Fetch user p…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@222wcnm/bilistalkermcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/a-ariff-canvas-instant-mcp",
+      "title": "ai.smithery/a-ariff-canvas-instant-mcp",
+      "description": "Manage your Canvas coursework with quick access to courses, assignments, and grades. Track upcomin…",
+      "version": "2.0.0",
+      "urls": [
+        "https://server.smithery.ai/@a-ariff/canvas-instant-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/aamangeldi-dad-jokes-mcp",
+      "title": "ai.smithery/aamangeldi-dad-jokes-mcp",
+      "description": "Get a random dad joke or search by keyword to fit any moment. Retrieve specific jokes by ID for re…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@aamangeldi/dad-jokes-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/adamamer20-paper-search-mcp-openai",
+      "title": "ai.smithery/adamamer20-paper-search-mcp-openai",
+      "description": "Search and download academic papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, Semantic…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@adamamer20/paper-search-mcp-openai/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/afgong-sqlite-mcp-server",
+      "title": "ai.smithery/afgong-sqlite-mcp-server",
+      "description": "Explore your Messages SQLite database to browse tables and inspect schemas with ease. Run flexible…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@afgong/sqlite-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/agentmail",
+      "title": "ai.smithery/agentmail",
+      "description": "AgentMail is the email inbox API for AI agents. It gives agents their own email inboxes, like Gmail",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/agentmail"
+      ]
+    },
+    {
+      "name": "ai.smithery/aicastle-school-openai-api-agent-project",
+      "title": "ai.smithery/aicastle-school-openai-api-agent-project",
+      "description": "Fetch current stock prices and key data for symbols across global markets. Look up companies like…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@aicastle-school/openai-api-agent-project/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/aicastle-school-openai-api-agent-project11",
+      "title": "ai.smithery/aicastle-school-openai-api-agent-project11",
+      "description": "Fetch the latest available stock quotes by ticker symbol across international markets. Check price…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@aicastle-school/openai-api-agent-project11/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/airmang-hwpx-mcp",
+      "title": "ai.smithery/airmang-hwpx-mcp",
+      "description": "자동화하여 HWPX 문서의 로딩, 탐색, 편집, 검증을 한 번에 처리합니다. 문단·표·주석 추가, 텍스트 일괄 치환, 머리말·꼬리말 설정 등 반복 작업을 신속히 수행합니다. 기…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@airmang/hwpx-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/akilat-spec-leave-manager-mcp",
+      "title": "ai.smithery/akilat-spec-leave-manager-mcp",
+      "description": "Track and manage employee time off with quick balance lookups and streamlined applications. Find t…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@akilat-spec/leave-manager-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/alex-llm-attack-mcp-server",
+      "title": "ai.smithery/alex-llm-attack-mcp-server",
+      "description": "Query and retrieve information about various adversarial tactics and techniques used in cyber atta…",
+      "version": "2.1",
+      "urls": [
+        "https://server.smithery.ai/@alex-llm/attack-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/alphago2580-naramarketmcp",
+      "title": "ai.smithery/alphago2580-naramarketmcp",
+      "description": "Access Korea’s G2B procurement and Nara Market data for bid notices, awards, contracts, statistics…",
+      "version": "1.14.1",
+      "urls": [
+        "https://server.smithery.ai/@alphago2580/naramarketmcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Aman-Amith-Shastry-scientific_computation_mcp",
+      "title": "ai.smithery/Aman-Amith-Shastry-scientific_computation_mcp",
+      "description": "This MCP server enables users to perform scientific computations regarding linear algebra and vect…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@Aman-Amith-Shastry/scientific_computation_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/anirbanbasu-frankfurtermcp",
+      "title": "ai.smithery/anirbanbasu-frankfurtermcp",
+      "description": "A MCP server for the Frankfurter API for currency exchange rates.",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@anirbanbasu/frankfurtermcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/anirbanbasu-pymcp",
+      "title": "ai.smithery/anirbanbasu-pymcp",
+      "description": "Primarily to be used as a template repository for developing MCP servers with FastMCP in Python, P…",
+      "version": "0.1.7",
+      "urls": [
+        "https://server.smithery.ai/@anirbanbasu/pymcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-ahoy",
+      "title": "ai.smithery/arjunkmrm-ahoy",
+      "description": "Send friendly, personalized greetings by name. Switch to a playful pirate voice for themed salutat…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/ahoy/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-ahoy2",
+      "title": "ai.smithery/arjunkmrm-ahoy2",
+      "description": "Create friendly greetings by name, with an optional pirate tone. Explore the origin of 'Hello, Wor…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/ahoy2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-boba-tea",
+      "title": "ai.smithery/arjunkmrm-boba-tea",
+      "description": "Send friendly greetings to people by name. Discover the origin story behind 'Hello, World' for qui…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/boba-tea/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-bobo",
+      "title": "ai.smithery/arjunkmrm-bobo",
+      "description": "Send friendly, personalized greetings on command. Explore the origin of 'Hello, World' for quick c…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/bobo/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-brave-search-mcp-server",
+      "title": "ai.smithery/arjunkmrm-brave-search-mcp-server",
+      "description": "Search the web, images, videos, news, and local businesses with robust filters, freshness controls…",
+      "version": "2.0.25",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/brave-search-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-clock",
+      "title": "ai.smithery/arjunkmrm-clock",
+      "description": "Check the current time instantly and explore world timezones by region. Browse available continent…",
+      "version": "1.14.1",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/clock/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-fetch",
+      "title": "ai.smithery/arjunkmrm-fetch",
+      "description": "Fetch web pages and extract exactly the content you need. Select elements with CSS and retrieve co…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/fetch/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-http-test",
+      "title": "ai.smithery/arjunkmrm-http-test",
+      "description": "Kickstart your setup with ready-to-run greetings and the 'Hello, World' origin story. Learn the inte",
+      "version": "1.0.2",
+      "urls": [
+        "https://server.smithery.ai/arjunkmrm/http-test"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-local-test2",
+      "title": "ai.smithery/arjunkmrm-local-test2",
+      "description": "Send friendly greetings instantly. Learn the origin of 'Hello, World' to add a fun fact to your me…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/local-test2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-local001",
+      "title": "ai.smithery/arjunkmrm-local001",
+      "description": "Get the current time in your preferred timezone or any region you specify. Browse concise informat…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/local001/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-local01",
+      "title": "ai.smithery/arjunkmrm-local01",
+      "description": "Greet people warmly or roast them with playful banter. Explore the origin of 'Hello, World' for qu…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/local01/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-local02",
+      "title": "ai.smithery/arjunkmrm-local02",
+      "description": "Get the current time in your chosen timezone and view common timezone information. Simplify schedu…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/local02/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-lta-mcp",
+      "title": "ai.smithery/arjunkmrm-lta-mcp",
+      "description": "Provide real-time transportation data including bus arrivals, train service alerts, carpark availa…",
+      "version": "0.1.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/lta-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-mango-sago",
+      "title": "ai.smithery/arjunkmrm-mango-sago",
+      "description": "Create cheerful, personalized greetings in seconds. Switch to playful pirate-speak for extra flair…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/mango-sago/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-perplexity-search",
+      "title": "ai.smithery/arjunkmrm-perplexity-search",
+      "description": "Enable AI assistants to perform web searches using Perplexity's Sonar Pro.",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/perplexity-search/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-py-test-0",
+      "title": "ai.smithery/arjunkmrm-py-test-0",
+      "description": "Send personalized greetings by name, with an optional pirate tone. Generate greeting prompts and e…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/py-test-0/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-py-test-2",
+      "title": "ai.smithery/arjunkmrm-py-test-2",
+      "description": "Greet people by name with friendly, customizable messages. Toggle Pirate Mode to speak like a swas…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/py-test-2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-scrapermcp_el",
+      "title": "ai.smithery/arjunkmrm-scrapermcp_el",
+      "description": "Extract and parse web pages into clean HTML, links, or Markdown. Handle dynamic, complex, or block…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/scrapermcp_el/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-sg-bus-test",
+      "title": "ai.smithery/arjunkmrm-sg-bus-test",
+      "description": "Get real-time bus arrival times for any Singapore bus stop by code, with optional service filterin…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/sg-bus-test/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-test0",
+      "title": "ai.smithery/arjunkmrm-test0",
+      "description": "Get the current time in any timezone and quickly look up common timezone info. Set a default timez…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/test0/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-test01",
+      "title": "ai.smithery/arjunkmrm-test01",
+      "description": "Get the current time in any timezone. Explore concise timezone info to pick the right region. Simp…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/test01/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-test2",
+      "title": "ai.smithery/arjunkmrm-test2",
+      "description": "Greet anyone by name with a friendly message. Explore the origin of 'Hello, World' to add context…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/test2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-time",
+      "title": "ai.smithery/arjunkmrm-time",
+      "description": "Get the current time anywhere and access concise timezone information. Set your preferred timezone…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/time/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-ts-test-2",
+      "title": "ai.smithery/arjunkmrm-ts-test-2",
+      "description": "Greet anyone with a friendly, personalized hello. Explore the origin story of 'Hello, World.' Jump…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/ts-test-2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-tutorials",
+      "title": "ai.smithery/arjunkmrm-tutorials",
+      "description": "Analyze stocks and SEC filings to surface key insights, from price and volume to insider activity…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/tutorials/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/arjunkmrm-watch2",
+      "title": "ai.smithery/arjunkmrm-watch2",
+      "description": "Get the current time in your chosen timezone. Browse available continents and regions to pick the…",
+      "version": "1.14.1",
+      "urls": [
+        "https://server.smithery.ai/@arjunkmrm/watch2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Artin0123-gemini-image-mcp-server",
+      "title": "ai.smithery/Artin0123-gemini-image-mcp-server",
+      "description": "Analyze images and videos with Gemini to get fast, reliable visual insights. Handle content from U…",
+      "version": "1.4.3",
+      "urls": [
+        "https://server.smithery.ai/@Artin0123/gemini-image-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/aryankeluskar-poke-video-mcp",
+      "title": "ai.smithery/aryankeluskar-poke-video-mcp",
+      "description": "Search your Flashback video library with natural language to instantly find relevant moments. Get…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@aryankeluskar/poke-video-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BadRooBot-my_test_mcp",
+      "title": "ai.smithery/BadRooBot-my_test_mcp",
+      "description": "Get current weather for any city and create images from your prompts. Streamline planning, reports…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@BadRooBot/my_test_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BadRooBot-test_m",
+      "title": "ai.smithery/BadRooBot-test_m",
+      "description": "Send quick greetings, scrape website content, and generate text or images on demand. Perform web s…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@BadRooBot/test_m/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/bergeramit-bergeramit-hw3-tech",
+      "title": "ai.smithery/bergeramit-bergeramit-hw3-tech",
+      "description": "Create friendly greetings and add two numbers instantly. Speed up simple tasks and streamline ligh…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@bergeramit/bergeramit-hw3-tech/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/bergeramit-bergeramit-hw3-tech-1",
+      "title": "ai.smithery/bergeramit-bergeramit-hw3-tech-1",
+      "description": "Add two numbers instantly and generate friendly greetings on demand. Speed up quick math and perso…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@bergeramit/bergeramit-hw3-tech-1/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/bhushangitfull-file-mcp-smith",
+      "title": "ai.smithery/bhushangitfull-file-mcp-smith",
+      "description": "Manage files and folders directly from your workspace. Read and write files, list directories, cre…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@bhushangitfull/file-mcp-smith/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/bielacki-igdb-mcp-server",
+      "title": "ai.smithery/bielacki-igdb-mcp-server",
+      "description": "Explore and discover video games from the Internet Game Database. Search titles, view detailed inf…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@bielacki/igdb-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BigVik193-reddit-ads-mcp",
+      "title": "ai.smithery/BigVik193-reddit-ads-mcp",
+      "description": "Manage Reddit advertising across accounts, campaigns, ad groups, posts, and ads. List accounts, fu…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@BigVik193/reddit-ads-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BigVik193-reddit-ads-mcp-api",
+      "title": "ai.smithery/BigVik193-reddit-ads-mcp-api",
+      "description": "Manage Reddit advertising end to end across accounts, funding methods, campaigns, ad groups, and a…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@BigVik193/reddit-ads-mcp-api/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BigVik193-reddit-ads-mcp-test",
+      "title": "ai.smithery/BigVik193-reddit-ads-mcp-test",
+      "description": "Manage Reddit advertising end-to-end: browse ad accounts and payment methods, and organize campaig…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@BigVik193/reddit-ads-mcp-test/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BigVik193-reddit-user-mcp",
+      "title": "ai.smithery/BigVik193-reddit-user-mcp",
+      "description": "Browse and manage Reddit posts, comments, and threads. Fetch user activity, explore hot/new/rising…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@BigVik193/reddit-user-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/blacklotusdev8-test_m",
+      "title": "ai.smithery/blacklotusdev8-test_m",
+      "description": "Greet anyone by name with a friendly hello. Scrape webpages to extract content for quick reference…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@blacklotusdev8/test_m/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/blbl147-xhs-mcp",
+      "title": "ai.smithery/blbl147-xhs-mcp",
+      "description": "搜索笔记、浏览首页推荐、查看笔记内容与评论，并发表你的评论。直接在工作流中与小红书内容互动，高效跟进话题。",
+      "version": "1.6.0",
+      "urls": [
+        "https://server.smithery.ai/@blbl147/xhs-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/blockscout-mcp-server",
+      "title": "ai.smithery/blockscout-mcp-server",
+      "description": "Provide AI agents and automation tools with contextual access to blockchain data including balance…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@blockscout/mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/BowenXU0126-aistudio_hw3",
+      "title": "ai.smithery/BowenXU0126-aistudio_hw3",
+      "description": "Send personalized greetings with optional pirate flair. Compose friendly salutations for any name…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@BowenXU0126/aistudio_hw3/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/brandonbosco-sigao-scf-mcp",
+      "title": "ai.smithery/brandonbosco-sigao-scf-mcp",
+      "description": "Provides access to Civic Plus - See Click Fix, allowing you to interact with your data via an LLM.…",
+      "version": "1.0.1",
+      "urls": [
+        "https://server.smithery.ai/@brandonbosco/sigao-scf-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/brave",
+      "title": "ai.smithery/brave",
+      "description": "Visit https://brave.com/search/api/ for a free API key. Search the web, local businesses, images,…",
+      "version": "2.0.58",
+      "urls": [
+        "https://server.smithery.ai/brave/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/browserbasehq-mcp-browserbase",
+      "title": "ai.smithery/browserbasehq-mcp-browserbase",
+      "description": "Provides cloud browser automation capabilities using Stagehand and Browserbase, enabling LLMs to i…",
+      "version": "2.2.0",
+      "urls": [
+        "https://server.smithery.ai/@browserbasehq/mcp-browserbase/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/callmybot-cookbook-mcp-server",
+      "title": "ai.smithery/callmybot-cookbook-mcp-server",
+      "description": "Count occurrences of any character in your text instantly. Specify the character and get precise c…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@callmybot/cookbook-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/callmybot-domoticz",
+      "title": "ai.smithery/callmybot-domoticz",
+      "description": "Greet anyone by name with a friendly hello. Explore the origin of 'Hello, World' for context in de…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@callmybot/domoticz/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/callmybot-hello-mcp-server",
+      "title": "ai.smithery/callmybot-hello-mcp-server",
+      "description": "Generate quick, friendly greetings by name. Personalize salutations for any context. Explore the o…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@callmybot/hello-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cc25a-openai-api-agent-project123123123",
+      "title": "ai.smithery/cc25a-openai-api-agent-project123123123",
+      "description": "Look up the latest stock prices by ticker symbol across global markets. Get current price and esse…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@cc25a/openai-api-agent-project123123123/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ChiR24-unreal_mcp",
+      "title": "ai.smithery/ChiR24-unreal_mcp",
+      "description": "Control Unreal Engine to browse assets, import content, and manage levels and sequences. Automate…",
+      "version": "0.4.6",
+      "urls": [
+        "https://server.smithery.ai/@ChiR24/unreal_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ChiR24-unreal_mcp_server",
+      "title": "ai.smithery/ChiR24-unreal_mcp_server",
+      "description": "A comprehensive Model Context Protocol (MCP) server that enables AI assistants to control Unreal E…",
+      "version": "0.4.4",
+      "urls": [
+        "https://server.smithery.ai/@ChiR24/unreal_mcp_server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cindyloo-dropbox-mcp-server",
+      "title": "ai.smithery/cindyloo-dropbox-mcp-server",
+      "description": "Search, browse, and read your Dropbox files. Find documents by name or content, list folders, and…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@cindyloo/dropbox-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/clpi-clp-mcp",
+      "title": "ai.smithery/clpi-clp-mcp",
+      "description": "Manage simple context workflows with quick init and add actions. Access the 'Hello, World' origin…",
+      "version": "0.0.1",
+      "urls": [
+        "https://server.smithery.ai/@clpi/clp-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/CollectiveSpend-collectivespend-smithery-mcp",
+      "title": "ai.smithery/CollectiveSpend-collectivespend-smithery-mcp",
+      "description": "Connect CollectiveSpend with Xero to manage contacts. Retrieve, create, and update contact records…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@CollectiveSpend/collectivespend-smithery-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cpretzinger-ai-assistant-simple",
+      "title": "ai.smithery/cpretzinger-ai-assistant-simple",
+      "description": "UPDATED 9/1/2025! NEW TOOLS! Use the Redis Stream tools with n8n MCP Client Node for use anywhere!…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@cpretzinger/ai-assistant-simple/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cristianoaredes-mcp-dadosbr",
+      "title": "ai.smithery/cristianoaredes-mcp-dadosbr",
+      "description": "# MCP DadosBR Servidor MCP focado em dados públicos do Brasil. Oferece duas ferramentas simples e…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@cristianoaredes/mcp-dadosbr/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/CryptoCultCurt-appfolio-mcp-server",
+      "title": "ai.smithery/CryptoCultCurt-appfolio-mcp-server",
+      "description": "Provide seamless access to Appfolio Property Manager Reporting API through a standardized MCP serv…",
+      "version": "1.0.1",
+      "urls": [
+        "https://server.smithery.ai/@CryptoCultCurt/appfolio-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ctaylor86-mcp-video-download-server",
+      "title": "ai.smithery/ctaylor86-mcp-video-download-server",
+      "description": "Connect your video workflows to cloud storage. Organize and access video assets across projects wi…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@ctaylor86/mcp-video-download-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cuongpo-coti-mcp",
+      "title": "ai.smithery/cuongpo-coti-mcp",
+      "description": "Connect to the COTI blockchain to manage accounts, transfer native tokens, and deploy and operate…",
+      "version": "0.2.1",
+      "urls": [
+        "https://server.smithery.ai/@cuongpo/coti-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/cuongpo-coti-mcp-1",
+      "title": "ai.smithery/cuongpo-coti-mcp-1",
+      "description": "Manage COTI accounts, deploy private ERC20 and ERC721 contracts, and transfer tokens and NFTs with…",
+      "version": "0.2.1",
+      "urls": [
+        "https://server.smithery.ai/@cuongpo/coti-mcp-1/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Danushkumar-V-mcp-discord",
+      "title": "ai.smithery/Danushkumar-V-mcp-discord",
+      "description": "An MCP server that integrates with Discord to provide AI-powered features.",
+      "version": "1.2.0",
+      "urls": [
+        "https://server.smithery.ai/@Danushkumar-V/mcp-discord/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/data-mindset-sts-google-forms-mcp",
+      "title": "ai.smithery/data-mindset-sts-google-forms-mcp",
+      "description": "Create and manage Google Forms to run surveys and collect data. Add text and multiple-choice quest…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@data-mindset/sts-google-forms-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/demomagic-duckchain-mcp",
+      "title": "ai.smithery/demomagic-duckchain-mcp",
+      "description": "Explore blockchain data across addresses, tokens, blocks, and transactions. Investigate any transa…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@demomagic/duckchain-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/devbrother2024-typescript-mcp-server-boilerplate",
+      "title": "ai.smithery/devbrother2024-typescript-mcp-server-boilerplate",
+      "description": "Kickstart development with a customizable TypeScript template featuring sample tools for greeting,…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@devbrother2024/typescript-mcp-server-boilerplate/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/docfork-mcp",
+      "title": "ai.smithery/docfork-mcp",
+      "description": "@latest documentation and code examples to 9000+ libraries for LLMs and AI code editors in a singl…",
+      "version": "0.7.0",
+      "urls": [
+        "https://server.smithery.ai/@docfork/mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/dsharipova-mcp-hw",
+      "title": "ai.smithery/dsharipova-mcp-hw",
+      "description": "Create personalized greetings by name in the tone you choose. Get quick suggestions for friendly i…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@dsharipova/mcp-hw/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/duvomike-mcp",
+      "title": "ai.smithery/duvomike-mcp",
+      "description": "Transform numbers by doubling them and adding 5. Get instant results with a clear breakdown of the…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@duvomike/mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/DynamicEndpoints-autogen_mcp",
+      "title": "ai.smithery/DynamicEndpoints-autogen_mcp",
+      "description": "Create and manage AI agents that collaborate and solve problems through natural language interacti…",
+      "version": "0.3.0",
+      "urls": [
+        "https://server.smithery.ai/@DynamicEndpoints/autogen_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/DynamicEndpoints-m365-core-mcp",
+      "title": "ai.smithery/DynamicEndpoints-m365-core-mcp",
+      "description": "*Updated June 17th 2025** Manage your Microsoft 365 services effortlessly. Create and manage distr…",
+      "version": "1.1.0",
+      "urls": [
+        "https://server.smithery.ai/@DynamicEndpoints/m365-core-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/DynamicEndpoints-powershell-exec-mcp-server",
+      "title": "ai.smithery/DynamicEndpoints-powershell-exec-mcp-server",
+      "description": "Execute PowerShell commands securely with controlled timeouts and input validation. Retrieve syste…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@DynamicEndpoints/powershell-exec-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/eliu243-oura-mcp-server",
+      "title": "ai.smithery/eliu243-oura-mcp-server",
+      "description": "Connect your Oura Ring account and enable access to your wellness data in apps and automations. In…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@eliu243/oura-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/eliu243-oura-mcp-server-2",
+      "title": "ai.smithery/eliu243-oura-mcp-server-2",
+      "description": "Connect your Oura Ring account to enable secure, authenticated access in your workflows. Generate…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@eliu243/oura-mcp-server-2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/eliu243-oura-mcp-server-eliu",
+      "title": "ai.smithery/eliu243-oura-mcp-server-eliu",
+      "description": "Connect your Oura Ring account securely in minutes. Enable authorized access to your sleep, activi…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@eliu243/oura-mcp-server-eliu/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/exa-labs-exa-code-mcp",
+      "title": "ai.smithery/exa-labs-exa-code-mcp",
+      "description": "Find open-source libraries and fetch contextual code snippets by version to accelerate development…",
+      "version": "0.0.1",
+      "urls": [
+        "https://server.smithery.ai/@exa-labs/exa-code-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/faithk7-gmail-mcp",
+      "title": "ai.smithery/faithk7-gmail-mcp",
+      "description": "Manage Gmail messages, threads, labels, drafts, and settings from your workflows. Send and organiz…",
+      "version": "1.7.4",
+      "urls": [
+        "https://server.smithery.ai/@faithk7/gmail-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/feeefapp-mcp",
+      "title": "ai.smithery/feeefapp-mcp",
+      "description": "Enable AI assistants to interact seamlessly with Feeef e-commerce stores, products, and orders usi…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@feeefapp/mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/FelixYifeiWang-felix-mcp-smithery",
+      "title": "ai.smithery/FelixYifeiWang-felix-mcp-smithery",
+      "description": "Streamline your workflow with Felix. Integrate it into your workspace and tailor its behavior to y…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@FelixYifeiWang/felix-mcp-smithery/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/fengyinxia-jimeng-mcp",
+      "title": "ai.smithery/fengyinxia-jimeng-mcp",
+      "description": "Create images and videos from prompts, with options for image mixing, reference images, and start/…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@fengyinxia/jimeng-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/fitaf-ai-fitaf-ai-mcp",
+      "title": "ai.smithery/fitaf-ai-fitaf-ai-mcp",
+      "description": "Manage workouts, nutrition, goals, and progress across the FitAF platform. Connect wearables, sync…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@fitaf-ai/fitaf-ai-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/fitaf-ai-fitaf-mcp",
+      "title": "ai.smithery/fitaf-ai-fitaf-mcp",
+      "description": "Track workouts, nutrition, body metrics, habits, and SMART goals with insights and trends. Connect…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@fitaf-ai/fitaf-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/flight505-mcp_dincoder",
+      "title": "ai.smithery/flight505-mcp_dincoder",
+      "description": "Driven Intent Negotiation — Contract-Oriented Deterministic Executable Runtime DinCoder brings the…",
+      "version": "0.1.15",
+      "urls": [
+        "https://server.smithery.ai/@flight505/mcp_dincoder/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Funding-Machine-ghl-mcp-fundingmachine",
+      "title": "ai.smithery/Funding-Machine-ghl-mcp-fundingmachine",
+      "description": "Automate GoHighLevel across CRM, messaging, calendars, marketing, e-commerce, and billing. Manage…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@Funding-Machine/ghl-mcp-fundingmachine/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/HARJAP-SINGH-3105-splitwise_mcp",
+      "title": "ai.smithery/HARJAP-SINGH-3105-splitwise_mcp",
+      "description": "Manage Splitwise balances, expenses, and groups from your workspace. Fetch friends and recent acti…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@HARJAP-SINGH-3105/splitwise_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Hint-Services-obsidian-github-mcp",
+      "title": "ai.smithery/Hint-Services-obsidian-github-mcp",
+      "description": "Connect AI assistants to your GitHub-hosted Obsidian vault to seamlessly access, search, and analy…",
+      "version": "0.4.0",
+      "urls": [
+        "https://server.smithery.ai/@Hint-Services/obsidian-github-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/hithereiamaliff-mcp-datagovmy",
+      "title": "ai.smithery/hithereiamaliff-mcp-datagovmy",
+      "description": "This MCP server provides seamless access to Malaysia's government open data, including datasets, w…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@hithereiamaliff/mcp-datagovmy/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/hithereiamaliff-mcp-nextcloud",
+      "title": "ai.smithery/hithereiamaliff-mcp-nextcloud",
+      "description": "A comprehensive Model Context Protocol (MCP) server that enables AI assistants to interact with yo…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@hithereiamaliff/mcp-nextcloud/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/hjsh200219-pharminfo-mcp",
+      "title": "ai.smithery/hjsh200219-pharminfo-mcp",
+      "description": "Look up Korean drug ingredient and product data by HIRA component and product codes via Pilldoc. V…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@hjsh200219/pharminfo-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/hollaugo-financial-research-mcp-server",
+      "title": "ai.smithery/hollaugo-financial-research-mcp-server",
+      "description": "Analyze stocks with summaries, price targets, and analyst recommendations. Track SEC filings, divi…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@hollaugo/financial-research-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/hustcc-mcp-mermaid",
+      "title": "ai.smithery/hustcc-mcp-mermaid",
+      "description": "Generate dynamic Mermaid diagrams and charts with AI assistance. Customize styles and export diagr…",
+      "version": "0.1.3",
+      "urls": [
+        "https://server.smithery.ai/@hustcc/mcp-mermaid/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/huuthangntk-claude-vision-mcp-server",
+      "title": "ai.smithery/huuthangntk-claude-vision-mcp-server",
+      "description": "Analyze images from multiple angles to extract detailed insights or quick summaries. Describe visu…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@huuthangntk/claude-vision-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/IlyaGusev-academia_mcp",
+      "title": "ai.smithery/IlyaGusev-academia_mcp",
+      "description": "Search arXiv and ACL Anthology, retrieve citations and references, and browse web sources to accel…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@IlyaGusev/academia_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ImRonAI-mcp-server-browserbase",
+      "title": "ai.smithery/ImRonAI-mcp-server-browserbase",
+      "description": "Automate cloud browsers to navigate websites, interact with elements, and extract structured data.…",
+      "version": "2.0.0",
+      "urls": [
+        "https://server.smithery.ai/@ImRonAI/mcp-server-browserbase/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/IndianAppGuy-magicslide-mcp",
+      "title": "ai.smithery/IndianAppGuy-magicslide-mcp",
+      "description": "Generate professional PowerPoint presentations from text, YouTube videos, or structured JSON data.…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@IndianAppGuy/magicslide-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/IndianAppGuy-magicslide-mcp-actual-test",
+      "title": "ai.smithery/IndianAppGuy-magicslide-mcp-actual-test",
+      "description": "Generate polished PowerPoint presentations from text prompts, YouTube videos, or structured outlin…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@IndianAppGuy/magicslide-mcp-actual-test/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/infranodus-mcp-server-infranodus",
+      "title": "ai.smithery/infranodus-mcp-server-infranodus",
+      "description": "Map text into knowledge graphs to create a structured representation of conceptual relations and t…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@infranodus/mcp-server-infranodus/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/isnow890-data4library-mcp",
+      "title": "ai.smithery/isnow890-data4library-mcp",
+      "description": "책 싫어하는 제가 책에 대해 아는척하고 싶어서 만들었습니다.. 내 주변 도서관 실시간 대출 확인 읽고 싶은 책을 검색하면 주변 도서관 대출 가능 여부를 즉시 확인 굳이 도서관…",
+      "version": "1.0.5",
+      "urls": [
+        "https://server.smithery.ai/@isnow890/data4library-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jekakos-mcp-user-data-enrichment",
+      "title": "ai.smithery/jekakos-mcp-user-data-enrichment",
+      "description": "Enrich user data by adding social network links based on provided personal information. Integrate…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@jekakos/mcp-user-data-enrichment/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jenniferjiang0511-mit-ai-studio-hw3",
+      "title": "ai.smithery/jenniferjiang0511-mit-ai-studio-hw3",
+      "description": "Greet people by name and check local forecasts and weather alerts across the U.S. Switch to a play…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@jenniferjiang0511/mit-ai-studio-hw3/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jessicayanwang-test",
+      "title": "ai.smithery/jessicayanwang-test",
+      "description": "Fetch latest and historical currency exchange rates from Frankfurter. Convert amounts between curr…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@jessicayanwang/test/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jirispilka-actors-mcp-server",
+      "title": "ai.smithery/jirispilka-actors-mcp-server",
+      "description": "Greet anyone by name with friendly, personalized messages. Explore the origin of Hello, World thro…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@jirispilka/actors-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jjlabsio-korea-stock-mcp",
+      "title": "ai.smithery/jjlabsio-korea-stock-mcp",
+      "description": "Search company disclosures and financial statements from the Korean market. Retrieve stock profile…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@jjlabsio/korea-stock-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/JMoak-chrono-mcp",
+      "title": "ai.smithery/JMoak-chrono-mcp",
+      "description": "Convert and compare dates and times across any timezone with flexible, locale-aware formatting. Ad…",
+      "version": "0.2.0",
+      "urls": [
+        "https://server.smithery.ai/@JMoak/chrono-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/JunoJunHyun-festival-finder-mcp",
+      "title": "ai.smithery/JunoJunHyun-festival-finder-mcp",
+      "description": "Discover festivals worldwide by location, date, and genre. Compare options with key details like d…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@JunoJunHyun/festival-finder-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/jweingardt12-mlb_mcp",
+      "title": "ai.smithery/jweingardt12-mlb_mcp",
+      "description": "Provides easy access to MLB, Baseball Savant, Statcast, and Fangraphs baseball data. Query detaile…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@jweingardt12/mlb_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kaszek-kaszek-attio-mcp",
+      "title": "ai.smithery/kaszek-kaszek-attio-mcp",
+      "description": "Automate Attio CRM workflows with fast search and bulk operations across companies, people, deals,…",
+      "version": "0.2.0",
+      "urls": [
+        "https://server.smithery.ai/@kaszek/kaszek-attio-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/keithah-hostex-mcp",
+      "title": "ai.smithery/keithah-hostex-mcp",
+      "description": "Manage your Hostex vacation rentals—properties, reservations, availability, listings, and guest me…",
+      "version": "0.2.0",
+      "urls": [
+        "https://server.smithery.ai/@keithah/hostex-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/keithah-tessie-mcp",
+      "title": "ai.smithery/keithah-tessie-mcp",
+      "description": "Unofficial integration! ## ✨ Key Features ### 💰 Financial Intelligence - **Smart Charging Cost An…",
+      "version": "1.1.1",
+      "urls": [
+        "https://server.smithery.ai/@keithah/tessie-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/keremurat-json",
+      "title": "ai.smithery/keremurat-json",
+      "description": "Compare two JSON files deeply without worrying about key or array order. Detect missing, extra, an…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@keremurat/json/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/keremurat-jsonmcp",
+      "title": "ai.smithery/keremurat-jsonmcp",
+      "description": "Compare two JSON files deeply, ignoring order, to surface every difference. Get a clear, structure…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@keremurat/jsonmcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/keremurat-mcp",
+      "title": "ai.smithery/keremurat-mcp",
+      "description": "Compare two JSON files deeply, regardless of order. Get a detailed difference report highlighting…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@keremurat/mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kesslerio-attio-mcp-server",
+      "title": "ai.smithery/kesslerio-attio-mcp-server",
+      "description": "Connect AI to your Attio CRM. Manage contacts, companies, deals, and sales pipelines. Create tasks…",
+      "version": "1.1.1",
+      "urls": [
+        "https://server.smithery.ai/@kesslerio/attio-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kesslerio-attio-mcp-server-beta",
+      "title": "ai.smithery/kesslerio-attio-mcp-server-beta",
+      "description": "Streamline your Attio workflows using natural language to search, create, update, and organize com…",
+      "version": "1.1.1",
+      "urls": [
+        "https://server.smithery.ai/@kesslerio/attio-mcp-server-beta/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Kim-soung-won-mcp-smithery-exam",
+      "title": "ai.smithery/Kim-soung-won-mcp-smithery-exam",
+      "description": "Craft quick, personalized greetings by name. Generate ready-to-use greeting prompts for a consiste…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@Kim-soung-won/mcp-smithery-exam/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kirbah-mcp-youtube",
+      "title": "ai.smithery/kirbah-mcp-youtube",
+      "description": "Provide token-optimized, structured YouTube data to enhance your LLM applications. Access efficien…",
+      "version": "0.2.6",
+      "urls": [
+        "https://server.smithery.ai/@kirbah/mcp-youtube/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kkjdaniel-bgg-mcp",
+      "title": "ai.smithery/kkjdaniel-bgg-mcp",
+      "description": "BGG MCP provides access to the BoardGameGeek API through the Model Context Protocol, enabling retr…",
+      "version": "1.3.2",
+      "urls": [
+        "https://server.smithery.ai/@kkjdaniel/bgg-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kodey-ai-mapwise-mcp",
+      "title": "ai.smithery/kodey-ai-mapwise-mcp",
+      "description": "Send friendly, personalized greetings on demand. Generate quick salutations with a simple prompt.…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kodey-ai/mapwise-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kodey-ai-salesforce-mcp",
+      "title": "ai.smithery/kodey-ai-salesforce-mcp",
+      "description": "Run SOQL queries to explore and retrieve Salesforce data. Inspect records, fields, and relationshi…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kodey-ai/salesforce-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kodey-ai-salesforce-mcp-kodey",
+      "title": "ai.smithery/kodey-ai-salesforce-mcp-kodey",
+      "description": "Run SOQL queries against your Salesforce org to explore and retrieve data. Quickly iterate on filt…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kodey-ai/salesforce-mcp-kodey/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kodey-ai-salesforce-mcp-minimal",
+      "title": "ai.smithery/kodey-ai-salesforce-mcp-minimal",
+      "description": "Run SOQL queries to explore and retrieve Salesforce data. Access accounts, contacts, opportunities…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kodey-ai/salesforce-mcp-minimal/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kodey-ai-salesforce-mcp-server",
+      "title": "ai.smithery/kodey-ai-salesforce-mcp-server",
+      "description": "Run SOQL queries against your Salesforce org to retrieve records and insights. Explore objects, fi…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kodey-ai/salesforce-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Kryptoskatt-mcp-server",
+      "title": "ai.smithery/Kryptoskatt-mcp-server",
+      "description": "Enable AI assistants to interact seamlessly with the DefiLlama API by translating MCP tool calls i…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@Kryptoskatt/mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/kwp-lab-rss-reader-mcp",
+      "title": "ai.smithery/kwp-lab-rss-reader-mcp",
+      "description": "Track and browse RSS feeds with ease. Fetch the latest entries from any feed URL and extract full…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@kwp-lab/rss-reader-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/leandrogavidia-vechain-mcp-server",
+      "title": "ai.smithery/leandrogavidia-vechain-mcp-server",
+      "description": "Search VeChain documentation, query on-chain data, and fetch fee suggestions with direct links to…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@leandrogavidia/vechain-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Leghis-smart-thinking",
+      "title": "ai.smithery/Leghis-smart-thinking",
+      "description": "Find relevant Smart‑Thinking memories fast. Fetch full entries by ID to get complete context. Spee…",
+      "version": "0.0.0",
+      "urls": [
+        "https://server.smithery.ai/@Leghis/smart-thinking/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/lineex-pubmed-mcp-smithery",
+      "title": "ai.smithery/lineex-pubmed-mcp-smithery",
+      "description": "Search PubMed with precision using keyword and journal filters and smart sorting. Uncover MeSH ter…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@lineex/pubmed-mcp-smithery/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/LinkupPlatform-linkup-mcp-server",
+      "title": "ai.smithery/LinkupPlatform-linkup-mcp-server",
+      "description": "Search the web in real time to get trustworthy, source-backed answers. Find the latest news and co…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@LinkupPlatform/linkup-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/lukaskostka99-marketing-miner-mcp",
+      "title": "ai.smithery/lukaskostka99-marketing-miner-mcp",
+      "description": "Discover high-impact keyword ideas across Central and Eastern European and English markets. Analyz…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@lukaskostka99/marketing-miner-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/luminati-io-brightdata-mcp",
+      "title": "ai.smithery/luminati-io-brightdata-mcp",
+      "description": "One MCP for the Web. Easily search, crawl, navigate, and extract websites without getting blocked.…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@luminati-io/brightdata-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/magenie33-quality-dimension-generator",
+      "title": "ai.smithery/magenie33-quality-dimension-generator",
+      "description": "Generate tailored quality criteria and scoring guides from your task descriptions. Refine objectiv…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@magenie33/quality-dimension-generator/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/mayla-debug-mcp-google-calendar2",
+      "title": "ai.smithery/mayla-debug-mcp-google-calendar2",
+      "description": "Schedule and manage Google Calendar events directly from your workspace. Check availability, view…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@mayla-debug/mcp-google-calendar2/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/MetehanGZL-pokemcp",
+      "title": "ai.smithery/MetehanGZL-pokemcp",
+      "description": "Provide detailed Pokémon data and information through a standardized MCP interface. Enable LLMs an…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@MetehanGZL/pokemcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/mfukushim-map-traveler-mcp",
+      "title": "ai.smithery/mfukushim-map-traveler-mcp",
+      "description": "Create immersive travel experiences by instructing an avatar to navigate Google Maps. Report on th…",
+      "version": "0.2.0",
+      "urls": [
+        "https://server.smithery.ai/@mfukushim/map-traveler-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/miguelgarzons-mcp-cun",
+      "title": "ai.smithery/miguelgarzons-mcp-cun",
+      "description": "Greet people by name with friendly, personalized messages. Add a warm touch to onboarding, demos,…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@miguelgarzons/mcp-cun/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/minionszyw-bazi",
+      "title": "ai.smithery/minionszyw-bazi",
+      "description": "Generate BaZi charts from birth details. Explore Four Pillars, solar terms, and Luck Pillars for d…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@minionszyw/bazi/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/MisterSandFR-supabase-mcp-selfhosted",
+      "title": "ai.smithery/MisterSandFR-supabase-mcp-selfhosted",
+      "description": "Manage Supabase projects end to end across database, auth, storage, realtime, and migrations. Moni…",
+      "version": "1.14.1",
+      "urls": [
+        "https://server.smithery.ai/@MisterSandFR/supabase-mcp-selfhosted/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/mjucius-cozi_mcp",
+      "title": "ai.smithery/mjucius-cozi_mcp",
+      "description": "Manage your family's calendars and lists in Cozi. View, create, and update appointments; organize…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@mjucius/cozi_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/morosss-sdfsdf",
+      "title": "ai.smithery/morosss-sdfsdf",
+      "description": "Find academic papers across major sources like arXiv, PubMed, bioRxiv, and more. Download PDFs whe…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@morosss/sdfsdf/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/motorboy1-my-mcp-server",
+      "title": "ai.smithery/motorboy1-my-mcp-server",
+      "description": "Send friendly greetings by name. Discover the origin story of 'Hello, World' for quick context.",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@motorboy1/my-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/mrugankpednekar-bill_splitter_mcp",
+      "title": "ai.smithery/mrugankpednekar-bill_splitter_mcp",
+      "description": "Track and split shared expenses across trips, events, and groups. Create groups, add expenses, and…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@mrugankpednekar/bill_splitter_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/mrugankpednekar-mcp-optimizer",
+      "title": "ai.smithery/mrugankpednekar-mcp-optimizer",
+      "description": "Optimize crew and workforce schedules, resource allocation, and routing with linear and mixed-inte…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@mrugankpednekar/mcp-optimizer/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Nekzus-npm-sentinel-mcp",
+      "title": "ai.smithery/Nekzus-npm-sentinel-mcp",
+      "description": "Provide AI-powered real-time analysis and intelligence on NPM packages, including security, depend…",
+      "version": "1.11.8",
+      "urls": [
+        "https://server.smithery.ai/@Nekzus/npm-sentinel-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/neverinfamous-memory-journal-mcp",
+      "title": "ai.smithery/neverinfamous-memory-journal-mcp",
+      "description": "A MCP server built for developers enabling Git based project management with project and personal…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@neverinfamous/memory-journal-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/nickthelegend-test-mcp",
+      "title": "ai.smithery/nickthelegend-test-mcp",
+      "description": "Create friendly, personalized greetings in seconds. Toggle Pirate Mode to speak like a pirate for…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@nickthelegend/test-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Open-Scout-mcp",
+      "title": "ai.smithery/Open-Scout-mcp",
+      "description": "Create and publish one-pagers and boards for your organization. Upload images from the web, update…",
+      "version": "0.1.0",
+      "urls": [
+        "https://server.smithery.ai/@Open-Scout/mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/oxylabs-oxylabs-mcp",
+      "title": "ai.smithery/oxylabs-oxylabs-mcp",
+      "description": "Fetch and process content from specified URLs using the Oxylabs Web Scraper API.",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@oxylabs/oxylabs-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/PabloLec-keyprobe-mcp",
+      "title": "ai.smithery/PabloLec-keyprobe-mcp",
+      "description": "Audit certificates and keystores to surface expiry risks, weak algorithms, and misconfigurations.…",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@PabloLec/keyprobe-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Parc-Dev-task-breakdown-server",
+      "title": "ai.smithery/Parc-Dev-task-breakdown-server",
+      "description": "Break down complex problems into clear, actionable steps. Adapt on the fly by iterating, revising,…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@Parc-Dev/task-breakdown-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Phionx-mcp-hello-server",
+      "title": "ai.smithery/Phionx-mcp-hello-server",
+      "description": "Send personalized greetings to anyone. Enable Pirate Mode for swashbuckling salutations. Explore t…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@Phionx/mcp-hello-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/pinion05-supabase-mcp-lite",
+      "title": "ai.smithery/pinion05-supabase-mcp-lite",
+      "description": "Same functionality, consuming only 1/20 of the context window tokens.",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@pinion05/supabase-mcp-lite/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/pinkpixel-dev-web-scout-mcp",
+      "title": "ai.smithery/pinkpixel-dev-web-scout-mcp",
+      "description": "Search the web and extract clean, readable text from webpages. Process multiple URLs at once to sp…",
+      "version": "1.5.5",
+      "urls": [
+        "https://server.smithery.ai/@pinkpixel-dev/web-scout-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/PixdataOrg-coderide",
+      "title": "ai.smithery/PixdataOrg-coderide",
+      "description": "CodeRide eliminates the context reset cycle once and for all. Through MCP integration, it seamless…",
+      "version": "0.9.1",
+      "urls": [
+        "https://server.smithery.ai/@PixdataOrg/coderide/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/plainyogurt21-clintrials-mcp",
+      "title": "ai.smithery/plainyogurt21-clintrials-mcp",
+      "description": "Provide structured access to ClinicalTrials.gov data for searching, retrieving, and analyzing clin…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@plainyogurt21/clintrials-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/plainyogurt21-sec-edgar-mcp",
+      "title": "ai.smithery/plainyogurt21-sec-edgar-mcp",
+      "description": "Provide AI assistants with real-time access to official SEC EDGAR filings and financial data. Enab…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@plainyogurt21/sec-edgar-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/Pratiksha-Kanoja-magicslide-mcp-test",
+      "title": "ai.smithery/Pratiksha-Kanoja-magicslide-mcp-test",
+      "description": "Create polished slide decks from text or YouTube links in seconds. Fetch video transcripts to tran…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@Pratiksha-Kanoja/magicslide-mcp-test/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ProfessionalWiki-mediawiki-mcp-server",
+      "title": "ai.smithery/ProfessionalWiki-mediawiki-mcp-server",
+      "description": "Enable Large Language Model clients to interact seamlessly with any MediaWiki wiki. Perform action…",
+      "version": "0.1.1",
+      "urls": [
+        "https://server.smithery.ai/@ProfessionalWiki/mediawiki-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/proflulab-documentassistant",
+      "title": "ai.smithery/proflulab-documentassistant",
+      "description": "Convert files between formats without quality loss. Speed up your workflow with fast, reliable con…",
+      "version": "1.14.1",
+      "urls": [
+        "https://server.smithery.ai/@proflulab/documentassistant/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/pythondev-pro-egw_writings_mcp_server",
+      "title": "ai.smithery/pythondev-pro-egw_writings_mcp_server",
+      "description": "Search Ellen G. White’s writings by keyword to surface relevant quotations. Retrieve exact passage…",
+      "version": "1.12.4",
+      "urls": [
+        "https://server.smithery.ai/@pythondev-pro/egw_writings_mcp_server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/rainbowgore-stealthee-mcp-tools",
+      "title": "ai.smithery/rainbowgore-stealthee-mcp-tools",
+      "description": "Spot pre-launch products before they trend. Search the web and tech sites, extract and parse pages…",
+      "version": "1.14.0",
+      "urls": [
+        "https://server.smithery.ai/@rainbowgore/stealthee-mcp-tools/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ramadasmr-networkcalc-mcp",
+      "title": "ai.smithery/ramadasmr-networkcalc-mcp",
+      "description": "Look up DNS information for any domain to troubleshoot issues and gather insights. Get fast, relia…",
+      "version": "1.13.0",
+      "urls": [
+        "https://server.smithery.ai/@ramadasmr/networkcalc-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/RectiFlex-centerassist-mcp",
+      "title": "ai.smithery/RectiFlex-centerassist-mcp",
+      "description": "Streamline field service and construction operations with CenterPoint Connect. Manage companies, o…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@RectiFlex/centerassist-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/RectiFlex-centerassist-mcp-cp",
+      "title": "ai.smithery/RectiFlex-centerassist-mcp-cp",
+      "description": "Streamline property management, construction, and service workflows with CenterPoint Connect. Sear…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@RectiFlex/centerassist-mcp-cp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/RectiFlex-centerassist-mcp-cp1",
+      "title": "ai.smithery/RectiFlex-centerassist-mcp-cp1",
+      "description": "Access and manage CenterPoint Connect data for property management, construction, and service oper…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@RectiFlex/centerassist-mcp-cp1/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/RectiFlex-centerassist-mcp1",
+      "title": "ai.smithery/RectiFlex-centerassist-mcp1",
+      "description": "Manage CenterPoint Connect data across properties, companies, employees, invoices, materials, and…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@RectiFlex/centerassist-mcp1/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ref-tools-ref-tools-mcp",
+      "title": "ai.smithery/ref-tools-ref-tools-mcp",
+      "description": "Provide your AI coding tools with token-efficient access to up-to-date technical documentation for…",
+      "version": "3.0.0",
+      "urls": [
+        "https://server.smithery.ai/@ref-tools/ref-tools-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/renCosta2025-context7fork",
+      "title": "ai.smithery/renCosta2025-context7fork",
+      "description": "Get up-to-date, version-specific documentation and code examples from official sources directly in…",
+      "version": "1.0.13",
+      "urls": [
+        "https://server.smithery.ai/@renCosta2025/context7fork/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/rfdez-pvpc-mcp-server",
+      "title": "ai.smithery/rfdez-pvpc-mcp-server",
+      "description": "Retrieve daily PVPC electricity tariffs for 2.0 TD consumers, published by Red Eléctrica.",
+      "version": "3.2.3",
+      "urls": [
+        "https://server.smithery.ai/@rfdez/pvpc-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/sachicali-discordmcp-suite",
+      "title": "ai.smithery/sachicali-discordmcp-suite",
+      "description": "Control your Discord community: send/read messages, manage channels and forums, and handle webhook…",
+      "version": "1.2.0",
+      "urls": [
+        "https://server.smithery.ai/@sachicali/discordmcp-suite/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/saidsef-mcp-github-pr-issue-analyser",
+      "title": "ai.smithery/saidsef-mcp-github-pr-issue-analyser",
+      "description": "A Model Context Protocol (MCP) application for automated GitHub PR analysis and issue management.…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@saidsef/mcp-github-pr-issue-analyser/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/samihalawa-whatsapp-go-mcp",
+      "title": "ai.smithery/samihalawa-whatsapp-go-mcp",
+      "description": "Scan QR codes and go! No more troublesome autos or APIs! Send text messages, images, links, locati…",
+      "version": "v7.5.0",
+      "urls": [
+        "https://server.smithery.ai/@samihalawa/whatsapp-go-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/sasabasara-where_is_my_bus_mcp",
+      "title": "ai.smithery/sasabasara-where_is_my_bus_mcp",
+      "description": "Get real-time NYC bus arrivals, live vehicle locations, and service alerts. Plan trips between any…",
+      "version": "2.0.0",
+      "urls": [
+        "https://server.smithery.ai/@sasabasara/where_is_my_bus_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/ScrapeGraphAI-scrapegraph-mcp",
+      "title": "ai.smithery/ScrapeGraphAI-scrapegraph-mcp",
+      "description": "Enable language models to perform advanced AI-powered web scraping with enterprise-grade reliabili…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@ScrapeGraphAI/scrapegraph-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/sebastianall1977-gmail-mcp",
+      "title": "ai.smithery/sebastianall1977-gmail-mcp",
+      "description": "Manage Gmail end-to-end: search, read, send, draft, label, and organize threads. Automate workflow…",
+      "version": "1.7.4",
+      "urls": [
+        "https://server.smithery.ai/@sebastianall1977/gmail-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/serkan-ozal-driflyte-mcp-server",
+      "title": "ai.smithery/serkan-ozal-driflyte-mcp-server",
+      "description": "Discover available topics and explore up-to-date, topic-tagged web content. Search to surface the…",
+      "version": "0.1.15",
+      "urls": [
+        "https://server.smithery.ai/@serkan-ozal/driflyte-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/shoumikdc-arxiv-mcp",
+      "title": "ai.smithery/shoumikdc-arxiv-mcp",
+      "description": "Discover the latest arXiv papers by category and keyword. Control how many results you get to spee…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@shoumikdc/arxiv-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/skr-cloudify-clickup-mcp-server-new",
+      "title": "ai.smithery/skr-cloudify-clickup-mcp-server-new",
+      "description": "Manage your ClickUp workspace by creating, updating, and organizing tasks, lists, folders, and tag…",
+      "version": "0.8.5",
+      "urls": [
+        "https://server.smithery.ai/@skr-cloudify/clickup-mcp-server-new/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/slhad-aha-mcp",
+      "title": "ai.smithery/slhad-aha-mcp",
+      "description": "A TypeScript MCP server for Home Assistant, enabling programmatic management of entities, automati…",
+      "version": "0.1.0",
+      "urls": [
+        "https://server.smithery.ai/@slhad/aha-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-cookbook-python-quickstart",
+      "title": "ai.smithery/smithery-ai-cookbook-python-quickstart",
+      "description": "A simple MCP server built with FastMCP and python",
+      "version": "1.13.1",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/cookbook-python-quickstart/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-cookbook-ts-smithery-cli",
+      "title": "ai.smithery/smithery-ai-cookbook-ts-smithery-cli",
+      "description": "A simple Typescript MCP server built using the official MCP Typescript SDK and smithery/cli. This…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/cookbook-ts-smithery-cli/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-fetch",
+      "title": "ai.smithery/smithery-ai-fetch",
+      "description": "A simple tool that performs a fetch request to a webpage.",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/fetch/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-github",
+      "title": "ai.smithery/smithery-ai-github",
+      "description": "Access the GitHub API, enabling file operations, repository management, search functionality, and…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/github/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-national-weather-service",
+      "title": "ai.smithery/smithery-ai-national-weather-service",
+      "description": "Provide real-time and forecast weather information for locations in the United States using natura…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/national-weather-service/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-ai-slack",
+      "title": "ai.smithery/smithery-ai-slack",
+      "description": "Enable interaction with Slack workspaces. Supports subscribing to Slack events through Resources.",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery-ai/slack/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-notion",
+      "title": "ai.smithery/smithery-notion",
+      "description": "A Notion workspace is a collaborative environment where teams can organize work, manage projects,…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery/notion/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-toolbox",
+      "title": "ai.smithery/smithery-toolbox",
+      "description": "Toolbox dynamically routes to all MCPs in the Smithery registry based on your agent's need. When a…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery/toolbox/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/smithery-unicorn",
+      "title": "ai.smithery/smithery-unicorn",
+      "description": "A choose your own adventure game where you play as a startup founder trying to build a unicorn again",
+      "version": "3.0.0",
+      "urls": [
+        "https://server.smithery.ai/@smithery/unicorn"
+      ]
+    },
+    {
+      "name": "ai.smithery/STUzhy-py_execute_mcp",
+      "title": "ai.smithery/STUzhy-py_execute_mcp",
+      "description": "Run Python code in a secure sandbox without local setup. Declare inline dependencies and execute s…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@STUzhy/py_execute_mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/sunub-obsidian-mcp-server",
+      "title": "ai.smithery/sunub-obsidian-mcp-server",
+      "description": "Search your Obsidian vault to quickly find notes by title or keyword, summarize related content, a…",
+      "version": "1.0.0",
+      "urls": [
+        "https://server.smithery.ai/@sunub/obsidian-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/szge-lolwiki-mcp",
+      "title": "ai.smithery/szge-lolwiki-mcp",
+      "description": "Generate friendly greetings for any audience. Toggle Pirate Mode for a playful, swashbuckling styl…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@szge/lolwiki-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/TakoData-tako-mcp",
+      "title": "ai.smithery/TakoData-tako-mcp",
+      "description": "Provide real-time data querying and visualization by integrating Tako with your agents. Generate o…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@TakoData/tako-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/truss44-mcp-crypto-price",
+      "title": "ai.smithery/truss44-mcp-crypto-price",
+      "description": "Provide real-time cryptocurrency price data and market analysis.",
+      "version": "2.1.0",
+      "urls": [
+        "https://server.smithery.ai/@truss44/mcp-crypto-price/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/turnono-datacommons-mcp-server",
+      "title": "ai.smithery/turnono-datacommons-mcp-server",
+      "description": "Discover statistical indicators and topics in Data Commons. Retrieve observations for specific var…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@turnono/datacommons-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/wgong-sqlite-mcp-server",
+      "title": "ai.smithery/wgong-sqlite-mcp-server",
+      "description": "Explore, query, and inspect SQLite databases with ease. List tables, preview results, and view det…",
+      "version": "1.16.0",
+      "urls": [
+        "https://server.smithery.ai/@wgong/sqlite-mcp-server/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/xinkuang-china-stock-mcp",
+      "title": "ai.smithery/xinkuang-china-stock-mcp",
+      "description": "Access real-time and historical market data for China A-shares and Hong Kong stocks, along with ne…",
+      "version": "1.15.0",
+      "urls": [
+        "https://server.smithery.ai/@xinkuang/china-stock-mcp/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/yuhuison-mediawiki-mcp-server-auth",
+      "title": "ai.smithery/yuhuison-mediawiki-mcp-server-auth",
+      "description": "Connect to your MediaWiki using simple credentials and manage content without OAuth. Search, read,…",
+      "version": "1.0.1",
+      "urls": [
+        "https://server.smithery.ai/@yuhuison/mediawiki-mcp-server-auth/mcp"
+      ]
+    },
+    {
+      "name": "ai.smithery/yuna0x0-anilist-mcp",
+      "title": "ai.smithery/yuna0x0-anilist-mcp",
+      "description": "Access and interact with anime and manga data seamlessly. Retrieve detailed information about your…",
+      "version": "1.3.7",
+      "urls": [
+        "https://server.smithery.ai/@yuna0x0/anilist-mcp/mcp"
+      ]
+    }
+  ]
+}

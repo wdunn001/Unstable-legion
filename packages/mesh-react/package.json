@@ -1,0 +1,42 @@
+{
+  "name": "@unstable-legion/react",
+  "version": "0.0.1",
+  "description": "React bindings + UI components for @unstable-legion/core. Hooks (useMeshChat, useMeshRoster, useMeshTools, useMcpAttachments, usePersona, useLocalLlm, useCodecMap) + components (PersonaForm, MeshRosterPanel, MeshChatPanel, LlmStatusPanel, McpStatusRow, SafetyDialog). @unstable-legion/core pulls the full codecai / trystero / msgpack stack as a dep, so installing this package gets everything.",
+  "license": "BSL-1.1",
+  "type": "module",
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    }
+  },
+  "files": ["dist/", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node -e \"require('fs').readdirSync('dist/cjs').filter(f=>f.endsWith('.js')).forEach(f=>require('fs').renameSync('dist/cjs/'+f,'dist/cjs/'+f.replace(/\\.js$/,'.cjs')))\"",
+    "build:types": "tsc -p tsconfig.types.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@unstable-legion/core": "0.0.1"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wdunn001/unstable-legion.git",
+    "directory": "packages/mesh-react"
+  },
+  "keywords": ["react", "unstable-legion", "codec", "mesh", "browser-ai", "webrtc", "trystero", "mqtt", "mcp", "webgpu"]
+}

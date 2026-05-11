@@ -1,0 +1,319 @@
+/* Demo styling for the @unstable-legion/react components.
+ *
+ * Library components emit `ul-*` semantic class names. This file is the
+ * demo's interpretation of those classes — a terminal/retro dark
+ * theme. Consumer apps can ship entirely different styles by writing
+ * their own CSS against the same class names. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0c0c0c;
+  --fg: #d8d8d8;
+  --muted: #6b6b6b;
+  --accent: #56ffa3;
+  --warn: #ffb86c;
+  --danger: #ff6b6b;
+  --panel: #161616;
+  --border: #2a2a2a;
+  --chip: #233226;
+  --chip-fg: #9fe3b8;
+  --chip-danger-bg: #322323;
+  --chip-danger-fg: #ff8e8e;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.4;
+}
+a { color: var(--accent); }
+code {
+  background: #1c1c1c;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.ul-muted { color: var(--muted); }
+.ul-warn { color: var(--warn); }
+.ul-small { font-size: 11px; }
+.ul-link {
+  background: transparent;
+  color: var(--accent);
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+/* ── PersonaForm ─────────────────────────────────────────────────── */
+.ul-join {
+  max-width: 520px;
+  margin: 64px auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.ul-join h1 { font-size: 24px; margin: 0 0 4px; color: var(--accent); }
+.ul-tagline { color: var(--muted); margin: 0 0 24px; }
+.ul-join form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+.ul-join label { color: var(--muted); }
+.ul-join input, .ul-join textarea {
+  background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+  padding: 8px; font-family: inherit; font-size: inherit;
+}
+.ul-join textarea { resize: vertical; }
+.ul-join button[type="submit"] {
+  background: var(--accent); color: #001a07; border: 0; padding: 10px;
+  font-family: inherit; font-weight: bold; cursor: pointer;
+}
+.ul-join button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.ul-join footer { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.ul-join footer p { margin: 0 0 8px; }
+
+.ul-tool-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+.ul-tool-toggle { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+.ul-tool-toggle code { background: #1c1c1c; padding: 1px 4px; border-radius: 2px; }
+
+.ul-mcp-registry { margin: 8px 0; }
+.ul-mcp-registry summary { cursor: pointer; color: var(--accent); padding: 4px 0; }
+.ul-mcp-list { list-style: none; padding: 0; max-height: 280px; overflow-y: auto; }
+.ul-mcp-list li {
+  border: 1px solid var(--border); padding: 6px 8px; margin-bottom: 4px;
+  background: var(--panel);
+}
+.ul-mcp-list p { margin: 2px 0; }
+.ul-mcp-registry input[type="search"] {
+  background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+  padding: 6px; font-family: inherit; font-size: 12px; width: 100%; margin: 4px 0;
+}
+
+/* ── Dashboard layout ────────────────────────────────────────────── */
+.ul-app { display: flex; flex-direction: column; height: 100vh; }
+.ul-header {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex; gap: 8px; align-items: center;
+  background: var(--panel);
+}
+.ul-brand { color: var(--accent); font-weight: bold; }
+.ul-sep { color: var(--muted); }
+.ul-selfid { color: var(--muted); }
+.ul-header .ul-link { margin-left: auto; }
+
+.ul-cols { display: grid; grid-template-columns: 320px 1fr; flex: 1; min-height: 0; }
+
+/* ── Mobile: stack columns, collapse roster header into a tap target ── */
+@media (max-width: 720px) {
+  .ul-cols {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  /* Roster shrinks to a collapsible header strip; the chat below takes
+     the remaining viewport. When the user expands the roster, scroll
+     stays inside the roster so it doesn't push the composer off-screen. */
+  .ul-roster {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    max-height: 50vh;
+  }
+  .ul-roster-collapsed {
+    max-height: 40px;
+    padding: 0;
+    overflow: hidden;
+  }
+  .ul-header {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .ul-header .ul-link { margin-left: 0; }
+  .ul-llm-row, .ul-mcp-row { padding: 6px 10px; font-size: 12px; }
+  .ul-chat h3 { padding: 8px 12px; }
+  .ul-msgs { padding: 8px 12px; }
+  .ul-composer { padding: 6px 10px; }
+  .ul-composer input { padding: 8px 10px; font-size: 16px; /* prevent iOS zoom */ }
+  .ul-composer button { padding: 8px 12px; }
+}
+
+/* ── Roster toggle (collapsed/expand button) — present at all sizes ── */
+.ul-roster-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+.ul-roster-toggle:hover { background: #1c1c1c; }
+.ul-roster-toggle-caret {
+  display: inline-block;
+  width: 10px;
+  color: var(--accent);
+}
+.ul-roster-toggle-label { flex: 1; }
+/* Desktop: hide the toggle by default — the side column is always visible.
+   Users on desktop can still tap it if they want to collapse for focus. */
+@media (min-width: 721px) {
+  .ul-roster-toggle { display: none; }
+}
+
+/* ── LLM status pill + row ──────────────────────────────────────── */
+.ul-llm-pill {
+  font-size: 11px; padding: 1px 6px; border-radius: 2px;
+  background: #1c1c1c; color: var(--muted);
+}
+.ul-llm-ready { background: var(--chip); color: var(--chip-fg); }
+.ul-llm-loading { background: #2a2516; color: var(--warn); }
+.ul-llm-error, .ul-llm-unsupported, .ul-llm-follower {
+  background: var(--chip-danger-bg); color: var(--chip-danger-fg);
+}
+
+.ul-mesh-pill {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 2px;
+}
+.ul-mesh-pill.ul-mesh-ok { background: var(--chip); color: var(--chip-fg); }
+.ul-mesh-pill.ul-mesh-cold { background: #2a2516; color: var(--warn); }
+
+.ul-llm-row {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  display: flex; gap: 12px; align-items: center;
+  font-size: 13px;
+}
+.ul-llm-row.ul-llm-warn { background: #2a2516; color: var(--warn); }
+.ul-llm-row.ul-llm-err { background: var(--chip-danger-bg); color: var(--chip-danger-fg); }
+.ul-llm-row.ul-llm-ok { background: var(--chip); color: var(--chip-fg); }
+.ul-llm-row progress { flex: 0 0 200px; }
+.ul-llm-boot {
+  background: var(--accent); color: #001a07; border: 0; padding: 6px 12px;
+  font-family: inherit; font-weight: bold; cursor: pointer;
+}
+.ul-llm-boot[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* ── MCP row ────────────────────────────────────────────────────── */
+.ul-mcp-row {
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  font-size: 12px;
+}
+.ul-mcp-label { color: var(--muted); margin-right: 4px; }
+.ul-mcp-pill { padding: 2px 8px; border-radius: 2px; background: #1c1c1c; }
+.ul-mcp-pill.ul-mcp-connecting { background: #2a2516; color: var(--warn); }
+.ul-mcp-pill.ul-mcp-ok { background: var(--chip); color: var(--chip-fg); }
+.ul-mcp-pill.ul-mcp-err { background: var(--chip-danger-bg); color: var(--chip-danger-fg); }
+
+/* ── Roster ─────────────────────────────────────────────────────── */
+.ul-roster {
+  border-right: 1px solid var(--border);
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+.ul-roster-header { margin: 0 0 8px; color: var(--accent); font-size: 14px; }
+.ul-roster .ul-agg-header { margin-top: 16px; }
+.ul-peers, .ul-agg-tools { list-style: none; padding: 0; margin: 0; }
+.ul-roster-row, .ul-agg-row {
+  border: 1px solid var(--border); padding: 8px; margin-bottom: 8px;
+  background: var(--panel);
+}
+.ul-clickable { cursor: pointer; }
+.ul-clickable:hover { border-color: var(--accent); }
+.ul-roster-self { opacity: 0.85; }
+.ul-self-badge {
+  background: #2a2516; color: var(--warn);
+  padding: 1px 6px; border-radius: 2px; font-size: 11px;
+}
+.ul-avail { color: var(--accent); }
+.ul-avail.ul-off { color: var(--danger); }
+.ul-model { color: var(--muted); font-size: 12px; }
+.ul-summary { font-style: italic; font-size: 12px; margin: 2px 0; }
+.ul-skills, .ul-tools { margin-top: 4px; }
+.ul-tools-label { color: var(--muted); font-size: 11px; margin-right: 4px; }
+.ul-chip {
+  display: inline-block; background: var(--chip); color: var(--chip-fg);
+  font-size: 11px; padding: 1px 6px; margin: 0 4px 4px 0; border-radius: 2px;
+}
+.ul-chip.ul-tool { background: #1a2330; color: #87c2ff; }
+.ul-chip.ul-chip-danger { background: var(--chip-danger-bg); color: var(--chip-danger-fg); }
+
+/* ── Chat ───────────────────────────────────────────────────────── */
+.ul-chat { display: flex; flex-direction: column; min-height: 0; }
+.ul-chat h3 {
+  margin: 0; padding: 12px 16px; color: var(--accent); font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.ul-chat .ul-warn {
+  background: var(--chip-danger-bg); color: var(--chip-danger-fg);
+  padding: 6px 16px; font-size: 12px;
+}
+.ul-msgs { flex: 1; overflow-y: auto; padding: 12px 16px; }
+.ul-msg { margin-bottom: 6px; display: flex; align-items: baseline; gap: 8px; }
+.ul-msg .ul-from { color: var(--accent); flex: 0 0 auto; }
+.ul-msg .ul-body { color: var(--fg); flex: 1; word-break: break-word; }
+.ul-msg-ai .ul-body { color: var(--accent); }
+.ul-badge {
+  background: var(--chip-danger-bg); color: var(--chip-danger-fg);
+  padding: 1px 6px; border-radius: 2px; font-size: 11px;
+}
+.ul-badge.ul-badge-ok { background: var(--chip); color: var(--chip-fg); }
+
+.ul-composer {
+  border-top: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex; gap: 8px;
+  background: var(--panel);
+}
+.ul-composer input {
+  flex: 1; background: #1c1c1c; color: var(--fg);
+  border: 1px solid var(--border); padding: 8px; font-family: inherit;
+}
+.ul-composer button {
+  background: var(--accent); color: #001a07; border: 0; padding: 8px 16px;
+  font-family: inherit; font-weight: bold; cursor: pointer;
+}
+.ul-composer button[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* ── SafetyDialog ───────────────────────────────────────────────── */
+.ul-dialog-shade {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10;
+}
+.ul-dialog {
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 20px; width: 480px; max-width: 90vw;
+}
+.ul-dialog h4 { margin: 0 0 12px; color: var(--warn); }
+.ul-dialog-excerpt {
+  background: #1c1c1c; padding: 8px; margin: 12px 0;
+  max-height: 200px; overflow-y: auto;
+}
+.ul-dialog-excerpt code { background: transparent; padding: 0; }
+.ul-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ul-dialog-actions button {
+  background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+  padding: 6px 12px; font-family: inherit; cursor: pointer;
+}
+.ul-dialog-actions button.ul-primary {
+  background: var(--accent); color: #001a07; border-color: var(--accent);
+}
