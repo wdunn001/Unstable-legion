@@ -59,8 +59,28 @@ export interface MeshPeerCap {
   modelId: string;
   /** True iff the peer's engine is warm and willing to service prompts. */
   available: boolean;
-  /** Operator-tagged specialty list, e.g. `["code-review", "ja-translate"]`. */
+  /**
+   * Operator-tagged specialty list, e.g. `["code-review", "ja-translate"]`.
+   * For Layer-4 hierarchical routing: skills can use dotted paths
+   * (`coding.python.optimize`) — the existing field is treated as the
+   * authoritative-leaf list for back-compat. Prefer `authoritative`
+   * + `delegating` (below) for new peers; both shapes interoperate.
+   */
   skills: readonly string[];
+  /**
+   * Layer-4 hierarchical-routing field. Skills this peer EXECUTES
+   * itself (the "authoritative answer" set, DNS A-record analog).
+   * Optional; absent or empty means use `skills[]` instead. Mixing
+   * is allowed (the resolver unions both).
+   */
+  authoritative?: readonly string[];
+  /**
+   * Layer-4 hierarchical-routing field. Skill ZONES this peer routes
+   * for but doesn't execute (DNS NS-record analog). e.g. `coding.python`
+   * means "I know peers who handle anything under coding.python.* —
+   * ask me and I'll forward via my `route_skill` tool." Optional.
+   */
+  delegating?: readonly string[];
   /** One-line summary of the persona / system prompt for roster display. */
   systemPromptSummary: string;
   /** Tool descriptors this peer will execute over the `tc` action. */

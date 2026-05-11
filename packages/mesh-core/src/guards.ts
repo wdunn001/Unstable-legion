@@ -44,7 +44,12 @@ export function isMeshPeerCap(x: unknown): x is MeshPeerCap {
   if (!isStringArr(x.skills)) return false;
   if (typeof x.systemPromptSummary !== 'string') return false;
   if (!Array.isArray(x.tools)) return false;
-  return x.tools.every(isMeshToolDescriptor);
+  if (!x.tools.every(isMeshToolDescriptor)) return false;
+  // Layer-4 fields are optional but, when present, MUST be string[].
+  // Missing field = empty array semantically (handled in resolver).
+  if (x.authoritative !== undefined && !isStringArr(x.authoritative)) return false;
+  if (x.delegating !== undefined && !isStringArr(x.delegating)) return false;
+  return true;
 }
 
 export function isMeshChatMessage(x: unknown): x is MeshChatMessage {

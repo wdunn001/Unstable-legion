@@ -19,7 +19,14 @@
  * `cap.tools[]` without writing any code, but NOT auto-advertised
  * unless the operator opts in.
  */
-import type { MeshToolCall, MeshToolDescriptor, MeshToolResult } from './types.js';
+import type {
+  MeshRosterEntry,
+  MeshToolCall,
+  MeshToolDescriptor,
+  MeshToolResult,
+} from './types.js';
+import { routeBySkill, type RouteBySkillContext, type SkillCache } from './skillResolver.js';
+import type { Peer } from './peer.js';
 
 export interface ToolHandlerResult {
   /** Tool-defined payload; must be structured-cloneable for the wire. */
@@ -231,6 +238,93 @@ export function registerBuiltinTools(reg: ToolRegistry): void {
           original_length: text.length,
         },
       };
+    },
+  });
+}
+
+// ── Hierarchical skill router (Layer 4) — needs runtime context ─────────────
+
+export interface RegisterRouteSkillToolOptions {
+  /** The local mesh peer. */
+  peer: Peer;
+  /** Function that returns the latest roster snapshot at call time. */
+  rosterSnapshot: () => readonly MeshRosterEntry[];
+  /** Optional shared skill-resolution cache. */
+  cache?: SkillCache;
+  /** Per-hop timeout (ms). Default 30_000. */
+  timeoutMs?: number;
+  /** Hop limit. Default 4. */
+  maxDepth?: number;
+}
+
+/**
+ * Register `route_skill` on the registry so this peer participates as a
+ * routing node in the DNS-style delegation tree.
+ *
+ * When another peer calls our `route_skill` (with `skill` + `args` +
+ * hop-counter), we run `routeBySkill` against OUR roster and return
+ * the final result. The asker doesn't need to know our subordinate
+ * peers — only that we're authoritative for our zone.
+ *
+ * Peers that should be *only* leaves (don't route for others) should
+ * NOT register this tool. Peers that act as both authorities AND
+ * routing nodes register it and opt it in to their cap.tools[].
+ */
+export function registerRouteSkillTool(
+  reg: ToolRegistry,
+  opts: RegisterRouteSkillToolOptions,
+): void {
+  reg.register({
+    descriptor: {
+      name: 'route_skill',
+      description:
+        'DNS-style hierarchical skill router. Caller passes a dotted skill name + args; this peer resolves the skill against its own roster (recursively if needed) and returns the final result.',
+      inputSchema: {
+        type: 'object',
+        required: ['skill', 'args'],
+        properties: {
+          skill: { type: 'string', description: 'Dotted skill path (e.g. coding.python.optimize).' },
+          args: { type: 'object', description: 'Args forwarded to the resolved peer.' },
+          _hops: { type: 'integer', minimum: 0, description: 'Reserved — caller MUST NOT set; routers increment on forward.' },
+          _originPeerId: { type: 'string', description: 'Reserved — origin peerId carried to prevent loopback.' },
+        },
+        additionalProperties: false,
+      },
+    },
+    validate: (args) => {
+      if (typeof args.skill !== 'string' || !args.skill) return 'skill must be a non-empty string';
+      if (typeof args.args !== 'object' || args.args === null || Array.isArray(args.args)) {
+        return 'args must be a JSON object';
+      }
+      return null;
+    },
+    handler: async (args) => {
+      const ctx: RouteBySkillContext = {
+        peer: opts.peer,
+        roster: opts.rosterSnapshot(),
+        cache: opts.cache,
+      };
+      const innerArgs: Readonly<Record<string, unknown>> = {
+        ...(args.args as Record<string, unknown>),
+        // Carry forward hop counter + origin so the resolver respects bounds.
+        ...(typeof args._hops === 'number' ? { _hops: args._hops } : {}),
+        ...(typeof args._originPeerId === 'string'
+          ? { _originPeerId: args._originPeerId }
+          : {}),
+      };
+      const result = await routeBySkill(ctx, args.skill as string, innerArgs, {
+        maxDepth: opts.maxDepth,
+        timeoutMs: opts.timeoutMs,
+      });
+      // Pass the inner MeshToolResult's `result.content` through as our
+      // own content; status/error propagates by re-throwing on error so
+      // the wrapping dispatcher emits a clean result frame.
+      if (result.status !== 'ok') {
+        throw new Error(result.error ?? `route_skill: status=${result.status}`);
+      }
+      const content =
+        (result.result as { content?: unknown } | undefined)?.content ?? result.result;
+      return { content };
     },
   });
 }

@@ -84,12 +84,25 @@ export {
   ToolRegistry,
   PendingToolCallTracker,
   registerBuiltinTools,
+  registerRouteSkillTool,
   newCallId,
   type ToolRegistration,
   type ToolHandler,
   type ToolArgValidator,
   type ToolHandlerResult,
+  type RegisterRouteSkillToolOptions,
 } from './tools.js';
+
+// ── Hierarchical skill resolver (Layer 4) ──────────────────────────
+export {
+  routeBySkill,
+  SkillCache,
+  RESOLVER_HOPS_KEY,
+  RESOLVER_ORIGIN_KEY,
+  RESOLVER_SKILL_KEY,
+  type SkillResolveOptions,
+  type RouteBySkillContext,
+} from './skillResolver.js';
 
 // ── MCP Streamable-HTTP client ──────────────────────────────────────
 export {
