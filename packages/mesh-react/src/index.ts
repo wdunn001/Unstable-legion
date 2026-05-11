@@ -140,6 +140,7 @@ export type {
 export {
   ToolRegistry,
   registerBuiltinTools,
+  registerRouteSkillTool,
   newCallId,
   type ToolHandler,
   type ToolArgValidator,

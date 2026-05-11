@@ -27,6 +27,18 @@ export interface MeshPersona {
   modelId: string;
   available: boolean;
   skills: readonly string[];
+  /**
+   * Layer-4 hierarchical-routing field — skills this peer EXECUTES.
+   * Optional; the `skills[]` field continues to work as a fallback for
+   * back-compat. When both are set, they're unioned in the cap.
+   */
+  authoritative?: readonly string[];
+  /**
+   * Layer-4 hierarchical-routing field — skill zones this peer ROUTES
+   * for via its `route_skill` tool (DNS NS-record analog). Empty = peer
+   * is a leaf-only specialist.
+   */
+  delegating?: readonly string[];
   systemPrompt: string;
   /** Names of locally-registered tools the operator advertises in `cap.tools[]`. */
   availableTools: readonly string[];
@@ -43,6 +55,8 @@ export const DEFAULT_PERSONA: MeshPersona = Object.freeze({
   modelId: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
   available: true,
   skills: ['demo'],
+  authoritative: [],
+  delegating: [],
   systemPrompt: 'You are a helpful assistant.',
   availableTools: ['current_time', 'ping'],
   mcpEndpoints: [],
@@ -70,6 +84,16 @@ export function loadPersona(storageKey: string = DEFAULT_KEY): MeshPersona {
         parsed.availableTools.every((s) => typeof s === 'string')
           ? (parsed.availableTools as string[])
           : DEFAULT_PERSONA.availableTools,
+      authoritative:
+        Array.isArray(parsed.authoritative) &&
+        parsed.authoritative.every((s) => typeof s === 'string')
+          ? (parsed.authoritative as string[])
+          : DEFAULT_PERSONA.authoritative,
+      delegating:
+        Array.isArray(parsed.delegating) &&
+        parsed.delegating.every((s) => typeof s === 'string')
+          ? (parsed.delegating as string[])
+          : DEFAULT_PERSONA.delegating,
       mcpEndpoints:
         Array.isArray(parsed.mcpEndpoints) &&
         parsed.mcpEndpoints.every((s) => typeof s === 'string')

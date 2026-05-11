@@ -15,6 +15,8 @@ import {
 } from '@codecai/web';
 import {
   DEFAULT_MODEL_CATALOG,
+  registerRouteSkillTool,
+  useMeshRoster,
   LlmStatusPanel,
   McpStatusRow,
   MOBILE_MODEL_CATALOG,
@@ -39,7 +41,6 @@ import {
   type MeshToolDescriptor,
   type UseMcpAttachmentsHandle,
   type UseLocalLlmHandle,
-  useMeshRoster,
   type CodecMapHandle,
 } from '@unstable-legion/react';
 
@@ -129,14 +130,24 @@ export function App() {
     }
   }, [mcp.attachedTools, persona.availableTools, updatePersona]);
 
+  // Effective opt-in list — auto-add `route_skill` when the persona
+  // has any delegating zones; otherwise the dispatcher would reject
+  // inbound route_skill calls even though the tool is registered.
+  const effectiveOptedIn = useMemo(() => {
+    const delegating = persona.delegating ?? [];
+    if (delegating.length === 0) return persona.availableTools;
+    if (persona.availableTools.includes('route_skill')) return persona.availableTools;
+    return [...persona.availableTools, 'route_skill'];
+  }, [persona.availableTools, persona.delegating]);
+
   const cap = useMemo(() => {
     if (!persona.nick) return null;
-    const tools: MeshToolDescriptor[] = registry.descriptorsFor(persona.availableTools);
+    const tools: MeshToolDescriptor[] = registry.descriptorsFor(effectiveOptedIn);
     const summary =
       persona.systemPrompt.length > 120
         ? persona.systemPrompt.slice(0, 117) + '…'
         : persona.systemPrompt;
-    return {
+    const baseCap = {
       v: 1 as const,
       nick: persona.nick,
       modelId: persona.modelId,
@@ -145,7 +156,16 @@ export function App() {
       systemPromptSummary: summary,
       tools,
     };
-  }, [persona, registry, mcp.attachedTools]);
+    // Layer-4 fields — only include when set so peers without
+    // hierarchical routing stay byte-identical to v1 caps.
+    const authoritative = persona.authoritative ?? [];
+    const delegating = persona.delegating ?? [];
+    return {
+      ...baseCap,
+      ...(authoritative.length > 0 ? { authoritative } : {}),
+      ...(delegating.length > 0 ? { delegating } : {}),
+    };
+  }, [persona, registry, effectiveOptedIn, mcp.attachedTools]);
 
   // Resolve the persona's modelId to its tokenizer-map family so the
   // local detokenizer renders this peer's frames correctly. The
@@ -196,7 +216,8 @@ export function App() {
         mapId={mapId}
         onChangeNick={() => setJoined(false)}
         toolRegistry={registry}
-        optedInTools={persona.availableTools}
+        optedInTools={effectiveOptedIn}
+        delegating={persona.delegating ?? []}
         mcp={mcp}
       />
     </MeshProvider>
@@ -215,6 +236,7 @@ function Dashboard(props: {
   onChangeNick: () => void;
   toolRegistry: ToolRegistry;
   optedInTools: readonly string[];
+  delegating: readonly string[];
   mcp: UseMcpAttachmentsHandle;
 }) {
   const llm = useLocalLlm({
@@ -235,6 +257,29 @@ function Dashboard(props: {
     callTool: tools.callTool,
     optedInLocal: props.optedInTools,
   });
+
+  // Register `route_skill` on this peer when the operator declared any
+  // delegating zones. The tool gives this peer the ability to forward
+  // skill queries deeper into the DNS-style tree on behalf of askers.
+  const { peer } = useMeshContext();
+  const rosterRef = useMeshRoster();
+  const rosterSnapshotRef = useRef(rosterRef);
+  useEffect(() => {
+    rosterSnapshotRef.current = rosterRef;
+  }, [rosterRef]);
+  useEffect(() => {
+    if (!peer) return;
+    if (props.delegating.length === 0) return;
+    registerRouteSkillTool(props.toolRegistry, {
+      peer,
+      rosterSnapshot: () => rosterSnapshotRef.current,
+    });
+    return () => {
+      // No reg.unregister API needed — the tool is harmless to leave
+      // registered; if the operator removes all zones later, the
+      // dispatcher gates on `optedIn`. Keeping registration idempotent.
+    };
+  }, [peer, props.toolRegistry, props.delegating]);
 
   // engine_run — turns the local LLM into a remote-callable tool.
   useEffect(() => {

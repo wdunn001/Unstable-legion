@@ -48,6 +48,8 @@ export function PersonaForm(props: PersonaFormProps) {
   const modelCatalog = props.modelCatalog ?? DEFAULT_MODEL_CATALOG;
   const [nickDraft, setNickDraft] = useState(persona.nick);
   const [skillsDraft, setSkillsDraft] = useState(persona.skills.join(', '));
+  const [authDraft, setAuthDraft] = useState((persona.authoritative ?? []).join(', '));
+  const [delegDraft, setDelegDraft] = useState((persona.delegating ?? []).join(', '));
   const [mcpDraft, setMcpDraft] = useState(persona.mcpEndpoints.join('\n'));
   const registry = useMcpRegistry();
   const [registryFilter, setRegistryFilter] = useState('');
@@ -60,11 +62,19 @@ export function PersonaForm(props: PersonaFormProps) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+    const authoritative = authDraft
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const delegating = delegDraft
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const mcpEndpoints = mcpDraft
       .split('\n')
       .map((s) => s.trim())
       .filter((s) => s.length > 0 && /^https?:\/\//.test(s));
-    onUpdate({ nick, skills, mcpEndpoints });
+    onUpdate({ nick, skills, authoritative, delegating, mcpEndpoints });
     onSubmit();
   };
 
@@ -160,6 +170,38 @@ export function PersonaForm(props: PersonaFormProps) {
           onChange={(e) => setSkillsDraft(e.target.value)}
           placeholder="code-review, ja-translate"
         />
+
+        <label htmlFor="ul-auth">
+          authoritative skills (dotted paths, comma-separated)
+        </label>
+        <input
+          id="ul-auth"
+          type="text"
+          value={authDraft}
+          onChange={(e) => setAuthDraft(e.target.value)}
+          placeholder="coding.python, language.ja.translate"
+        />
+        <p className="ul-muted ul-small">
+          Skill paths this peer EXECUTES. Dot-separated for hierarchical
+          routing (like DNS). The skill resolver picks longest-prefix
+          authoritative match first.
+        </p>
+
+        <label htmlFor="ul-deleg">
+          delegating zones (DNS-NS-style, comma-separated)
+        </label>
+        <input
+          id="ul-deleg"
+          type="text"
+          value={delegDraft}
+          onChange={(e) => setDelegDraft(e.target.value)}
+          placeholder="coding, language.ja"
+        />
+        <p className="ul-muted ul-small">
+          Zones this peer ROUTES for via its <code>route_skill</code>{' '}
+          tool but doesn't execute itself. Empty = peer is a leaf-only
+          specialist.
+        </p>
 
         <label>tools to advertise</label>
         <div className="ul-tool-grid">
