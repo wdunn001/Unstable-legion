@@ -41,6 +41,12 @@ export {
   type UseMeshToolsOptions,
   type UseMeshToolsHandle,
 } from './useMeshTools.js';
+export {
+  useMeshToolBus,
+  type UseMeshToolBusOptions,
+  type UnifiedToolHandle,
+  type UnifiedToolDescriptor,
+} from './useMeshToolBus.js';
 
 // ── MCP ─────────────────────────────────────────────────────────────
 export {
