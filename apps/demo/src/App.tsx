@@ -214,6 +214,7 @@ export function App() {
         onSubmit={() => setJoined(true)}
         availableToolNames={availableToolNames}
         modelCatalog={activeCatalog}
+        canHostModel={deviceCompat?.tier !== 'thinclient'}
         thinClientReason={
           deviceCompat?.tier === 'thinclient' ? deviceCompat.reason : undefined
         }
