@@ -35,6 +35,13 @@ export interface PersonaFormProps {
    * hide the picker entirely.
    */
   modelCatalog?: readonly ModelCatalogEntry[];
+  /**
+   * When the host has detected this device can't run a local model
+   * (e.g. Adreno WebGPU), pass a short explanation here. The form
+   * replaces the model picker with this notice + a positive note
+   * about the tool/routing roles the peer CAN still play.
+   */
+  thinClientReason?: string;
   /** Brand title at the top of the form. */
   title?: string;
   /** Tagline beneath the title. */
@@ -119,6 +126,24 @@ export function PersonaForm(props: PersonaFormProps) {
           onChange={(e) => setNickDraft(e.target.value)}
           placeholder="anon"
         />
+
+        {modelCatalog.length === 0 && (
+          <div className="ul-thin-client-info">
+            <strong>local model unavailable on this device.</strong>
+            <p className="ul-muted ul-small">
+              {props.thinClientReason ??
+                "WebGPU compute on this GPU produces invalid token IDs, so no local LLM is offered. This isn't a tokenizer problem — incoming responses from other peers will render correctly."}
+            </p>
+            <p className="ul-muted ul-small">
+              <strong>You can still:</strong> register / share tools (
+              <code>current_time</code>, <code>fetch_text</code>, MCP
+              endpoints), act as a routing node for skill zones, send{' '}
+              <code>/skill</code> / <code>/director</code> prompts to peers that
+              can run a model, and receive their streamed responses
+              detokenized correctly here.
+            </p>
+          </div>
+        )}
 
         {modelCatalog.length > 0 && (
           <>

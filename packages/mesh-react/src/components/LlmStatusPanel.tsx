@@ -35,6 +35,18 @@ export interface LlmStatusPanelProps {
   compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
   /** Optional explanation message shown alongside the tier-derived state. */
   compatReason?: string;
+  /**
+   * If true, the thin-client banner is collapsed entirely (the user
+   * has dismissed it). The header pill still indicates the mode.
+   * Host app owns the persistence (typically localStorage) — this is
+   * just a render hint.
+   */
+  thinClientDismissed?: boolean;
+  /**
+   * Click handler for the thin-client banner's dismiss button.
+   * Host app persists the choice + flips `thinClientDismissed`.
+   */
+  onDismissThinClient?: () => void;
 }
 
 export function LlmStatusPanel(props: LlmStatusPanelProps) {
@@ -45,12 +57,28 @@ export function LlmStatusPanel(props: LlmStatusPanelProps) {
   // technically reports as available. Render a thin-client notice
   // INSTEAD of any boot path so the user doesn't waste a 600 MB
   // download on a model that can't run correctly.
+  // Dismissable: once the user clicks ×, hide the row entirely. The
+  // header pill (rendered by the host) still indicates the mode so
+  // the user always knows they're in thin-client.
   if (props.compatTier === 'thinclient') {
+    if (props.thinClientDismissed) return null;
     return (
       <section className="ul-llm-row ul-llm-warn">
-        <strong>thin-client mode.</strong>{' '}
-        {props.compatReason ??
-          'this device cannot run a local LLM. join the mesh as a thin client and route prompts via `/skill` or `/director` to other peers.'}
+        <span>
+          <strong>thin-client mode.</strong>{' '}
+          {props.compatReason ??
+            "this device's GPU can't run a local LLM, but the mesh still works: detokenize incoming responses, share tools, route /skill calls to peers that can. Pure-JS paths (tokenize, BPE, tool dispatch) are unaffected."}
+        </span>
+        {props.onDismissThinClient && (
+          <button
+            type="button"
+            className="ul-llm-dismiss"
+            aria-label="dismiss notice"
+            onClick={props.onDismissThinClient}
+          >
+            ×
+          </button>
+        )}
       </section>
     );
   }

@@ -202,6 +202,28 @@ code {
 .ul-llm-row.ul-llm-warn { background: #2a2516; color: var(--warn); }
 .ul-llm-row.ul-llm-err { background: var(--chip-danger-bg); color: var(--chip-danger-fg); }
 .ul-llm-row.ul-llm-ok { background: var(--chip); color: var(--chip-fg); }
+.ul-llm-dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 6px;
+  opacity: 0.6;
+}
+.ul-llm-dismiss:hover { opacity: 1; }
+
+/* PersonaForm thin-client info box (shown in place of model picker) */
+.ul-thin-client-info {
+  background: #1c1c1c;
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  margin: 4px 0 12px;
+}
+.ul-thin-client-info strong { color: var(--warn); }
+.ul-thin-client-info p { margin: 4px 0; }
 .ul-llm-row progress { flex: 0 0 200px; }
 .ul-llm-boot {
   background: var(--accent); color: #001a07; border: 0; padding: 6px 12px;

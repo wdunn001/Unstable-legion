@@ -214,6 +214,9 @@ export function App() {
         onSubmit={() => setJoined(true)}
         availableToolNames={availableToolNames}
         modelCatalog={activeCatalog}
+        thinClientReason={
+          deviceCompat?.tier === 'thinclient' ? deviceCompat.reason : undefined
+        }
         title="Unstable Legion"
         tagline="peer-to-peer browser-AI mesh on the Codec wire"
         footer={
@@ -263,6 +266,26 @@ export function App() {
  * `engine_run` tool registration that bridges the local LLM to the
  * tool-call surface.
  */
+const THIN_CLIENT_DISMISSED_KEY = 'unstable-legion-thinclient-dismissed-v1';
+
+function readThinClientDismissed(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(THIN_CLIENT_DISMISSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+function writeThinClientDismissed(v: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (v) localStorage.setItem(THIN_CLIENT_DISMISSED_KEY, '1');
+    else localStorage.removeItem(THIN_CLIENT_DISMISSED_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 function Dashboard(props: {
   nick: string;
   modelId: string;
@@ -275,6 +298,11 @@ function Dashboard(props: {
   compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
   compatReason?: string;
 }) {
+  // Thin-client notice dismissal — persisted to localStorage so it
+  // doesn't reappear on every reload on the same device.
+  const [thinClientDismissed, setThinClientDismissed] = useState<boolean>(
+    () => readThinClientDismissed(),
+  );
   const llm = useLocalLlm({
     modelId: props.modelId,
     mapId: props.mapId,
@@ -372,6 +400,11 @@ function Dashboard(props: {
         selectedModelId={props.modelId}
         compatTier={props.compatTier}
         compatReason={props.compatReason}
+        thinClientDismissed={thinClientDismissed}
+        onDismissThinClient={() => {
+          setThinClientDismissed(true);
+          writeThinClientDismissed(true);
+        }}
       />
       <McpStatusRow
         mcp={props.mcp}
