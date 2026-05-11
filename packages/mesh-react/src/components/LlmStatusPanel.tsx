@@ -67,7 +67,7 @@ export function LlmStatusPanel(props: LlmStatusPanelProps) {
         <span>
           <strong>thin-client mode.</strong>{' '}
           {props.compatReason ??
-            "this device's GPU can't run a local LLM, but the mesh still works: detokenize incoming responses, share tools, route /skill calls to peers that can. Pure-JS paths (tokenize, BPE, tool dispatch) are unaffected."}
+            "this device's GPU can't run the model's matmul, but it tokenizes + detokenizes fine (pure-JS BPE — no GPU). You contribute as a tokenizing client and tool host; the forward pass routes to peers that can run it."}
         </span>
         {props.onDismissThinClient && (
           <button

@@ -129,19 +129,40 @@ export function PersonaForm(props: PersonaFormProps) {
 
         {modelCatalog.length === 0 && (
           <div className="ul-thin-client-info">
-            <strong>local model unavailable on this device.</strong>
+            <strong>model forward-pass unavailable on this device.</strong>
             <p className="ul-muted ul-small">
               {props.thinClientReason ??
-                "WebGPU compute on this GPU produces invalid token IDs, so no local LLM is offered. This isn't a tokenizer problem — incoming responses from other peers will render correctly."}
+                "WebGPU compute on this GPU produces invalid matmul output, so the model can't be hosted here. Tokenizer + detokenizer (pure-JS BPE) work fine — only the inference matmul is broken."}
             </p>
             <p className="ul-muted ul-small">
-              <strong>You can still:</strong> register / share tools (
-              <code>current_time</code>, <code>fetch_text</code>, MCP
-              endpoints), act as a routing node for skill zones, send{' '}
-              <code>/skill</code> / <code>/director</code> prompts to peers that
-              can run a model, and receive their streamed responses
-              detokenized correctly here.
+              <strong>You're a first-class peer.</strong> What you contribute:
             </p>
+            <ul className="ul-muted ul-small ul-bullet">
+              <li>
+                <strong>tokenize outbound prompts</strong> locally before they
+                hit the wire — peers receive pure token IDs, no text crossing
+                the network
+              </li>
+              <li>
+                <strong>detokenize inbound responses</strong> from any peer
+                running a working model — receives raw Codec frames + renders
+                them through the right vocab here
+              </li>
+              <li>
+                <strong>host tools</strong> the mesh can call (
+                <code>current_time</code>, <code>fetch_text</code>, MCP-attached
+                endpoints, custom registrations)
+              </li>
+              <li>
+                <strong>route skills</strong> as a DNS-style delegating node —
+                fill in "delegating zones" below to forward queries deeper
+              </li>
+              <li>
+                <strong>direct work</strong> via <code>/skill</code>,{' '}
+                <code>/ensemble</code>, <code>/director</code> — the mesh sends
+                the forward pass to a peer that can run it
+              </li>
+            </ul>
           </div>
         )}
 
