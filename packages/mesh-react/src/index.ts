@@ -77,6 +77,13 @@ export {
   type ModelCatalogEntry,
 } from './modelCatalog.js';
 
+// ── Persona role presets ────────────────────────────────────────────
+export {
+  PERSONA_PRESETS,
+  findPersonaPreset,
+  type PersonaPreset,
+} from './personaPresets.js';
+
 // ── Browser LLM (WebGPU, leader-elected) ────────────────────────────
 export {
   useLocalLlm,

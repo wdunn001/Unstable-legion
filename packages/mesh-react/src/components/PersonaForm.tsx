@@ -17,6 +17,7 @@ import {
   DEFAULT_MODEL_CATALOG,
   type ModelCatalogEntry,
 } from '../modelCatalog.js';
+import { PERSONA_PRESETS, type PersonaPreset } from '../personaPresets.js';
 
 // Re-import the BootMode type so the form's onUpdate cast is type-safe
 // even if the host imports it from a different module path.
@@ -60,6 +61,19 @@ export function PersonaForm(props: PersonaFormProps) {
   const [mcpDraft, setMcpDraft] = useState(persona.mcpEndpoints.join('\n'));
   const registry = useMcpRegistry();
   const [registryFilter, setRegistryFilter] = useState('');
+
+  /** Apply a preset — fills in skills/authoritative/delegating + suggests tools. */
+  const applyPreset = (preset: PersonaPreset): void => {
+    setSkillsDraft(preset.skills.join(', '));
+    setAuthDraft(preset.authoritative.join(', '));
+    setDelegDraft(preset.delegating.join(', '));
+    // Union the suggested tools with whatever's already opted in.
+    const merged = new Set<string>([
+      ...persona.availableTools,
+      ...preset.suggestedTools,
+    ]);
+    onUpdate({ availableTools: [...merged] });
+  };
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -208,46 +222,92 @@ export function PersonaForm(props: PersonaFormProps) {
           </>
         )}
 
-        <label htmlFor="ul-skills">skills (comma-separated, optional)</label>
-        <input
-          id="ul-skills"
-          type="text"
-          value={skillsDraft}
-          onChange={(e) => setSkillsDraft(e.target.value)}
-          placeholder="code-review, ja-translate"
-        />
-
-        <label htmlFor="ul-auth">
-          authoritative skills (dotted paths, comma-separated)
+        <label className="ul-section-label">
+          mesh role (pick one — sets sensible skills + tools)
         </label>
-        <input
-          id="ul-auth"
-          type="text"
-          value={authDraft}
-          onChange={(e) => setAuthDraft(e.target.value)}
-          placeholder="coding.python, language.ja.translate"
-        />
-        <p className="ul-muted ul-small">
-          Skill paths this peer EXECUTES. Dot-separated for hierarchical
-          routing (like DNS). The skill resolver picks longest-prefix
-          authoritative match first.
-        </p>
+        <div className="ul-preset-grid">
+          {PERSONA_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className="ul-preset"
+              onClick={() => applyPreset(p)}
+              title={p.rationale}
+            >
+              <div className="ul-preset-label">{p.label}</div>
+              <div className="ul-preset-desc">{p.description}</div>
+              {p.bestModelHint && (
+                <div className="ul-muted ul-small">
+                  best fit: {p.bestModelHint}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
 
-        <label htmlFor="ul-deleg">
-          delegating zones (DNS-NS-style, comma-separated)
-        </label>
-        <input
-          id="ul-deleg"
-          type="text"
-          value={delegDraft}
-          onChange={(e) => setDelegDraft(e.target.value)}
-          placeholder="coding, language.ja"
-        />
-        <p className="ul-muted ul-small">
-          Zones this peer ROUTES for via its <code>route_skill</code>{' '}
-          tool but doesn't execute itself. Empty = peer is a leaf-only
-          specialist.
-        </p>
+        <details className="ul-jargon-explainer">
+          <summary>What do "skills", "authoritative", "delegating" mean?</summary>
+          <p className="ul-muted ul-small">
+            <strong>Skills</strong> are capability labels a peer claims —
+            other peers route work to whoever advertises the right skill.
+            Use dotted paths for hierarchy:{' '}
+            <code>coding.python.optimize</code> is more specific than{' '}
+            <code>coding.python</code>, which is more specific than{' '}
+            <code>coding</code>.
+          </p>
+          <p className="ul-muted ul-small">
+            <strong>Authoritative</strong> = skills this peer{' '}
+            <em>executes</em> — when a query matches, this peer answers.
+            (Like a DNS A-record.)
+          </p>
+          <p className="ul-muted ul-small">
+            <strong>Delegating</strong> = zones this peer{' '}
+            <em>routes for</em> without executing. e.g. setting{' '}
+            <code>coding</code> here means "I know peers who handle
+            anything under <code>coding.*</code> — ask me and I'll
+            forward via my <code>route_skill</code> tool." (Like a DNS
+            NS-record.) Empty = leaf-only specialist.
+          </p>
+          <p className="ul-muted ul-small">
+            The resolver tries authoritative-exact first, then
+            authoritative-prefix, then delegating-prefix (longest wins,
+            like DNS). Bounded by a hop limit to prevent loops.
+          </p>
+        </details>
+
+        <details className="ul-advanced">
+          <summary>Advanced — edit skills / zones manually</summary>
+          <label htmlFor="ul-skills">skills (comma-separated)</label>
+          <input
+            id="ul-skills"
+            type="text"
+            value={skillsDraft}
+            onChange={(e) => setSkillsDraft(e.target.value)}
+            placeholder="code-review, ja-translate"
+          />
+
+          <label htmlFor="ul-auth">
+            authoritative skills (dotted paths)
+          </label>
+          <input
+            id="ul-auth"
+            type="text"
+            value={authDraft}
+            onChange={(e) => setAuthDraft(e.target.value)}
+            placeholder="coding.python, language.ja.translate"
+          />
+
+          <label htmlFor="ul-deleg">
+            delegating zones (DNS-NS-style)
+          </label>
+          <input
+            id="ul-deleg"
+            type="text"
+            value={delegDraft}
+            onChange={(e) => setDelegDraft(e.target.value)}
+            placeholder="coding, language.ja"
+          />
+        </details>
 
         <label>tools to advertise</label>
         <div className="ul-tool-grid">
