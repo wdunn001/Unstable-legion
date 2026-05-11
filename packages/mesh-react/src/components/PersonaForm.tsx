@@ -43,6 +43,12 @@ export interface PersonaFormProps {
    * about the tool/routing roles the peer CAN still play.
    */
   thinClientReason?: string;
+  /**
+   * Whether the current device can host an LLM at all. Default true.
+   * When false, persona presets that require a local model are
+   * hidden — only model-less roles (Tool host, Coordinator) appear.
+   */
+  canHostModel?: boolean;
   /** Brand title at the top of the form. */
   title?: string;
   /** Tagline beneath the title. */
@@ -54,6 +60,10 @@ export interface PersonaFormProps {
 export function PersonaForm(props: PersonaFormProps) {
   const { persona, onUpdate, onSubmit, availableToolNames } = props;
   const modelCatalog = props.modelCatalog ?? DEFAULT_MODEL_CATALOG;
+  const canHostModel = props.canHostModel ?? true;
+  const visiblePresets = canHostModel
+    ? PERSONA_PRESETS
+    : PERSONA_PRESETS.filter((p) => !p.requiresLocalModel);
   const [nickDraft, setNickDraft] = useState(persona.nick);
   const [skillsDraft, setSkillsDraft] = useState(persona.skills.join(', '));
   const [authDraft, setAuthDraft] = useState((persona.authoritative ?? []).join(', '));
@@ -225,8 +235,15 @@ export function PersonaForm(props: PersonaFormProps) {
         <label className="ul-section-label">
           mesh role (pick one — sets sensible skills + tools)
         </label>
+        {!canHostModel && (
+          <p className="ul-muted ul-small">
+            This device can't host a model, so only roles that contribute
+            without local inference are shown. (Other peers in the mesh
+            will run the models you delegate work to.)
+          </p>
+        )}
         <div className="ul-preset-grid">
-          {PERSONA_PRESETS.map((p) => (
+          {visiblePresets.map((p) => (
             <button
               key={p.id}
               type="button"

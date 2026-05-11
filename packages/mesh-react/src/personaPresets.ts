@@ -40,6 +40,13 @@ export interface PersonaPreset {
   suggestedTools: readonly string[];
   /** Brief paragraph explaining what this role contributes. */
   rationale: string;
+  /**
+   * True if this preset needs a working local LLM to make sense.
+   * Thin-client devices (Adreno mobile, no-WebGPU browsers) should
+   * not see these presets — they can't run the model that would
+   * answer the queries the preset advertises.
+   */
+  requiresLocalModel: boolean;
 }
 
 export const PERSONA_PRESETS: readonly PersonaPreset[] = [
@@ -54,6 +61,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['current_time', 'fetch_text', 'ping'],
     rationale:
       "Pick this on devices that can't host an LLM (Adreno mobile, no-WebGPU browsers). You still tokenize/detokenize, host built-in + MCP tools, and forward /skill calls to peers that can run a model. First-class participant, just not an inference node.",
+    requiresLocalModel: false,
   },
   {
     id: 'generalist-chat',
@@ -66,6 +74,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['current_time', 'ping'],
     rationale:
       'The default. Answer general questions, summarize text, do basic Q&A. Any of the small models in the catalog can fill this role — pick whichever your device can run.',
+    requiresLocalModel: true,
   },
   {
     id: 'code-helper',
@@ -83,6 +92,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['fetch_text', 'ping'],
     rationale:
       'Inspect code, suggest fixes, explain stack traces, write small functions. Coder-1.5B is fine-tuned for this; generalist models work in a pinch.',
+    requiresLocalModel: true,
   },
   {
     id: 'translator-ja',
@@ -100,6 +110,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['ping'],
     rationale:
       'Dedicated Japanese-language specialist. Other peers route here when they need to translate, summarize, or rewrite anything in Japanese.',
+    requiresLocalModel: true,
   },
   {
     id: 'function-caller',
@@ -112,6 +123,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['current_time', 'fetch_text', 'route_skill', 'ping'],
     rationale:
       'The director-mode model. Receives a complex prompt, plans, emits <tool_call> blocks the mesh dispatches. Also routes for research/coding/language zones so it can find specialists when needed.',
+    requiresLocalModel: true,
   },
   {
     id: 'reasoner',
@@ -129,6 +141,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['ping'],
     rationale:
       "When you need a thoughtful answer with shown work. Phi-3.5 punches above its size on reasoning benchmarks. Don't pair this with a tiny model.",
+    requiresLocalModel: true,
   },
   {
     id: 'researcher',
@@ -146,6 +159,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['fetch_text', 'current_time', 'ping'],
     rationale:
       "Browse URLs, gather context, summarize with citations. The fetch_text tool's CORS limits mean some sites won't work — pair an MCP search endpoint from the public registry for a richer surface.",
+    requiresLocalModel: true,
   },
   {
     id: 'coordinator',
@@ -158,6 +172,7 @@ export const PERSONA_PRESETS: readonly PersonaPreset[] = [
     suggestedTools: ['route_skill', 'current_time', 'ping'],
     rationale:
       "A mid-tier routing node, DNS-style. Doesn't execute skills itself — forwards them to peers that do. Lets the mesh scale past what any single director can hold in context: directors call coordinators; coordinators call specialists.",
+    requiresLocalModel: false,
   },
 ];
 
