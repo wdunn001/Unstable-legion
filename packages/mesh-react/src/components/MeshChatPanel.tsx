@@ -30,6 +30,7 @@ import { useMeshRoster } from '../useMeshRoster.js';
 import { useCodecMapResolver } from '../useCodecMap.js';
 import type { UseMeshToolsHandle } from '../useMeshTools.js';
 import type { UnifiedToolHandle } from '../useMeshToolBus.js';
+import { useDirector } from '../useDirector.js';
 import type { UseLocalLlmHandle } from '../useLocalLlm.js';
 import { registerDraftSetter } from '../draftBridge.js';
 import { SafetyDialog } from './SafetyDialog.js';
@@ -110,6 +111,23 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
   // get rendered through the LOCAL family's vocab and come out as
   // garbage.
   const mapResolver = useCodecMapResolver();
+  // /director uses this hook (no-op when llm/bus aren't provided).
+  const director = useDirector({
+    llm: llm ?? { status: { phase: 'idle' }, load: async () => undefined, streamFrames: async () => undefined },
+    map,
+    bus: bus ?? {
+      catalog: [],
+      find: () => undefined,
+      dispatch: async () => ({
+        v: 1 as const,
+        ts: Date.now(),
+        callId: 'noop',
+        status: 'error',
+        error: 'no bus wired',
+      }),
+      asFunctionSchemas: () => [],
+    },
+  });
   const [draft, setDraft] = useState('');
 
   useEffect(() => {
@@ -225,6 +243,57 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
+
+    // /director <prompt> → run the function-calling director loop
+    if (text.startsWith('/director ')) {
+      if (!bus) {
+        await echoError('this peer has no tool bus wired.');
+        return;
+      }
+      if (!llm || llm.status.phase !== 'ready') {
+        await echoError(`/director needs the local LLM ready (current: ${llm?.status.phase ?? 'absent'}).`);
+        return;
+      }
+      const prompt = text.slice(10).trim();
+      if (!prompt) {
+        await echoError('usage: /director <prompt>');
+        return;
+      }
+      // Initialize an empty trace so the UI shows the row immediately;
+      // we'll append steps as the director loop fires onStep callbacks.
+      const traceId = `dir-${Date.now()}`;
+      pushTrace(`/director "${truncate(prompt, 50)}"`, []);
+      const liveSteps: DirectorTraceStep[] = [];
+      try {
+        const result = await director.run(prompt, (step) => {
+          // Update or push the step based on its id.
+          const idx = liveSteps.findIndex((s) => s.id === step.id);
+          if (idx >= 0) {
+            liveSteps[idx] = step;
+          } else {
+            liveSteps.push(step);
+          }
+          replaceLatestTraceSteps([...liveSteps]);
+        });
+        // Final summary step (the answer).
+        const answerStep: DirectorTraceStep = {
+          id: `${traceId}-final`,
+          label: 'final answer',
+          status: 'ok',
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+          summary: truncate(result.text, 200),
+          detail: result.text,
+        };
+        replaceLatestTraceSteps([...liveSteps, answerStep]);
+        if (peer && result.text) {
+          await peer.sendChat({ to: '', bodyKind: 'text', text: `[director] ${result.text}` });
+        }
+      } catch (err) {
+        await echoError(`/director exception: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
 
     // /skill <dotted-path> <prompt>  → routeBySkill via the bus
     if (text.startsWith('/skill ')) {

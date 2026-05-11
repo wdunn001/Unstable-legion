@@ -47,6 +47,12 @@ export {
   type UnifiedToolHandle,
   type UnifiedToolDescriptor,
 } from './useMeshToolBus.js';
+export {
+  useDirector,
+  type UseDirectorOptions,
+  type UseDirectorHandle,
+  type DirectorRunResult,
+} from './useDirector.js';
 
 // ── MCP ─────────────────────────────────────────────────────────────
 export {
