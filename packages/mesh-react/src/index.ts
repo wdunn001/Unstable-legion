@@ -161,6 +161,11 @@ export {
   discoverMcpEndpoint,
   detachMcpEndpoint,
   mergeRelayUrls,
+  defaultTurnConfig,
   isMirroredModelId,
   mirroredModelUrl,
+} from '@unstable-legion/core';
+export type {
+  DefaultTurnConfigOptions,
+  IceServerEntry,
 } from '@unstable-legion/core';

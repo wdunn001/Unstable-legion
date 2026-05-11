@@ -26,6 +26,7 @@ import {
   MeshRosterPanel,
   PersonaForm,
   ToolRegistry,
+  defaultTurnConfig,
   detectMobileLikelyNeedsFp32,
   findModelEntry,
   mergeRelayUrls,
@@ -74,6 +75,11 @@ const TRYSTERO_CONFIG: MeshProviderProps['trysteroConfig'] = {
   // (NOT `relayUrls` — that's silently ignored and falls back to
   // the strategy's defaults).
   relayConfig: { urls: RELAY_URLS },
+  // STUN suffices for symmetric-LAN peer pairs; for headless server
+  // peers (legion-server-bridge) reaching browsers across the open
+  // internet, both sides need TURN. OpenRelay is rate-limited free —
+  // swap for self-hosted coturn in production.
+  turnConfig: defaultTurnConfig(),
 };
 
 export function App() {
