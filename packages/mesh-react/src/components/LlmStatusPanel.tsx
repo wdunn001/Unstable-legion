@@ -24,11 +24,36 @@ export interface LlmStatusPanelProps {
    * model's vocab (= garbage). Same UX leet uses.
    */
   selectedModelId?: string;
+  /**
+   * Device-compat tier from `useDeviceCompat`. When set to
+   * `'thinclient'` the panel renders a thin-client notice INSTEAD of
+   * the boot button — Adreno (and similar broken-WebGPU) devices
+   * can't produce correct local output regardless of which model
+   * they pick. When `'small-only'`, surfaces a hint that fp32 mobile
+   * models are the only ones likely to work.
+   */
+  compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
+  /** Optional explanation message shown alongside the tier-derived state. */
+  compatReason?: string;
 }
 
 export function LlmStatusPanel(props: LlmStatusPanelProps) {
   const { llm, bootDisabled, bootLabel = 'boot model', bootDisabledLabel = 'waiting…' } = props;
   const status = llm.status;
+
+  // Thin-client tier — the GPU is known-broken for ML even if WebGPU
+  // technically reports as available. Render a thin-client notice
+  // INSTEAD of any boot path so the user doesn't waste a 600 MB
+  // download on a model that can't run correctly.
+  if (props.compatTier === 'thinclient') {
+    return (
+      <section className="ul-llm-row ul-llm-warn">
+        <strong>thin-client mode.</strong>{' '}
+        {props.compatReason ??
+          'this device cannot run a local LLM. join the mesh as a thin client and route prompts via `/skill` or `/director` to other peers.'}
+      </section>
+    );
+  }
 
   if (status.phase === 'unsupported') {
     return (

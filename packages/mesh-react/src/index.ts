@@ -66,6 +66,7 @@ export {
 
 // ── Persona ─────────────────────────────────────────────────────────
 export { usePersona, type UsePersonaHandle } from './usePersona.js';
+export { useDeviceCompat } from './useDeviceCompat.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {
@@ -136,6 +137,8 @@ export type {
   BootMode,
   MirroredModelConfig,
   MergeRelayUrlsOptions,
+  DeviceCompat,
+  DeviceCompatTier,
 } from '@unstable-legion/core';
 export {
   ToolRegistry,

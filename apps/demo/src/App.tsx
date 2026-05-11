@@ -16,6 +16,7 @@ import {
 import {
   DEFAULT_MODEL_CATALOG,
   registerRouteSkillTool,
+  useDeviceCompat,
   useMeshRoster,
   LlmStatusPanel,
   McpStatusRow,
@@ -100,15 +101,37 @@ export function App() {
     [registry, mcp.attachedTools],
   );
 
-  // Catalog selection: bootMode + UA → fp16 or fp32 catalog.
+  // GPU/adapter-driven device compatibility probe. Layered ON TOP of
+  // the bootMode + UA logic — if the device's GPU is in the thin-client
+  // tier (e.g. Adreno), the catalog collapses to empty no matter what
+  // the persona says, and the LlmStatusPanel surfaces a warning instead
+  // of a boot button.
+  const deviceCompat = useDeviceCompat();
+
+  // Catalog selection: bootMode + UA → fp16 or fp32 catalog, then
+  // filter by deviceCompat tier.
   //   - 'auto': UA-detect; mobile → fp32, desktop → fp16
   //   - 'fp16': force fp16 (faster, needs shader-f16)
   //   - 'fp32': force fp32 (mobile-safe, ~2× download)
   const activeCatalog: readonly ModelCatalogEntry[] = useMemo(() => {
-    if (persona.bootMode === 'fp16') return DEFAULT_MODEL_CATALOG;
-    if (persona.bootMode === 'fp32') return MOBILE_MODEL_CATALOG;
-    return detectMobileLikelyNeedsFp32() ? MOBILE_MODEL_CATALOG : DEFAULT_MODEL_CATALOG;
-  }, [persona.bootMode]);
+    // If the GPU is known-broken-for-ML, no model in the catalog will
+    // produce correct output. Collapse to empty so the picker can't
+    // mislead the operator.
+    if (deviceCompat?.tier === 'thinclient') return [];
+    const requestedCatalog =
+      persona.bootMode === 'fp16'
+        ? DEFAULT_MODEL_CATALOG
+        : persona.bootMode === 'fp32'
+          ? MOBILE_MODEL_CATALOG
+          : detectMobileLikelyNeedsFp32()
+            ? MOBILE_MODEL_CATALOG
+            : DEFAULT_MODEL_CATALOG;
+    // Mali / Xclipse / Imagination — small-only tier: even when the
+    // persona requests fp16, force the fp32 catalog (smaller models
+    // are the only ones that have a chance).
+    if (deviceCompat?.tier === 'small-only') return MOBILE_MODEL_CATALOG;
+    return requestedCatalog;
+  }, [persona.bootMode, deviceCompat?.tier]);
 
   // If the persona's modelId isn't in the active catalog, auto-pick the
   // first entry — keeps "auto" sane when the user lands on mobile with
@@ -129,6 +152,15 @@ export function App() {
       updatePersona({ availableTools: [...persona.availableTools, ...newOnes] });
     }
   }, [mcp.attachedTools, persona.availableTools, updatePersona]);
+
+  // Thin-client devices (Adreno) cannot service prompts. Flip
+  // available=false automatically so the peer's cap honestly says
+  // "I'm here for routing but won't run /ai prompts."
+  useEffect(() => {
+    if (deviceCompat?.tier === 'thinclient' && persona.available) {
+      updatePersona({ available: false });
+    }
+  }, [deviceCompat?.tier, persona.available, updatePersona]);
 
   // Effective opt-in list — auto-add `route_skill` when the persona
   // has any delegating zones; otherwise the dispatcher would reject
@@ -219,6 +251,8 @@ export function App() {
         optedInTools={effectiveOptedIn}
         delegating={persona.delegating ?? []}
         mcp={mcp}
+        compatTier={deviceCompat?.tier}
+        compatReason={deviceCompat?.reason}
       />
     </MeshProvider>
   );
@@ -238,6 +272,8 @@ function Dashboard(props: {
   optedInTools: readonly string[];
   delegating: readonly string[];
   mcp: UseMcpAttachmentsHandle;
+  compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
+  compatReason?: string;
 }) {
   const llm = useLocalLlm({
     modelId: props.modelId,
@@ -334,6 +370,8 @@ function Dashboard(props: {
         bootLabel={`boot ${props.modelId.replace(/-q[0-9].*-MLC$/i, '').replace(/-MLC$/i, '')}`}
         bootDisabledLabel="loading tokenizer map…"
         selectedModelId={props.modelId}
+        compatTier={props.compatTier}
+        compatReason={props.compatReason}
       />
       <McpStatusRow
         mcp={props.mcp}

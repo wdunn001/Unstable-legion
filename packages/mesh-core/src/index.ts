@@ -140,6 +140,11 @@ export {
   mirroredModelUrl,
   type MirroredModelConfig,
 } from './mirrored-models.js';
+export {
+  detectDeviceCompat,
+  type DeviceCompat,
+  type DeviceCompatTier,
+} from './deviceCompat.js';
 
 // ── Routing + fan-out primitives (Layer 1 of the director plan) ────
 export {
