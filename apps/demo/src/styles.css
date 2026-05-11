@@ -293,6 +293,68 @@ code {
 }
 .ul-composer button[disabled] { opacity: 0.4; cursor: not-allowed; }
 
+/* ── DirectorTrace ────────────────────────────────────────────────── */
+.ul-traces {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.ul-trace {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.ul-trace-header {
+  padding: 4px 8px;
+  background: #1c1c1c;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+.ul-trace-steps {
+  list-style: none;
+  padding: 4px 0;
+  margin: 0;
+}
+.ul-trace-step {
+  border-bottom: 1px dotted #2a2a2a;
+}
+.ul-trace-step:last-child { border-bottom: 0; }
+.ul-trace-row {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ul-trace-row:hover { background: #1c1c1c; }
+.ul-trace-status { display: inline-block; width: 14px; }
+.ul-trace-ok .ul-trace-status { color: var(--accent); }
+.ul-trace-running .ul-trace-status { color: var(--warn); }
+.ul-trace-error .ul-trace-status,
+.ul-trace-denied .ul-trace-status { color: var(--danger); }
+.ul-trace-label { font-weight: bold; }
+.ul-trace-latency { margin-left: auto; }
+.ul-trace-summary {
+  padding: 0 8px 4px 28px;
+  word-break: break-word;
+}
+.ul-trace-detail {
+  background: #0a0a0a;
+  padding: 8px;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+}
+
 /* ── SafetyDialog ───────────────────────────────────────────────── */
 .ul-dialog-shade {
   position: fixed; inset: 0; background: rgba(0,0,0,0.7);

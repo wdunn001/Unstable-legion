@@ -17,18 +17,23 @@
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Detokenizer, type TokenizerMap } from '@codecai/web';
-import type {
-  CodecMsgpackFrame,
-  MeshToolResult,
+import {
+  ensemble as ensembleCore,
+  llmSummarize,
+  mapReduce as mapReduceCore,
+  type CodecMsgpackFrame,
+  type MeshToolResult,
 } from '@unstable-legion/core';
 import { useMeshContext } from '../provider.js';
 import { useMeshChat } from '../useMeshChat.js';
 import { useMeshRoster } from '../useMeshRoster.js';
 import { useCodecMapResolver } from '../useCodecMap.js';
 import type { UseMeshToolsHandle } from '../useMeshTools.js';
+import type { UnifiedToolHandle } from '../useMeshToolBus.js';
 import type { UseLocalLlmHandle } from '../useLocalLlm.js';
 import { registerDraftSetter } from '../draftBridge.js';
 import { SafetyDialog } from './SafetyDialog.js';
+import { DirectorTrace, type DirectorTraceStep } from './DirectorTrace.js';
 
 interface AiStreamState {
   text: string;
@@ -46,6 +51,12 @@ export interface MeshChatPanelProps {
   mapError?: string | null;
   /** Tool calling handle (for `/tool`). Optional — without it `/tool` is a no-op. */
   tools?: UseMeshToolsHandle;
+  /**
+   * Unified tool bus (for `/skill`, `/ensemble`, `/maps`). Optional —
+   * those commands report "no bus wired" without it. Typically built
+   * via `useMeshToolBus()` in the host App.
+   */
+  bus?: UnifiedToolHandle;
   /** Placeholder for the composer input. */
   placeholder?: string;
 }
@@ -64,11 +75,35 @@ function estimateFrameBytes(frame: { ids?: readonly number[] }): number {
   return (frame.ids?.length ?? 0) * 4 + 16;
 }
 
+/** One-line summary of a MeshToolResult for the trace + chat echo. */
+function summarizeResult(result: MeshToolResult): string {
+  if (result.status !== 'ok') {
+    return result.error ?? `(${result.status})`;
+  }
+  const content =
+    (result.result as { content?: unknown } | undefined)?.content ?? result.result;
+  if (typeof content === 'string') return truncate(content, 120);
+  if (content && typeof content === 'object' && 'text' in content) {
+    const t = (content as { text?: unknown }).text;
+    if (typeof t === 'string') return truncate(t, 120);
+  }
+  return truncate(JSON.stringify(content), 120);
+}
+
 export function MeshChatPanel(props: MeshChatPanelProps) {
-  const { llm, map, mapError, tools, placeholder } = props;
+  const { llm, map, mapError, tools, bus, placeholder } = props;
   const { messages, send } = useMeshChat();
   const { peer } = useMeshContext();
   const roster = useMeshRoster();
+  /** Recent orchestration traces — newest first; capped at 5. */
+  const [traces, setTraces] = useState<
+    ReadonlyArray<{ id: string; header: string; steps: readonly DirectorTraceStep[] }>
+  >([]);
+  const pushTrace = (header: string, steps: readonly DirectorTraceStep[]) => {
+    setTraces((prev) =>
+      [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, header, steps }, ...prev].slice(0, 5),
+    );
+  };
   // Resolver maps each remote peer's advertised modelId → its tokenizer
   // family → a Detokenizer bound to the right vocab. Without this,
   // frames from a peer running SmolLM2 (or any non-local-family model)
@@ -167,11 +202,231 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
     selfDetokRef.current = map ? new Detokenizer(map) : null;
   }, [map]);
 
+  // Echo an inline error chat message to the room (just the local
+  // sender sees this — receivers see only successfully-sent messages).
+  const echoError = async (message: string): Promise<void> => {
+    if (peer) {
+      await peer.sendChat({ to: '', bodyKind: 'text', text: `[error] ${message}` });
+    }
+  };
+
+  // Replace the most recent trace's steps with a new step list (used
+  // when a /skill, /ensemble, or /maps call transitions running → done).
+  const replaceLatestTraceSteps = (steps: readonly DirectorTraceStep[]): void => {
+    setTraces((prev) => {
+      if (prev.length === 0) return prev;
+      const [head, ...rest] = prev;
+      return [{ ...head!, steps }, ...rest];
+    });
+  };
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const text = draft.trim();
     if (!text) return;
     setDraft('');
+
+    // /skill <dotted-path> <prompt>  → routeBySkill via the bus
+    if (text.startsWith('/skill ')) {
+      if (!bus) {
+        await echoError('this peer has no tool bus wired (pass `bus` to MeshChatPanel).');
+        return;
+      }
+      const rest = text.slice(7).trim();
+      const m = rest.match(/^(\S+)\s+(.+)$/s);
+      if (!m) {
+        await echoError('usage: /skill <dotted.skill.path> <prompt>');
+        return;
+      }
+      const [, skillPath, prompt] = m;
+      const busName = `skill.${skillPath}`;
+      const step: DirectorTraceStep = {
+        id: `skill-${Date.now()}`,
+        label: `skill ${skillPath}`,
+        target: undefined,
+        status: 'running',
+        startedAt: Date.now(),
+      };
+      pushTrace(`/skill ${skillPath}`, [step]);
+      try {
+        const result = await bus.dispatch(busName, { user: prompt });
+        const summary = summarizeResult(result);
+        const finalStep: DirectorTraceStep = {
+          ...step,
+          status: result.status === 'ok' ? 'ok' : result.status === 'denied' ? 'denied' : 'error',
+          finishedAt: Date.now(),
+          summary,
+          detail: result,
+        };
+        replaceLatestTraceSteps([finalStep]);
+        if (peer) {
+          await peer.sendChat({
+            to: '',
+            bodyKind: 'text',
+            text: `[skill ${result.status}] ${skillPath} → ${summary}`,
+          });
+        }
+      } catch (err) {
+        const failStep: DirectorTraceStep = {
+          ...step,
+          status: 'error',
+          finishedAt: Date.now(),
+          summary: err instanceof Error ? err.message : String(err),
+          detail: err,
+        };
+        replaceLatestTraceSteps([failStep]);
+        await echoError(`/skill exception: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
+    // /ensemble <N> <prompt>  → fan to N peers running engine_run, aggregate
+    if (text.startsWith('/ensemble ')) {
+      if (!peer) {
+        await echoError('mesh not connected.');
+        return;
+      }
+      const rest = text.slice(10).trim();
+      const m = rest.match(/^(\d+)\s+(.+)$/s);
+      if (!m) {
+        await echoError('usage: /ensemble <N> <prompt>');
+        return;
+      }
+      const n = Math.max(1, Math.min(8, parseInt(m[1]!, 10)));
+      const prompt = m[2]!;
+      // Pick N peers that have engine_run available, prefer non-self.
+      const candidates = roster.filter(
+        (r) =>
+          r.available &&
+          r.peerId !== peer.selfId &&
+          r.tools.some((t) => t.name === 'engine_run'),
+      );
+      if (candidates.length === 0) {
+        await echoError('no peers advertise engine_run.');
+        return;
+      }
+      const picked = candidates.slice(0, n);
+      const startSteps: DirectorTraceStep[] = picked.map((p, i) => ({
+        id: `ens-${Date.now()}-${i}`,
+        label: `engine_run`,
+        target: p.nick,
+        status: 'running',
+        startedAt: Date.now(),
+      }));
+      pushTrace(`/ensemble ${n} "${truncate(prompt, 40)}"`, startSteps);
+      try {
+        // Use llmSummarize via the LOCAL peer's engine_run if the local
+        // LLM is ready; fall back to a simple concat-join otherwise.
+        const aggregator =
+          llm?.status.phase === 'ready'
+            ? llmSummarize(peer, peer.selfId)
+            : (rs: readonly string[]) => rs.map((r, i) => `(${i + 1}) ${r}`).join('\n\n---\n\n');
+        const { result, samples, failures } = await ensembleCore(
+          peer,
+          picked.map((p) => p.peerId),
+          prompt,
+          aggregator,
+        );
+        const endSteps: DirectorTraceStep[] = picked.map((p, i) => ({
+          id: `ens-${Date.now()}-${i}`,
+          label: `engine_run`,
+          target: p.nick,
+          status: samples[i] !== undefined ? 'ok' : 'error',
+          startedAt: startSteps[i]!.startedAt,
+          finishedAt: Date.now(),
+          summary:
+            samples[i] !== undefined
+              ? truncate(samples[i]!, 80)
+              : failures[i]?.message ?? 'unknown error',
+          detail: samples[i] ?? failures[i],
+        }));
+        replaceLatestTraceSteps(endSteps);
+        if (peer) {
+          await peer.sendChat({
+            to: '',
+            bodyKind: 'text',
+            text: `[ensemble ${samples.length}/${n}] ${typeof result === 'string' ? result : JSON.stringify(result)}`,
+          });
+        }
+      } catch (err) {
+        await echoError(`/ensemble exception: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
+    // /maps <toolName> <item1> <item2> ...  → run mapTool on each item in parallel
+    if (text.startsWith('/maps ')) {
+      if (!peer) {
+        await echoError('mesh not connected.');
+        return;
+      }
+      const parts = text.slice(6).trim().split(/\s+/);
+      if (parts.length < 2) {
+        await echoError('usage: /maps <toolName> <item1> [<item2> ...]');
+        return;
+      }
+      const toolName = parts[0]!;
+      const items = parts.slice(1);
+      const candidates = roster.filter(
+        (r) =>
+          r.available &&
+          r.peerId !== peer.selfId &&
+          r.tools.some((t) => t.name === toolName),
+      );
+      if (candidates.length === 0) {
+        await echoError(`no peers advertise tool "${toolName}".`);
+        return;
+      }
+      const startSteps: DirectorTraceStep[] = items.map((item, i) => ({
+        id: `map-${Date.now()}-${i}`,
+        label: `${toolName}(${truncate(item, 24)})`,
+        target: candidates[i % candidates.length]?.nick,
+        status: 'running',
+        startedAt: Date.now(),
+      }));
+      pushTrace(`/maps ${toolName} (${items.length} items)`, startSteps);
+      try {
+        // For simple tools like fetch_text we assume a single `url` arg.
+        // Generalized arg shape: try {url:item} first, then {item}, then {input:item}.
+        const argsFor = (item: string): Record<string, unknown> => {
+          if (/^https?:\/\//i.test(item)) return { url: item };
+          return { input: item };
+        };
+        const reduced = await mapReduceCore(
+          peer,
+          candidates.map((c) => c.peerId),
+          items,
+          { name: toolName, argsFor },
+          (mapped) => mapped,
+        );
+        const endSteps: DirectorTraceStep[] = items.map((item, i) => {
+          const got = reduced[i];
+          const isErr = got instanceof Error;
+          return {
+            id: `map-${Date.now()}-${i}`,
+            label: `${toolName}(${truncate(item, 24)})`,
+            target: candidates[i % candidates.length]?.nick,
+            status: isErr ? 'error' : 'ok',
+            startedAt: startSteps[i]!.startedAt,
+            finishedAt: Date.now(),
+            summary: isErr ? (got as Error).message : truncate(JSON.stringify(got), 80),
+            detail: got,
+          };
+        });
+        replaceLatestTraceSteps(endSteps);
+        if (peer) {
+          const okCount = endSteps.filter((s) => s.status === 'ok').length;
+          await peer.sendChat({
+            to: '',
+            bodyKind: 'text',
+            text: `[maps ${okCount}/${items.length}] ${toolName} done — expand the trace for results.`,
+          });
+        }
+      } catch (err) {
+        await echoError(`/maps exception: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
 
     if (text.startsWith('/tool ')) {
       if (!tools) {
@@ -376,6 +631,13 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
               </div>
             ))}
           </>
+        )}
+        {traces.length > 0 && (
+          <div className="ul-traces">
+            {traces.map((t) => (
+              <DirectorTrace key={t.id} header={t.header} steps={t.steps} />
+            ))}
+          </div>
         )}
       </div>
       <form onSubmit={onSubmit} className="ul-composer">

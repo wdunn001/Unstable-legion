@@ -32,6 +32,7 @@ import {
   useMcpAttachments,
   useMeshContext,
   useMeshTools,
+  useMeshToolBus,
   usePersona,
   type ModelCatalogEntry,
   type MeshProviderProps,
@@ -226,6 +227,14 @@ function Dashboard(props: {
     registry: props.toolRegistry,
     optedIn: props.optedInTools,
   });
+  // Unified tool bus — what /skill, /ensemble, /maps dispatch against.
+  // Surfaces local tools + remote peers' tools + skill abstractions
+  // (all roster-advertised authoritative/delegating zones).
+  const bus = useMeshToolBus({
+    registry: props.toolRegistry,
+    callTool: tools.callTool,
+    optedInLocal: props.optedInTools,
+  });
 
   // engine_run — turns the local LLM into a remote-callable tool.
   useEffect(() => {
@@ -292,6 +301,7 @@ function Dashboard(props: {
           map={codecMap.map}
           mapError={codecMap.error}
           tools={tools}
+          bus={bus}
         />
       </div>
     </div>

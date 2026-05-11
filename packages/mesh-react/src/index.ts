@@ -97,6 +97,11 @@ export {
 
 // ── UI components (host styles them via `ul-*` classes) ─────────────
 export { LlmStatusPanel, type LlmStatusPanelProps } from './components/LlmStatusPanel.js';
+export {
+  DirectorTrace,
+  type DirectorTraceProps,
+  type DirectorTraceStep,
+} from './components/DirectorTrace.js';
 export { McpStatusRow, type McpStatusRowProps } from './components/McpStatusRow.js';
 export { MeshRosterPanel } from './components/MeshRosterPanel.js';
 export {
