@@ -59,6 +59,19 @@ export interface UseLocalLlmOptions {
   leaderLockName?: string;
   /** Default max tokens for generation. */
   defaultMaxTokens?: number;
+  /**
+   * Optional DedicatedWorker to host the engine. When provided, all
+   * load + streamFrames calls are proxied via postMessage instead of
+   * running on the main thread. The worker must implement the message
+   * protocol documented in `apps/demo/src/workers/llmWorker.ts`.
+   *
+   * Why: backgrounded tabs throttle main-thread JS, which stalls
+   * WebGPU dispatch and token read-back; a worker context has less
+   * aggressive throttling, and inbound WebRTC events (the typical
+   * caller of `streamFrames` in our distributed-/ai shape) still fire
+   * on the main thread in real time.
+   */
+  worker?: Worker;
 }
 
 export interface UseLocalLlmHandle {
@@ -114,7 +127,17 @@ function detectSupport(): LlmStatus {
 }
 
 export function useLocalLlm(opts: UseLocalLlmOptions): UseLocalLlmHandle {
-  const { modelId, mapId, mirror, defaultMaxTokens } = opts;
+  const { modelId, mapId, mirror, defaultMaxTokens, worker } = opts;
+  if (worker) {
+    // Disambiguated to keep the main-thread path simple — worker mode
+    // is a strict superset because the worker also has access to the
+    // same mirror config + persona; we just delegate every call.
+    // The conditional hook call below is allowed because the `worker`
+    // identity doesn't change for the lifetime of the host component
+    // (typically constructed once at App level).
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return useLocalLlmWorker({ worker, modelId, mapId, mirror, defaultMaxTokens });
+  }
   const lockName = opts.leaderLockName ?? DEFAULT_LOCK_NAME;
   const [status, setStatus] = useState<LlmStatus>(() => detectSupport());
   const codecRef = useRef<CodecEngine | null>(null);
@@ -221,6 +244,130 @@ export function useLocalLlm(opts: UseLocalLlmOptions): UseLocalLlmHandle {
       await codec.streamFrames({ prompt, max_tokens: defaultMaxTokens ?? 256 }, onFrame);
     },
     [defaultMaxTokens],
+  );
+
+  return { status, load, streamFrames };
+}
+
+interface WorkerLoadMsg {
+  kind: 'load';
+  modelId: string;
+  mapId: string;
+  mirror?: MirroredModelConfig;
+  defaultMaxTokens?: number;
+}
+interface WorkerStreamMsg {
+  kind: 'streamFrames';
+  streamId: string;
+  prompt: string;
+  max_tokens?: number;
+}
+interface WorkerDetectMsg {
+  kind: 'detectSupport';
+}
+type WorkerOutMsg =
+  | { kind: 'progress'; pct: number; text: string }
+  | { kind: 'loaded' }
+  | { kind: 'error'; error: string }
+  | { kind: 'frame'; streamId: string; frame: CodecFrame }
+  | { kind: 'streamDone'; streamId: string; ok: boolean; error?: string }
+  | { kind: 'support'; status: LlmStatus };
+
+interface UseLocalLlmWorkerOptions {
+  worker: Worker;
+  modelId: string;
+  mapId: string;
+  mirror?: MirroredModelConfig;
+  defaultMaxTokens?: number;
+}
+
+/**
+ * Worker-backed variant of useLocalLlm. Same handle shape so the
+ * consumer (MeshChatPanel) doesn't know the difference.
+ */
+function useLocalLlmWorker(opts: UseLocalLlmWorkerOptions): UseLocalLlmHandle {
+  const { worker, modelId, mapId, mirror, defaultMaxTokens } = opts;
+  const [status, setStatus] = useState<LlmStatus>({ phase: 'idle' });
+  const loadingRef = useRef(false);
+  // Per-stream callback registry — multiple streamFrames calls in flight
+  // can be correlated by streamId.
+  const streamsRef = useRef(
+    new Map<
+      string,
+      {
+        onFrame: (frame: CodecFrame) => void;
+        resolve: () => void;
+        reject: (e: Error) => void;
+      }
+    >(),
+  );
+
+  useEffect(() => {
+    const handler = (event: MessageEvent<WorkerOutMsg>): void => {
+      const m = event.data;
+      switch (m.kind) {
+        case 'support':
+          setStatus(m.status);
+          return;
+        case 'progress':
+          setStatus({ phase: 'loading', pct: m.pct, text: m.text });
+          return;
+        case 'loaded':
+          setStatus({ phase: 'ready', modelId, mapId });
+          loadingRef.current = false;
+          return;
+        case 'error':
+          setStatus({ phase: 'error', error: m.error });
+          loadingRef.current = false;
+          return;
+        case 'frame': {
+          const s = streamsRef.current.get(m.streamId);
+          if (s) s.onFrame(m.frame);
+          return;
+        }
+        case 'streamDone': {
+          const s = streamsRef.current.get(m.streamId);
+          if (!s) return;
+          streamsRef.current.delete(m.streamId);
+          if (m.ok) s.resolve();
+          else s.reject(new Error(m.error ?? 'stream failed'));
+          return;
+        }
+      }
+    };
+    worker.addEventListener('message', handler);
+    // Ask the worker to report its support state.
+    const probe: WorkerDetectMsg = { kind: 'detectSupport' };
+    worker.postMessage(probe);
+    return () => {
+      worker.removeEventListener('message', handler);
+    };
+  }, [worker, modelId, mapId]);
+
+  const load = useCallback(async () => {
+    if (loadingRef.current) return;
+    if (status.phase === 'ready' || status.phase === 'unsupported') return;
+    loadingRef.current = true;
+    setStatus({ phase: 'loading', pct: 0, text: 'requesting worker engine…' });
+    const msg: WorkerLoadMsg = { kind: 'load', modelId, mapId, mirror, defaultMaxTokens };
+    worker.postMessage(msg);
+  }, [worker, modelId, mapId, mirror, defaultMaxTokens, status.phase]);
+
+  const streamFrames = useCallback<UseLocalLlmHandle['streamFrames']>(
+    (prompt, onFrame) => {
+      return new Promise<void>((resolve, reject) => {
+        const streamId = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        streamsRef.current.set(streamId, { onFrame, resolve, reject });
+        const msg: WorkerStreamMsg = {
+          kind: 'streamFrames',
+          streamId,
+          prompt,
+          max_tokens: defaultMaxTokens,
+        };
+        worker.postMessage(msg);
+      });
+    },
+    [worker, defaultMaxTokens],
   );
 
   return { status, load, streamFrames };

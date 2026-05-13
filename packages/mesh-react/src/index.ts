@@ -67,6 +67,14 @@ export {
 // ── Persona ─────────────────────────────────────────────────────────
 export { usePersona, type UsePersonaHandle } from './usePersona.js';
 export { useDeviceCompat } from './useDeviceCompat.js';
+export {
+  useAudioKeepalive,
+  type AudioKeepaliveHandle,
+} from './useAudioKeepalive.js';
+export {
+  AudioKeepaliveToggle,
+  type AudioKeepaliveToggleProps,
+} from './components/AudioKeepaliveToggle.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {

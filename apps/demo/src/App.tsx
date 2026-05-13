@@ -16,8 +16,10 @@ import {
 import {
   DEFAULT_MODEL_CATALOG,
   registerRouteSkillTool,
+  useAudioKeepalive,
   useDeviceCompat,
   useMeshRoster,
+  AudioKeepaliveToggle,
   LlmStatusPanel,
   McpStatusRow,
   MOBILE_MODEL_CATALOG,
@@ -334,10 +336,32 @@ function Dashboard(props: {
   const [thinClientDismissed, setThinClientDismissed] = useState<boolean>(
     () => readThinClientDismissed(),
   );
+  // Silent-audio keepalive — opt-in toggle that defeats browser
+  // tab-throttling so this peer keeps responding when the user
+  // backgrounds the tab. See useAudioKeepalive for details.
+  const audioKeepalive = useAudioKeepalive();
+  // DedicatedWorker hosting the WebGPU engine. Built once per Dashboard
+  // mount; lives for the dashboard's lifetime. The url+import.meta.import
+  // pattern lets Vite bundle the worker as a separate chunk and emit a
+  // worker-classification flag at build time.
+  const llmWorkerRef = useRef<Worker | null>(null);
+  if (llmWorkerRef.current === null && typeof Worker !== 'undefined') {
+    llmWorkerRef.current = new Worker(
+      new URL('./workers/llmWorker.ts', import.meta.url),
+      { type: 'module' },
+    );
+  }
+  useEffect(() => {
+    return () => {
+      llmWorkerRef.current?.terminate();
+      llmWorkerRef.current = null;
+    };
+  }, []);
   const llm = useLocalLlm({
     modelId: props.modelId,
     mapId: props.mapId,
     mirror: MIRROR_CONFIG,
+    worker: llmWorkerRef.current ?? undefined,
   });
   const codecMap: CodecMapHandle = useCodecMap({ family: props.mapId });
   const tools = useMeshTools({
@@ -441,6 +465,7 @@ function Dashboard(props: {
         mcp={props.mcp}
         emptyMessage="no MCP endpoints attached. add via the persona form (change nick → MCP list)."
       />
+      <AudioKeepaliveToggle handle={audioKeepalive} />
       <div className="ul-cols">
         <MeshRosterPanel />
         <MeshChatPanel

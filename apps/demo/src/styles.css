@@ -94,6 +94,21 @@ code {
   padding: 6px; font-family: inherit; font-size: 12px; width: 100%; margin: 4px 0;
 }
 
+/* ── Audio keepalive toggle ─────────────────────────────────────── */
+.ul-keepalive {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 8px; margin: 4px 0;
+  border: 1px solid var(--border); background: var(--panel);
+  font-size: 12px;
+}
+.ul-keepalive button {
+  background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+  padding: 4px 10px; font-family: inherit; font-size: 12px; cursor: pointer;
+}
+.ul-keepalive-on { color: var(--accent); border-color: var(--accent); }
+.ul-keepalive-explain { color: var(--muted); flex: 1 1 200px; }
+.ul-keepalive-error { color: var(--err); }
+
 /* ── Dashboard layout ────────────────────────────────────────────── */
 .ul-app { display: flex; flex-direction: column; height: 100vh; }
 .ul-header {
