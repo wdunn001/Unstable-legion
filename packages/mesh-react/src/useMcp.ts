@@ -78,10 +78,18 @@ export interface UseMcpAttachmentsOptions {
   registry: ToolRegistry;
   /** URLs to attach on mount. Changes here trigger attach/detach diffs. */
   urls: readonly string[];
+  /**
+   * Optional same-origin proxy base URL. Public MCP endpoints usually
+   * lack CORS headers, so a browser fetch fails with `Failed to fetch`.
+   * Set this to a path served by your nginx (e.g. `'/mcp-proxy/'`)
+   * that reverse-proxies upstream — see apps/demo/nginx.conf for the
+   * matching server-side rule.
+   */
+  proxyBaseUrl?: string;
 }
 
 export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachmentsHandle {
-  const { registry, urls } = opts;
+  const { registry, urls, proxyBaseUrl } = opts;
   const [statuses, setStatuses] = useState<Map<string, McpAttachmentStatus>>(
     () => new Map(),
   );
@@ -111,7 +119,7 @@ export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachm
       attachInflight.current.add(url);
       setStatus(url, { phase: 'connecting' });
       try {
-        const attachment = await discoverMcpEndpoint(url, registry);
+        const attachment = await discoverMcpEndpoint(url, registry, { proxyBaseUrl });
         setStatus(url, { phase: 'attached', attachment });
       } catch (err) {
         const typed = (err as McpError) ?? {
@@ -124,7 +132,7 @@ export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachm
         attachInflight.current.delete(url);
       }
     },
-    [registry, setStatus],
+    [registry, setStatus, proxyBaseUrl],
   );
 
   const detach = useCallback(

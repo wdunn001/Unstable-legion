@@ -109,8 +109,10 @@ export {
   discoverMcpEndpoint,
   callMcpTool,
   detachMcpEndpoint,
+  proxiedMcpUrl,
   type McpAttachment,
   type McpError,
+  type McpDiscoverOptions,
 } from './mcp.js';
 
 // ── Public MCP server registry (same-origin snapshot) ───────────────

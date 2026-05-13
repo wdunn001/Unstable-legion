@@ -114,9 +114,15 @@ export function App() {
   const registry = registryRef.current;
 
   // MCP endpoints get attached at App level (survives room reconnects).
+  // Public MCP servers rarely include CORS headers, so a direct browser
+  // fetch fails with "Failed to fetch". Route everything through nginx
+  // at /mcp-proxy/ — see apps/demo/nginx.conf for the matching upstream
+  // regex. Same-origin requests bypass CORS entirely.
   const mcp = useMcpAttachments({
     registry,
     urls: persona.mcpEndpoints,
+    proxyBaseUrl:
+      typeof window !== 'undefined' ? `${window.location.origin}/mcp-proxy/` : undefined,
   });
 
   // Tool names available to the persona form (registry + MCP-discovered).

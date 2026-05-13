@@ -148,6 +148,37 @@ async function readJsonRpcResponse(response: Response, id: number): Promise<Json
 }
 
 /**
+ * Rewrite an `https://host/path` upstream URL through a same-origin
+ * proxy. Format: `${proxyBaseUrl}{https|http}/host/path?args`.
+ * Matches the regex location the bundled nginx config installs at
+ * `/mcp-proxy/` on legion.codecai.net. No-op when `proxyBaseUrl` is
+ * falsy — direct fetch (subject to upstream CORS).
+ */
+export function proxiedMcpUrl(url: string, proxyBaseUrl: string | undefined): string {
+  if (!proxyBaseUrl) return url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  const scheme = parsed.protocol.replace(/:$/, '');
+  if (scheme !== 'https' && scheme !== 'http') return url;
+  const base = proxyBaseUrl.endsWith('/') ? proxyBaseUrl : `${proxyBaseUrl}/`;
+  return `${base}${scheme}/${parsed.host}${parsed.pathname}${parsed.search}`;
+}
+
+export interface McpDiscoverOptions {
+  /**
+   * Optional same-origin proxy base URL. When set, MCP requests are
+   * rewritten through it so the browser sees same-origin fetches and
+   * CORS doesn't fire. The proxy must handle the path format produced
+   * by `proxiedMcpUrl()` (scheme + host + path under the base).
+   */
+  proxyBaseUrl?: string;
+}
+
+/**
  * Initialize an MCP session and register every advertised tool in the
  * supplied `ToolRegistry` under `mcp:<host>/<name>`. Idempotent — re-
  * calling with the same URL overwrites previous registrations.
@@ -158,11 +189,13 @@ async function readJsonRpcResponse(response: Response, id: number): Promise<Json
 export async function discoverMcpEndpoint(
   url: string,
   registry: ToolRegistry,
+  opts: McpDiscoverOptions = {},
 ): Promise<McpAttachment> {
+  const fetchUrl = proxiedMcpUrl(url, opts.proxyBaseUrl);
   // Step 1: initialize.
   let initResponse: Response;
   try {
-    initResponse = await mcpFetch(url, {
+    initResponse = await mcpFetch(fetchUrl, {
       method: 'POST',
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -209,7 +242,7 @@ export async function discoverMcpEndpoint(
 
   // Step 2: notifications/initialized — fire-and-forget per MCP spec.
   try {
-    await mcpFetch(url, {
+    await mcpFetch(fetchUrl, {
       method: 'POST',
       sessionId,
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
@@ -221,7 +254,7 @@ export async function discoverMcpEndpoint(
   // Step 3: tools/list.
   let listResponse: Response;
   try {
-    listResponse = await mcpFetch(url, {
+    listResponse = await mcpFetch(fetchUrl, {
       method: 'POST',
       sessionId,
       body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
@@ -272,7 +305,7 @@ export async function discoverMcpEndpoint(
       // Upstream MCP server is the schema authority — no client-side validation here.
       validate: () => null,
       handler: async (args) => {
-        const r = await callMcpTool(url, sessionId, t.name, args);
+        const r = await callMcpTool(fetchUrl, sessionId, t.name, args);
         if (!r.ok) throw new Error(r.error);
         return { content: r.content };
       },
