@@ -15,7 +15,7 @@
  * The component registers itself as the draft-bridge target on mount so
  * `MeshRosterPanel` clicks insert templates into the composer.
  */
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Detokenizer, type TokenizerMap } from '@codecai/web';
 import {
   ensemble as ensembleCore,
@@ -237,6 +237,84 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
       return [{ ...head!, steps }, ...rest];
     });
   };
+
+  // Run a /ai prompt through the local LLM and broadcast the frames
+  // over the mesh. Used by both the local submit path and the remote-
+  // request auto-responder. Caller is responsible for checking that
+  // `llm.status.phase === 'ready'`.
+  const runLocalAi = useCallback(
+    async (prompt: string): Promise<void> => {
+      if (!peer || !llm || llm.status.phase !== 'ready') return;
+      const selfDetok = selfDetokRef.current;
+      if (selfDetok) selfDetok.reset();
+      setAiStreams((prev) => {
+        const next = new Map(prev);
+        next.set(peer.selfId, { text: '', frameCount: 0, byteCount: 0, done: false });
+        return next;
+      });
+      try {
+        await llm.streamFrames(prompt, (frame) => {
+          void peer.sendFrame(frame as unknown as CodecMsgpackFrame);
+          if (selfDetok) {
+            const delta =
+              frame.ids.length > 0
+                ? selfDetok.render(frame.ids, { partial: !frame.done })
+                : '';
+            setAiStreams((prev) => {
+              const next = new Map(prev);
+              const cur = next.get(peer.selfId) ?? {
+                text: '',
+                frameCount: 0,
+                byteCount: 0,
+                done: false,
+              };
+              next.set(peer.selfId, {
+                text: cur.text + delta,
+                frameCount: cur.frameCount + 1,
+                byteCount:
+                  cur.byteCount + estimateFrameBytes(frame as unknown as CodecMsgpackFrame),
+                done: frame.done,
+              });
+              return next;
+            });
+          }
+        });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await peer.sendChat({
+          to: '',
+          bodyKind: 'text',
+          text: `[/ai error] ${errMsg}`,
+        });
+      }
+    },
+    [peer, llm],
+  );
+
+  // Auto-respond to remote /ai requests. The sender broadcasts the
+  // `/ai <prompt>` chat message; any peer with `cap.available=true`
+  // and a ready local LLM picks it up. Skipped when the sender's own
+  // cap shows `available=true` (they ran it locally themselves) or
+  // when this peer has nothing to contribute. Multiple available
+  // peers WILL respond — same "every LLM streams" behavior the local
+  // /ai already has; we keep that consistent here.
+  useEffect(() => {
+    if (!peer) return;
+    const unsub = peer.onChat((msg, peerId) => {
+      if (peerId === peer.selfId) return;
+      if (msg.bodyKind !== 'text' || typeof msg.text !== 'string') return;
+      if (!msg.text.startsWith('/ai ')) return;
+      const senderCap = rosterRef.current.find((r) => r.peerId === peerId);
+      if (senderCap?.available) return; // sender will run it themselves
+      if (!llm || llm.status.phase !== 'ready') return; // I can't help
+      const prompt = msg.text.slice(4).trim();
+      if (!prompt) return;
+      void runLocalAi(prompt);
+    });
+    return () => {
+      unsub();
+    };
+  }, [peer, llm, runLocalAi]);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -596,62 +674,22 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
         await peer.sendChat({ to: '', bodyKind: 'text', text: `/ai ${prompt}` });
       }
       if (!llm || llm.status.phase !== 'ready') {
-        if (peer) {
+        // Local LLM isn't available, but a remote peer with one will
+        // auto-respond via the receiver-side handler. Only error when
+        // *no* peer can pick it up.
+        const anyRemoteAvailable = roster.some(
+          (r) => r.peerId !== peer?.selfId && r.available,
+        );
+        if (!anyRemoteAvailable && peer) {
           await peer.sendChat({
             to: '',
             bodyKind: 'text',
-            text: `[error] /ai requested but local LLM is "${llm?.status.phase ?? 'absent'}".`,
+            text: `[error] /ai requested but local LLM is "${llm?.status.phase ?? 'absent'}" and no remote peer is available.`,
           });
         }
         return;
       }
-      const selfDetok = selfDetokRef.current;
-      if (selfDetok) selfDetok.reset();
-      setAiStreams((prev) => {
-        const next = new Map(prev);
-        next.set(peer?.selfId ?? 'me', { text: '', frameCount: 0, byteCount: 0, done: false });
-        return next;
-      });
-      try {
-        await llm.streamFrames(prompt, (frame) => {
-          if (peer) {
-            void peer.sendFrame(frame as unknown as CodecMsgpackFrame);
-          }
-          if (selfDetok) {
-            const delta =
-              frame.ids.length > 0
-                ? selfDetok.render(frame.ids, { partial: !frame.done })
-                : '';
-            setAiStreams((prev) => {
-              const next = new Map(prev);
-              const key = peer?.selfId ?? 'me';
-              const cur = next.get(key) ?? {
-                text: '',
-                frameCount: 0,
-                byteCount: 0,
-                done: false,
-              };
-              next.set(key, {
-                text: cur.text + delta,
-                frameCount: cur.frameCount + 1,
-                byteCount:
-                  cur.byteCount + estimateFrameBytes(frame as unknown as CodecMsgpackFrame),
-                done: frame.done,
-              });
-              return next;
-            });
-          }
-        });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (peer) {
-          await peer.sendChat({
-            to: '',
-            bodyKind: 'text',
-            text: `[/ai error] ${errMsg}`,
-          });
-        }
-      }
+      await runLocalAi(prompt);
       return;
     }
 
