@@ -69,17 +69,35 @@ const RELAY_URLS = mergeRelayUrls({
   blockedHosts: ['test.mosquitto.org', 'broker-cn.emqx.io'],
   max: 6,
 });
+// Build-time TURN config — see apps/demo/Dockerfile. STUN-only by
+// default; set VITE_TURN_URLS=turn:legion.codecai.net:3478,
+// VITE_TURN_USERNAME=legion, VITE_TURN_CREDENTIAL=... at build time
+// to wire in self-hosted coturn (or any other TURN provider).
+const TURN_URLS_RAW = import.meta.env.VITE_TURN_URLS ?? '';
+const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME || undefined;
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL || undefined;
+const TURN_USE_DEFAULT = import.meta.env.VITE_TURN_USE_DEFAULT === '1';
+const TURN_EXTRAS = TURN_URLS_RAW
+  ? TURN_URLS_RAW.split(/[\s,]+/)
+      .filter(Boolean)
+      .map((url) => ({
+        urls: url,
+        ...(TURN_USERNAME ? { username: TURN_USERNAME } : {}),
+        ...(TURN_CREDENTIAL ? { credential: TURN_CREDENTIAL } : {}),
+      }))
+  : [];
+const TURN_CONFIG = defaultTurnConfig({
+  extras: TURN_EXTRAS,
+  useDefault: TURN_USE_DEFAULT,
+});
+
 const TRYSTERO_CONFIG: MeshProviderProps['trysteroConfig'] = {
   appId: 'unstable-legion-demo-v0',
   // `relayConfig.urls` is the correct key in @trystero-p2p/* 0.24+
   // (NOT `relayUrls` — that's silently ignored and falls back to
   // the strategy's defaults).
   relayConfig: { urls: RELAY_URLS },
-  // STUN suffices for symmetric-LAN peer pairs; for headless server
-  // peers (legion-server-bridge) reaching browsers across the open
-  // internet, both sides need TURN. OpenRelay is rate-limited free —
-  // swap for self-hosted coturn in production.
-  turnConfig: defaultTurnConfig(),
+  turnConfig: TURN_CONFIG,
 };
 
 export function App() {

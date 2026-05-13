@@ -15,6 +15,17 @@ services:
     build:
       context: .
       dockerfile: apps/demo/Dockerfile
+      # TURN config is baked into the bundle at build time. Leave all
+      # blank for STUN-only behavior (works for same-LAN peers, fails
+      # for cross-NAT). Flip on by setting these to point at coturn:
+      #   VITE_TURN_URLS=turn:legion.codecai.net:3478
+      #   VITE_TURN_USERNAME=legion
+      #   VITE_TURN_CREDENTIAL=<from /storage/coturn/turnserver.conf>
+      args:
+        VITE_TURN_URLS: ${VITE_TURN_URLS:-}
+        VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-}
+        VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-}
+        VITE_TURN_USE_DEFAULT: ${VITE_TURN_USE_DEFAULT:-}
     container_name: unstable-legion-demo
     restart: unless-stopped
     expose:

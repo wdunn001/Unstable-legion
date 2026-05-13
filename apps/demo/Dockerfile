@@ -26,6 +26,19 @@ RUN npm install --no-audit --no-fund --workspaces --include-workspace-root
 COPY packages/ packages/
 COPY apps/demo/ apps/demo/
 
+# Build-time TURN config — baked into the JS bundle (Vite inlines
+# `import.meta.env.VITE_*` at build time, there's no runtime override).
+# Leave all four blank for STUN-only; set them to point at a self-
+# hosted coturn (or any TURN provider) to enable cross-NAT peers.
+ARG VITE_TURN_URLS=
+ARG VITE_TURN_USERNAME=
+ARG VITE_TURN_CREDENTIAL=
+ARG VITE_TURN_USE_DEFAULT=
+ENV VITE_TURN_URLS=$VITE_TURN_URLS \
+    VITE_TURN_USERNAME=$VITE_TURN_USERNAME \
+    VITE_TURN_CREDENTIAL=$VITE_TURN_CREDENTIAL \
+    VITE_TURN_USE_DEFAULT=$VITE_TURN_USE_DEFAULT
+
 # Build all the workspace TS packages first, then the demo bundle.
 RUN npm run build -w @unstable-legion/core \
  && npm run build -w @unstable-legion/react \

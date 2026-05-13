@@ -1,0 +1,56 @@
+# coturn config for legion.codecai.net's mesh.
+#
+# Plain TURN only (no TLS) — browsers accept `turn:` from HTTPS pages.
+# If we later need TURNs (TLS), we can mount the existing Let's Encrypt
+# fullchain.pem + privkey.pem from the nginx-proxy acme-companion vol.
+#
+# Static credentials: simpler than the time-limited HMAC scheme, fine
+# for a single-tenant deploy. Rotate by editing turnserver.conf and
+# the matching env vars on the bridge + demo, then `docker compose up`.
+
+# Bind to all interfaces; advertise the public IP in relay candidates.
+listening-ip=0.0.0.0
+external-ip=96.38.108.201
+listening-port=3478
+
+# Long-term credential mechanism (username/password).
+lt-cred-mech
+user=legion:REPLACE_ME_GENERATE_WITH_openssl_rand_hex_24
+
+# Realm — appears in allocation requests; some clients are picky.
+realm=legion.codecai.net
+
+# Relay port range — narrow enough that you only have to open ~50 UDP
+# ports on the router, wide enough for dozens of concurrent peers.
+min-port=49152
+max-port=49200
+
+# Disable everything we don't need (CLI, prometheus, multitenancy).
+no-cli
+no-tls
+no-dtls
+
+# Stay on UDP for the relay traffic; TCP relays are slower and only
+# help with extreme firewalls.
+no-tcp-relay
+
+# Don't allow loopback / private-network relays — closes the SSRF /
+# scan-the-LAN footgun where a malicious peer could ask the TURN
+# server to relay packets to internal services.
+no-multicast-peers
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+
+# But DO allow the docker bridge that the bridge container uses, so a
+# server-bridge running on this same host can be reached via relay.
+# (host-network bridge runs without docker NAT — its peer.ip is the
+# host's eth0 address, not a docker subnet, so no exception needed.)
+
+# Quiet logging — bump to verbose / log-file for debugging.
+log-file=stdout
+no-stdout-log=false
+simple-log
