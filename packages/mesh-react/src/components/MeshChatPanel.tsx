@@ -309,13 +309,22 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
       if (peerId === peer.selfId) return;
       if (msg.bodyKind !== 'text' || typeof msg.text !== 'string') return;
       if (!msg.text.startsWith('/ai ')) return;
+      // Directed at someone else? Drop. Three buckets:
+      //   - msg.to === self           → directed at me, always respond
+      //   - msg.to === '' (broadcast) → election logic applies
+      //   - msg.to === <other peer>   → not for us, ignore
+      if (msg.to && msg.to !== peer.selfId) return;
       if (!llm || llm.status.phase !== 'ready') return;
       const directed = msg.to === peer.selfId;
       if (!directed) {
         const senderCap = rosterRef.current.find((r) => r.peerId === peerId);
         if (senderCap?.available) return;
       }
-      const prompt = msg.text.slice(4).trim();
+      // Strip a leading @<nick> from the prompt — it's routing
+      // metadata, not part of the prompt the model should see.
+      let prompt = msg.text.slice(4).trim();
+      const atMatch = /^@\S+\s+(.*)$/s.exec(prompt);
+      if (atMatch) prompt = atMatch[1]!;
       if (!prompt) return;
       void runLocalAi(prompt);
     });
@@ -705,18 +714,19 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
         targetEntry = { peerId: match.peerId, nick: match.nick };
       }
       if (!prompt.trim()) return;
-      // Echo the chat. Directed → unicast (Trystero `to` arg), so only
-      // the target receives it; the sender still sees it locally via
-      // useMeshChat's optimistic echo. Broadcast → empty `to`.
+      // Always broadcast the chat — Trystero's unicast looks the
+      // peerId up in its internal activePeerMap, which can warn
+      // `no peer with id X found` even when the roster shows the
+      // peer (the maps are populated by different signaling paths).
+      // Application-layer targeting via msg.to is more robust:
+      // everyone sees the message in chat history but only the target
+      // acts on it.
       if (peer) {
-        await peer.sendChat(
-          {
-            to: targetEntry?.peerId ?? '',
-            bodyKind: 'text',
-            text: targetEntry ? `/ai @${targetEntry.nick} ${prompt}` : `/ai ${prompt}`,
-          },
-          targetEntry?.peerId,
-        );
+        await peer.sendChat({
+          to: targetEntry?.peerId ?? '',
+          bodyKind: 'text',
+          text: targetEntry ? `/ai @${targetEntry.nick} ${prompt}` : `/ai ${prompt}`,
+        });
       }
       // If we explicitly @-targeted someone else, don't also run
       // locally — the whole point of targeting is "you, not me."
