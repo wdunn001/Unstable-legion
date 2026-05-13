@@ -291,22 +291,30 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
     [peer, llm],
   );
 
-  // Auto-respond to remote /ai requests. The sender broadcasts the
-  // `/ai <prompt>` chat message; any peer with `cap.available=true`
-  // and a ready local LLM picks it up. Skipped when the sender's own
-  // cap shows `available=true` (they ran it locally themselves) or
-  // when this peer has nothing to contribute. Multiple available
-  // peers WILL respond — same "every LLM streams" behavior the local
-  // /ai already has; we keep that consistent here.
+  // Auto-respond to remote /ai requests. Two paths:
+  //
+  //   1. Directed (`msg.to === peer.selfId`) — the sender wrote
+  //      `/ai @<our-nick> ...` and Trystero unicast it to us. Always
+  //      respond, regardless of whether the sender has its own LLM.
+  //      Targeted means "I picked you specifically."
+  //   2. Broadcast (`msg.to === ''`) — fallback / election form. Only
+  //      respond when the sender's cap shows no LLM (otherwise they
+  //      would have run it themselves) so we don't thundering-herd
+  //      every available peer.
+  //
+  // Either way, we need a ready local LLM to be able to help.
   useEffect(() => {
     if (!peer) return;
     const unsub = peer.onChat((msg, peerId) => {
       if (peerId === peer.selfId) return;
       if (msg.bodyKind !== 'text' || typeof msg.text !== 'string') return;
       if (!msg.text.startsWith('/ai ')) return;
-      const senderCap = rosterRef.current.find((r) => r.peerId === peerId);
-      if (senderCap?.available) return; // sender will run it themselves
-      if (!llm || llm.status.phase !== 'ready') return; // I can't help
+      if (!llm || llm.status.phase !== 'ready') return;
+      const directed = msg.to === peer.selfId;
+      if (!directed) {
+        const senderCap = rosterRef.current.find((r) => r.peerId === peerId);
+        if (senderCap?.available) return;
+      }
       const prompt = msg.text.slice(4).trim();
       if (!prompt) return;
       void runLocalAi(prompt);
@@ -669,14 +677,53 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
     }
 
     if (text.startsWith('/ai ')) {
-      const prompt = text.slice(4);
+      const afterCmd = text.slice(4).trimStart();
+      // Optional `@<nick>` target. Resolved against the roster by exact
+      // nick first, falling back to a peerId prefix match (same shape
+      // /tool uses).
+      let targetEntry: { peerId: string; nick: string } | null = null;
+      let prompt = afterCmd;
+      const atMatch = /^@(\S+)\s+(.*)$/s.exec(afterCmd);
+      if (atMatch) {
+        const targetNick = atMatch[1]!;
+        prompt = atMatch[2]!;
+        const match =
+          roster.find((p) => p.nick.toLowerCase() === targetNick.toLowerCase()) ??
+          roster.find((p) =>
+            p.peerId.toLowerCase().startsWith(targetNick.toLowerCase()),
+          );
+        if (!match) {
+          if (peer) {
+            await peer.sendChat({
+              to: '',
+              bodyKind: 'text',
+              text: `[error] /ai @${targetNick}: no peer in roster matches.`,
+            });
+          }
+          return;
+        }
+        targetEntry = { peerId: match.peerId, nick: match.nick };
+      }
+      if (!prompt.trim()) return;
+      // Echo the chat. Directed → unicast (Trystero `to` arg), so only
+      // the target receives it; the sender still sees it locally via
+      // useMeshChat's optimistic echo. Broadcast → empty `to`.
       if (peer) {
-        await peer.sendChat({ to: '', bodyKind: 'text', text: `/ai ${prompt}` });
+        await peer.sendChat(
+          {
+            to: targetEntry?.peerId ?? '',
+            bodyKind: 'text',
+            text: targetEntry ? `/ai @${targetEntry.nick} ${prompt}` : `/ai ${prompt}`,
+          },
+          targetEntry?.peerId,
+        );
+      }
+      // If we explicitly @-targeted someone else, don't also run
+      // locally — the whole point of targeting is "you, not me."
+      if (targetEntry && targetEntry.peerId !== peer?.selfId) {
+        return;
       }
       if (!llm || llm.status.phase !== 'ready') {
-        // Local LLM isn't available, but a remote peer with one will
-        // auto-respond via the receiver-side handler. Only error when
-        // *no* peer can pick it up.
         const anyRemoteAvailable = roster.some(
           (r) => r.peerId !== peer?.selfId && r.available,
         );
