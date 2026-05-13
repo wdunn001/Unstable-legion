@@ -71,6 +71,19 @@ export {
   useAudioKeepalive,
   type AudioKeepaliveHandle,
 } from './useAudioKeepalive.js';
+// Worker mesh protocol — shared between main-thread WorkerPeerProxy
+// and consumer-app worker scripts (e.g. apps/demo/src/workers/meshWorker.ts).
+export {
+  isWorkerEvent,
+  type WorkerRequest,
+  type WorkerEvent,
+  type WorkerInitConfig,
+  type ToolCatalogEntry,
+} from './workerMeshProtocol.js';
+export {
+  createWorkerMeshPeer,
+  type CreateWorkerMeshPeerResult,
+} from './workerPeerProxy.js';
 export {
   AudioKeepaliveToggle,
   type AudioKeepaliveToggleProps,

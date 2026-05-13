@@ -28,6 +28,8 @@ import {
   type MeshPeerCap,
   type Peer,
 } from '@unstable-legion/core';
+import { createWorkerMeshPeer } from './workerPeerProxy.js';
+import type { WorkerInitConfig } from './workerMeshProtocol.js';
 
 export interface MeshContextValue {
   /** Concrete peer handle; null until the room has joined. */
@@ -37,16 +39,18 @@ export interface MeshContextValue {
 const MeshContext = createContext<MeshContextValue>({ peer: null });
 
 export interface MeshProviderProps {
-  /** Trystero strategy's `joinRoom` function — supplied by host app. */
-  joinRoom: JoinRoomFn;
   /**
-   * Trystero strategy's per-tab `selfId` — in `@trystero-p2p/*` 0.24+
-   * this is a module-level export, not a room property. Host imports
-   * it from the same module as `joinRoom` and passes it through.
-   *
-   * Example: `import { joinRoom, selfId } from '@trystero-p2p/mqtt'`.
+   * Trystero strategy's `joinRoom` function — supplied by host app.
+   * Required for main-thread mode; ignored when `worker` is set
+   * (the worker imports its own Trystero strategy at build time).
    */
-  selfId: string;
+  joinRoom?: JoinRoomFn;
+  /**
+   * Trystero strategy's per-tab `selfId`. Required for main-thread
+   * mode; ignored in worker mode (the worker's own selfId is reported
+   * back via the `ready` event).
+   */
+  selfId?: string;
   /**
    * Trystero strategy config. At minimum `{ appId: string }`. Note that
    * for `@trystero-p2p/*` 0.24+ custom relays go under
@@ -59,6 +63,22 @@ export interface MeshProviderProps {
   cap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
   /** Heartbeat interval for re-broadcasting cap. Default 30_000 ms. */
   heartbeatMs?: number;
+  /**
+   * Optional DedicatedWorker hosting the mesh peer + LLM engine. When
+   * provided, the provider uses `createWorkerMeshPeer` to construct a
+   * proxy that delegates every call into the worker; `joinRoom` and
+   * `selfId` are not needed in that case (the worker imports its own
+   * strategy and reports its selfId via the `ready` event). The
+   * worker must speak the protocol defined in `workerMeshProtocol.ts`
+   * — see `apps/demo/src/workers/meshWorker.ts` for the reference
+   * implementation.
+   */
+  worker?: Worker;
+  /**
+   * Worker-mode-only extra config. Forwarded inside the `init`
+   * message. Carries LLM config + the mcpProxyBaseUrl.
+   */
+  workerInitExtras?: Pick<WorkerInitConfig, 'llm' | 'mcpProxyBaseUrl'>;
   children?: ReactNode;
 }
 
@@ -74,6 +94,8 @@ export function MeshProvider(props: MeshProviderProps) {
     roomId,
     cap,
     heartbeatMs,
+    worker,
+    workerInitExtras,
     children,
   } = props;
   const [peer, setPeer] = useState<Peer | null>(null);
@@ -81,6 +103,41 @@ export function MeshProvider(props: MeshProviderProps) {
 
   useEffect(() => {
     const initialCap: MeshPeerCap = { ...cap, ts: cap.ts ?? Date.now() };
+    if (worker) {
+      // Worker mode: hand off to the proxy. We can't synchronously
+      // produce a Peer because createWorkerMeshPeer awaits the
+      // worker's `ready` event.
+      let disposed = false;
+      let createdPeer: Peer | null = null;
+      void createWorkerMeshPeer(worker, {
+        roomId,
+        trysteroConfig,
+        cap: initialCap,
+        heartbeatMs,
+        ...(workerInitExtras ?? {}),
+      }).then(({ peer: p }) => {
+        if (disposed) {
+          p.leave();
+          return;
+        }
+        createdPeer = p;
+        peerRef.current = p;
+        setPeer(p);
+      });
+      return () => {
+        disposed = true;
+        if (createdPeer) {
+          createdPeer.leave();
+        }
+        peerRef.current = null;
+        setPeer(null);
+      };
+    }
+    if (!joinRoom || !selfId) {
+      throw new Error(
+        'MeshProvider: either { worker } or { joinRoom, selfId } must be provided',
+      );
+    }
     const p = joinMesh({
       joinRoom,
       selfId,
@@ -97,7 +154,15 @@ export function MeshProvider(props: MeshProviderProps) {
       setPeer(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinRoom, selfId, roomId, heartbeatMs, JSON.stringify(trysteroConfig)]);
+  }, [
+    joinRoom,
+    selfId,
+    roomId,
+    heartbeatMs,
+    worker,
+    JSON.stringify(trysteroConfig),
+    JSON.stringify(workerInitExtras),
+  ]);
 
   // Re-broadcast on cap change (without recreating the peer).
   const stableCapKey = JSON.stringify(cap);
