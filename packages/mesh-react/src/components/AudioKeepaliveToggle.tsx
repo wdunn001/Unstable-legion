@@ -28,8 +28,8 @@ export function AudioKeepaliveToggle(props: AudioKeepaliveToggleProps) {
       </button>
       <span className="ul-keepalive-explain">
         {handle.enabled
-          ? 'silent audio playing. modern browsers detect 0-amplitude audio and may throttle anyway — the worker-based mesh + LLM is the real fix.'
-          : 'historical workaround: silent audio used to defeat tab-throttling. modern Chrome/Firefox detect it. left here in case your browser is older or behaves differently.'}
+          ? 'tab is playing silent audio; backgrounded throttling is disabled. tab bar will show a speaker icon.'
+          : 'browsers throttle backgrounded tabs. enable to keep this peer responsive when tabbed away.'}
       </span>
       {handle.lastError && (
         <span className="ul-keepalive-error" role="alert">

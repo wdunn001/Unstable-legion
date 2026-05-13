@@ -86,17 +86,10 @@ export interface UseMcpAttachmentsOptions {
    * matching server-side rule.
    */
   proxyBaseUrl?: string;
-  /**
-   * Optional mesh worker. When present, MCP attach/detach are
-   * forwarded into the worker (the worker owns the tool registry
-   * and the actual fetches) and `mcpStatus` events stream back
-   * here. The `registry` prop is then ignored.
-   */
-  worker?: Worker;
 }
 
 export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachmentsHandle {
-  const { registry, urls, proxyBaseUrl, worker } = opts;
+  const { registry, urls, proxyBaseUrl } = opts;
   const [statuses, setStatuses] = useState<Map<string, McpAttachmentStatus>>(
     () => new Map(),
   );
@@ -126,29 +119,8 @@ export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachm
       attachInflight.current.add(url);
       setStatus(url, { phase: 'connecting' });
       try {
-        if (worker) {
-          // Worker mode: ask the worker to do the actual MCP work.
-          // The worker streams back `mcpStatus` events which the
-          // listener below converts into setStatus updates. The
-          // promise resolves on the worker's response message; the
-          // status is already updated by then via the event stream.
-          await new Promise<void>((resolve, reject) => {
-            const requestId = `mcp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-            const handler = (event: MessageEvent<unknown>): void => {
-              const m = event.data as { kind?: string; requestId?: string; ok?: boolean; error?: string };
-              if (m?.kind === 'response' && m.requestId === requestId) {
-                worker.removeEventListener('message', handler);
-                if (m.ok) resolve();
-                else reject(new Error(m.error ?? 'mcpAttach failed'));
-              }
-            };
-            worker.addEventListener('message', handler);
-            worker.postMessage({ kind: 'mcpAttach', requestId, url });
-          });
-        } else {
-          const attachment = await discoverMcpEndpoint(url, registry, { proxyBaseUrl });
-          setStatus(url, { phase: 'attached', attachment });
-        }
+        const attachment = await discoverMcpEndpoint(url, registry, { proxyBaseUrl });
+        setStatus(url, { phase: 'attached', attachment });
       } catch (err) {
         const typed = (err as McpError) ?? {
           kind: 'network',
@@ -160,18 +132,14 @@ export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachm
         attachInflight.current.delete(url);
       }
     },
-    [registry, setStatus, proxyBaseUrl, worker],
+    [registry, setStatus, proxyBaseUrl],
   );
 
   const detach = useCallback(
     (url: string) => {
-      if (worker) {
-        worker.postMessage({ kind: 'mcpDetach', url });
-      } else {
-        const status = statusesRef.current.get(url);
-        if (status?.phase === 'attached') {
-          detachMcpEndpoint(status.attachment, registry);
-        }
+      const status = statusesRef.current.get(url);
+      if (status?.phase === 'attached') {
+        detachMcpEndpoint(status.attachment, registry);
       }
       setStatuses((prev) => {
         const m = new Map(prev);
@@ -179,23 +147,8 @@ export function useMcpAttachments(opts: UseMcpAttachmentsOptions): UseMcpAttachm
         return m;
       });
     },
-    [registry, worker],
+    [registry],
   );
-
-  // Subscribe to mcpStatus events from the worker (worker mode only).
-  useEffect(() => {
-    if (!worker) return;
-    const handler = (event: MessageEvent<unknown>): void => {
-      const m = event.data as { kind?: string; url?: string; status?: McpAttachmentStatus };
-      if (m?.kind === 'mcpStatus' && typeof m.url === 'string' && m.status) {
-        setStatus(m.url, m.status);
-      }
-    };
-    worker.addEventListener('message', handler);
-    return () => {
-      worker.removeEventListener('message', handler);
-    };
-  }, [worker, setStatus]);
 
   // Diff: ensure every URL in `urls` has been attached; drop ones removed.
   useEffect(() => {

@@ -1,27 +1,34 @@
 /**
- * useAudioKeepalive — *deprecated workaround* for tab-throttling.
+ * useAudioKeepalive — keep a browser tab unthrottled by playing silent
+ * audio on loop.
  *
- * **Does not reliably work on modern browsers (2025+).** Chrome and
- * Firefox added heuristics that detect zero-amplitude / near-silent
- * audio and throttle those tabs anyway. The historical "play a silent
- * WAV to keep the tab alive" trick is largely defeated. Still ships
- * here for completeness, in case a future browser version regresses
- * the detection or you want to swap in your own non-silent stream.
+ * Background: when a tab is hidden, Chromium throttles main-thread JS
+ * (setTimeout/setInterval down to ~1/min, intensive throttling on
+ * sustained background). DedicatedWorker inherits the throttle of its
+ * parent tab. A reliable platform-level escape hatch is that *tabs
+ * playing audio are never throttled* — the audio pipeline keeps the
+ * page in the active state.
  *
- * The actual fix is moving long-running state (mesh peer, LLM engine,
- * heartbeat) into a DedicatedWorker — see `createWorkerMeshPeer` /
- * `apps/demo/src/workers/meshWorker.ts`. The worker still gets
- * throttled when the tab is hidden, but inbound network events
- * (WebRTC data channel messages, MQTT websocket frames) fire in real
- * time on the main thread and dispatch into the worker via
- * postMessage; WebGPU compute also keeps making forward progress
- * because GPU dispatch is async. End result: an /ai request that
- * lands on a hidden tab still completes.
+ * This hook wraps that trick: a hidden `<audio>` element plays a
+ * tiny silent WAV on loop while the keepalive is enabled, defeating
+ * tab-throttling for the whole tab including any workers it owns.
  *
  * Autoplay rules: browsers require a user gesture to start playback
  * for the first time. The hook flips an internal "playing" flag on
- * first user interaction; the consumer typically wires the toggle to
- * a button click which counts as a gesture.
+ * the first user interaction; the consumer typically wires the
+ * toggle to a button click which counts as a gesture.
+ *
+ * Tradeoffs:
+ * - The OS-level "tab is playing audio" indicator (the speaker icon
+ *   in the tab bar) lights up. Some users will notice. Worth telling
+ *   them why.
+ * - Volume is `0` and the WAV is pure silence so no actual audio
+ *   reaches the speakers. Some users disable autoplay for the site;
+ *   the toggle button is then a no-op.
+ * - This is a workaround for browser tab-throttling; the cleaner
+ *   architectural fix is to move long-running state into a worker,
+ *   but workers themselves are throttled too when the parent tab is
+ *   backgrounded.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 

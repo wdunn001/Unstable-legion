@@ -41,7 +41,6 @@ import {
   useMeshToolBus,
   usePersona,
   type ModelCatalogEntry,
-  type MeshPeerCap,
   type MeshProviderProps,
   type MeshToolDescriptor,
   type UseMcpAttachmentsHandle,
@@ -116,13 +115,11 @@ export function App() {
   }
   const registry = registryRef.current;
 
-  // MCP endpoints — attached at App level so the persona form has
-  // the discovered tool names for autocomplete. In worker mode the
-  // session-scoped MCP lives inside the mesh worker (see
-  // JoinedSession); App-level uses main-thread mode against the same
-  // registry so the persona form sees tools before join. Public MCP
-  // servers usually lack CORS headers, so we proxy through the
-  // same-origin /mcp-proxy/ nginx location.
+  // MCP endpoints get attached at App level (survives room reconnects).
+  // Public MCP servers rarely include CORS headers, so a direct browser
+  // fetch fails with "Failed to fetch". Route everything through nginx
+  // at /mcp-proxy/ — see apps/demo/nginx.conf for the matching upstream
+  // regex. Same-origin requests bypass CORS entirely.
   const mcp = useMcpAttachments({
     registry,
     urls: persona.mcpEndpoints,
@@ -274,84 +271,24 @@ export function App() {
   }
 
   return (
-    <JoinedSession
-      persona={persona}
-      mapId={mapId}
-      cap={cap}
-      registry={registry}
-      effectiveOptedIn={effectiveOptedIn}
-      mcp={mcp}
-      onChangeNick={() => setJoined(false)}
-      compatTier={deviceCompat?.tier}
-      compatReason={deviceCompat?.reason}
-    />
-  );
-}
-
-/**
- * Wrapper that owns the mesh worker for one session. Lives between
- * "user clicked join" and "user clicked change persona" so the worker
- * is torn down cleanly on session change.
- *
- * The worker hosts: Trystero peer + Roster + ToolRegistry + builtins
- * + WebGPU LLM engine + the /ai auto-responder. Main thread sees only
- * a proxied Peer (via MeshProvider's worker mode) and the same hooks
- * — useLocalLlm + useMcpAttachments — wired in worker mode.
- */
-function JoinedSession(props: {
-  persona: ReturnType<typeof usePersona>['persona'];
-  mapId: string;
-  cap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
-  registry: ToolRegistry;
-  effectiveOptedIn: readonly string[];
-  mcp: UseMcpAttachmentsHandle;
-  onChangeNick: () => void;
-  compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
-  compatReason?: string;
-}) {
-  // One worker per session. Built once, torn down on unmount.
-  const workerRef = useRef<Worker | null>(null);
-  if (workerRef.current === null && typeof Worker !== 'undefined') {
-    workerRef.current = new Worker(
-      new URL('./workers/meshWorker.ts', import.meta.url),
-      { type: 'module' },
-    );
-  }
-  useEffect(() => {
-    return () => {
-      workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
-
-  return (
     <MeshProvider
+      joinRoom={joinRoom}
+      selfId={selfId}
       trysteroConfig={TRYSTERO_CONFIG}
       roomId={ROOM_ID}
-      cap={props.cap}
-      worker={workerRef.current ?? undefined}
-      workerInitExtras={{
-        llm: {
-          modelId: props.persona.modelId,
-          mapId: props.mapId,
-          mirror: MIRROR_CONFIG,
-        },
-        mcpProxyBaseUrl:
-          typeof window !== 'undefined' ? `${window.location.origin}/mcp-proxy/` : undefined,
-      }}
+      cap={cap}
     >
       <Dashboard
-        nick={props.persona.nick}
-        modelId={props.persona.modelId}
-        mapId={props.mapId}
-        onChangeNick={props.onChangeNick}
-        toolRegistry={props.registry}
-        optedInTools={props.effectiveOptedIn}
-        delegating={props.persona.delegating ?? []}
-        mcp={props.mcp}
-        compatTier={props.compatTier}
-        compatReason={props.compatReason}
-        worker={workerRef.current ?? undefined}
+        nick={persona.nick}
+        modelId={persona.modelId}
+        mapId={mapId}
+        onChangeNick={() => setJoined(false)}
+        toolRegistry={registry}
+        optedInTools={effectiveOptedIn}
+        delegating={persona.delegating ?? []}
+        mcp={mcp}
+        compatTier={deviceCompat?.tier}
+        compatReason={deviceCompat?.reason}
       />
     </MeshProvider>
   );
@@ -393,8 +330,6 @@ function Dashboard(props: {
   mcp: UseMcpAttachmentsHandle;
   compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
   compatReason?: string;
-  /** Mesh worker shared with MeshProvider. Used for LLM + MCP. */
-  worker?: Worker;
 }) {
   // Thin-client notice dismissal — persisted to localStorage so it
   // doesn't reappear on every reload on the same device.
@@ -405,14 +340,28 @@ function Dashboard(props: {
   // tab-throttling so this peer keeps responding when the user
   // backgrounds the tab. See useAudioKeepalive for details.
   const audioKeepalive = useAudioKeepalive();
-  // The mesh worker — provided by JoinedSession and shared with
-  // MeshProvider. Same Worker hosts the Trystero peer, the tool
-  // registry, MCP attachments, AND the WebGPU LLM engine.
+  // DedicatedWorker hosting the WebGPU engine. Built once per Dashboard
+  // mount; lives for the dashboard's lifetime. The url+import.meta.import
+  // pattern lets Vite bundle the worker as a separate chunk and emit a
+  // worker-classification flag at build time.
+  const llmWorkerRef = useRef<Worker | null>(null);
+  if (llmWorkerRef.current === null && typeof Worker !== 'undefined') {
+    llmWorkerRef.current = new Worker(
+      new URL('./workers/llmWorker.ts', import.meta.url),
+      { type: 'module' },
+    );
+  }
+  useEffect(() => {
+    return () => {
+      llmWorkerRef.current?.terminate();
+      llmWorkerRef.current = null;
+    };
+  }, []);
   const llm = useLocalLlm({
     modelId: props.modelId,
     mapId: props.mapId,
     mirror: MIRROR_CONFIG,
-    worker: props.worker,
+    worker: llmWorkerRef.current ?? undefined,
   });
   const codecMap: CodecMapHandle = useCodecMap({ family: props.mapId });
   const tools = useMeshTools({
