@@ -132,7 +132,13 @@ export function joinMesh(opts: PeerOptions): Peer {
       console.error('[legion-mesh] joinRoom error:', d);
     },
   });
-  const roster = new Roster();
+  // Skip prune while the tab is hidden — Chrome throttles setInterval
+  // to ~1/min on backgrounded tabs, heartbeats miss the prune window,
+  // and you come back to an empty roster. Detect via document.visibilityState
+  // when the API is available (browser), else always run (Node bridge).
+  const isHidden = (): boolean =>
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  const roster = new Roster({ isPaused: isHidden });
   let currentCap: MeshPeerCap = initialCap;
 
   // ── Actions ──────────────────────────────────────────────────────────
@@ -245,6 +251,28 @@ export function joinMesh(opts: PeerOptions): Peer {
         }, heartbeatMs)
       : null;
 
+  // On tab return-to-foreground, immediately re-broadcast our cap so
+  // other peers don't prune us, and bump every roster entry's
+  // `lastSeen` so we don't prune them either while waiting on their
+  // next heartbeat. Browser-only; Node bridge has no document.
+  let visibilityHandler: (() => void) | null = null;
+  if (typeof document !== 'undefined') {
+    visibilityHandler = () => {
+      if (document.visibilityState !== 'visible') return;
+      debug('tab visible — re-broadcasting cap');
+      currentCap = { ...currentCap, ts: Date.now() };
+      void sendCap(currentCap);
+      upsertSelf();
+      // Give peers a grace window — bump their lastSeen so the next
+      // prune doesn't fire on heartbeats missed during throttling.
+      const now = Date.now();
+      for (const entry of roster.snapshot()) {
+        roster.upsert(entry.peerId, { ...entry, ts: now } as MeshPeerCap);
+      }
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
+
   // ── Public API ───────────────────────────────────────────────────────
   return {
     selfId,
@@ -292,6 +320,9 @@ export function joinMesh(opts: PeerOptions): Peer {
     },
     leave() {
       if (heartbeat) clearInterval(heartbeat);
+      if (visibilityHandler && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', visibilityHandler);
+      }
       roster.dispose();
       room.leave();
     },
