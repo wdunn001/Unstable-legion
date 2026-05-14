@@ -40,8 +40,22 @@ interface AiStreamState {
   text: string;
   frameCount: number;
   byteCount: number;
+  tokenCount: number;
   done: boolean;
 }
+
+/**
+ * Rough per-chunk overhead of an OpenAI-style JSON Server-Sent-Events
+ * stream — `data: {"id":"chatcmpl-...","object":"chat.completion.chunk",
+ * "created":...,"model":"...","choices":[{"index":0,"delta":{"content":"X"},
+ * "finish_reason":null}]}\n\n`. The constant content is ~150 bytes plus
+ * ~20 bytes of variable id+timestamp+model; we round to 170. The
+ * delta content (token text) varies per token — for English ~4 chars
+ * average — but for the "savings vs SSE" headline we keep the
+ * comparison apples-to-apples (per-token wire cost), so we don't add
+ * the token text bytes on either side.
+ */
+const JSON_SSE_PER_TOKEN_BYTES = 170;
 
 export interface MeshChatPanelProps {
   /** Local LLM handle (for `/ai`). Optional — without it, `/ai` reports "not ready". */
@@ -192,12 +206,14 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
           text: '',
           frameCount: 0,
           byteCount: 0,
+          tokenCount: 0,
           done: false,
         };
         next.set(peerId, {
           text: cur.text + delta,
           frameCount: cur.frameCount + 1,
           byteCount: cur.byteCount + estimateFrameBytes(frame),
+          tokenCount: cur.tokenCount + (frame.ids?.length ?? 0),
           done: frame.done,
         });
         return next;
@@ -249,7 +265,13 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
       if (selfDetok) selfDetok.reset();
       setAiStreams((prev) => {
         const next = new Map(prev);
-        next.set(peer.selfId, { text: '', frameCount: 0, byteCount: 0, done: false });
+        next.set(peer.selfId, {
+          text: '',
+          frameCount: 0,
+          byteCount: 0,
+          tokenCount: 0,
+          done: false,
+        });
         return next;
       });
       try {
@@ -266,6 +288,7 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
                 text: '',
                 frameCount: 0,
                 byteCount: 0,
+                tokenCount: 0,
                 done: false,
               };
               next.set(peer.selfId, {
@@ -273,6 +296,7 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
                 frameCount: cur.frameCount + 1,
                 byteCount:
                   cur.byteCount + estimateFrameBytes(frame as unknown as CodecMsgpackFrame),
+                tokenCount: cur.tokenCount + (frame.ids?.length ?? 0),
                 done: frame.done,
               });
               return next;
@@ -781,19 +805,37 @@ export function MeshChatPanel(props: MeshChatPanelProps) {
                 )}
               </div>
             ))}
-            {[...aiStreams.entries()].map(([peerId, state]) => (
-              <div key={`ai-${peerId}`} className="ul-msg ul-msg-ai">
-                <span className="ul-from">
-                  {shortenFrom(peerId, peer?.selfId)} <em>(ai)</em>
-                </span>
-                <span className="ul-body">
-                  {state.text || <em className="ul-muted">(awaiting tokens…)</em>}
-                </span>
-                <span className="ul-badge ul-badge-ok">
-                  {state.frameCount} frames · {state.byteCount} B
-                </span>
-              </div>
-            ))}
+            {[...aiStreams.entries()].map(([peerId, state]) => {
+              const tokPerB =
+                state.byteCount > 0 ? state.tokenCount / state.byteCount : 0;
+              const jsonSseBytes = state.tokenCount * JSON_SSE_PER_TOKEN_BYTES;
+              const savedPct =
+                jsonSseBytes > 0
+                  ? Math.max(
+                      0,
+                      Math.round(
+                        ((jsonSseBytes - state.byteCount) / jsonSseBytes) * 100,
+                      ),
+                    )
+                  : 0;
+              return (
+                <div key={`ai-${peerId}`} className="ul-msg ul-msg-ai">
+                  <span className="ul-from">
+                    {shortenFrom(peerId, peer?.selfId)} <em>(ai)</em>
+                  </span>
+                  <span className="ul-body">
+                    {state.text || <em className="ul-muted">(awaiting tokens…)</em>}
+                  </span>
+                  <span
+                    className="ul-badge ul-badge-ok ul-wire-stats"
+                    title={`${state.frameCount} frames · ${state.byteCount} B · ${state.tokenCount} tokens · ${tokPerB.toFixed(2)} tok/B · ${savedPct}% vs JSON SSE (assuming ${JSON_SSE_PER_TOKEN_BYTES} B/chunk)`}
+                  >
+                    {state.tokenCount}t · {state.byteCount}B ·{' '}
+                    {tokPerB.toFixed(2)} tok/B · {savedPct}% saved
+                  </span>
+                </div>
+              );
+            })}
           </>
         )}
         {traces.length > 0 && (

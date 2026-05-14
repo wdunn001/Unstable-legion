@@ -137,6 +137,7 @@ code {
     border-right: 0;
     border-bottom: 1px solid var(--border);
     max-height: 50vh;
+    padding: 6px 8px;
   }
   .ul-roster-collapsed {
     max-height: 40px;
@@ -151,8 +152,41 @@ code {
   }
   .ul-header .ul-link { margin-left: 0; }
   .ul-llm-row, .ul-mcp-row { padding: 6px 10px; font-size: 12px; }
-  .ul-chat h3 { padding: 8px 12px; }
-  .ul-msgs { padding: 8px 12px; }
+  .ul-chat h3 { padding: 6px 10px; font-size: 13px; }
+  /* Tighter chat padding so the message body actually has room.
+     The 16px LR previously cost ~32px of horizontal real estate. */
+  .ul-msgs { padding: 6px 8px; }
+  /* Stack the `from` label above the body so the text isn't squeezed
+     into a narrow column — needed once viewport drops below ~400px
+     where the flex layout becomes unusable. */
+  .ul-msg {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin-bottom: 8px;
+  }
+  .ul-msg .ul-from { font-size: 11px; }
+  .ul-wire-stats {
+    align-self: flex-start;
+    font-size: 10px;
+    margin-top: 2px;
+  }
+  /* Roster rows shrink to one line of essentials on mobile; the
+     summary / skills / tool chips hide. Tap the row to insert
+     `@nick` into the composer (the existing behavior) — the full
+     detail is still reachable on desktop or by widening the window. */
+  .ul-roster-row {
+    padding: 4px 6px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .ul-roster-row .ul-model,
+  .ul-roster-row .ul-summary,
+  .ul-roster-row .ul-skills,
+  .ul-roster-row .ul-tools { display: none; }
+  .ul-roster-header { font-size: 12px; margin-bottom: 4px; }
+  .ul-agg-row { padding: 4px 6px; font-size: 12px; }
+  .ul-agg-row .ul-summary { display: none; }
   .ul-composer { padding: 6px 10px; }
   .ul-composer input { padding: 8px 10px; font-size: 16px; /* prevent iOS zoom */ }
   .ul-composer button { padding: 8px 12px; }
