@@ -70,8 +70,16 @@ jobs:
           cd /mnt/h/dev/unstable-legion && git checkout -q "${GITHUB_SHA}"
 
           # Sibling 1: Codec (public on GitHub) -> the codec-local symlink target.
+          # @codecai/web(-safety|-llm) package.jsons point main/module/types
+          # at dist/, which isn't committed — build the three packages
+          # mesh-core actually depends on before they're usable as file:
+          # deps. web-llm pulls in a github: dep on a webllm fork (only
+          # needed for this repo, not legion-stage-runtime's CI).
           mkdir -p "/mnt/h/dev/Project Codec"
           git clone -q --depth 1 https://github.com/wdunn001/Codec.git "/mnt/h/dev/Project Codec/Codec"
+          ( cd "/mnt/h/dev/Project Codec/Codec" && \
+            npm ci --no-audit --no-fund -w packages/web -w packages/web-safety -w packages/web-llm && \
+            npm run build -w packages/web -w packages/web-safety -w packages/web-llm )
           ln -s "/mnt/h/dev/Project Codec/Codec" /mnt/h/dev/codec-local
 
           # Sibling 2: legion-stage-runtime (private, same Forgejo instance)
