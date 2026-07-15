@@ -1,0 +1,102 @@
+name: CI
+
+# Runs on the .88 forgejo-runner (label `docker` -> node:22-bookworm
+# container, host docker.sock mounted). Pure `run:` steps only, matching
+# every other workflow on this Forgejo instance — the runner can't reach the
+# data.forgejo.org action registry, so no `uses:` actions anywhere here.
+#
+# This repo's Forgejo copy (wdunn001/unstable-legion) is a READ-ONLY PULL
+# MIRROR of the GitHub repo (synced every 2h by
+# /mnt/data/homelab/scripts/forgejo-mirror-sync-throttled.sh, plus Forgejo's
+# own 24h mirror_interval). Confirmed via the API that Actions is enabled on
+# the mirror (`has_actions: true`, Forgejo 11.0.16) and that this version
+# runs Actions off mirror-sync pushes. Because it's read-only, this workflow
+# file is committed on GitHub (origin/main) — the Forgejo remote rejects
+# direct pushes to a pull-mirror, so don't try to land it there.
+#
+# Cross-repo dependency problem: every package in this monorepo carries a
+# `file:` dependency onto a sibling repo that doesn't exist on a fresh
+# runner:
+#   - packages/mesh-core -> codec-local/packages/{web,web-safety,web-llm},
+#     which are absolute symlinks to /mnt/h/dev/codec-local/packages/*,
+#     itself a symlink to the real Codec checkout on the dev machine.
+#   - packages/mesh-core, mesh-react, apps/demo -> @unstable-legion/stage-runtime
+#     via file:../../../legion-stage-runtime/packages/stage-runtime.
+#
+# Fix: recreate the dev machine's /mnt/h/dev root in the job container and
+# clone the two sibling repos into it before `npm ci`, so the existing
+# relative/absolute `file:` paths resolve unchanged:
+#   - Codec: public on GitHub (wdunn001/Codec) -> anonymous clone.
+#   - legion-stage-runtime: private on both GitHub and this Forgejo instance.
+#     Forgejo-native checkout (same instance) using a dedicated READ-ONLY
+#     deploy key added to legion-stage-runtime (title "ci-cross-repo-read"),
+#     whose private half is the LEGION_STAGE_RUNTIME_DEPLOY_KEY Forgejo
+#     Actions secret on THIS repo. Narrower than reusing the admin
+#     mirror-token — same shape as authentik's DEPLOY_SSH_KEY pattern.
+#
+# Scope: mesh-core + mesh-react unit suites only. apps/demo is a Vite SPA
+# with a Playwright e2e/WebGPU suite and no unit tests of its own — its
+# build+deploy is handled by the demo deploy pipeline, not CI.
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD keeps `npm ci` from fetching
+# Chromium/Firefox/WebKit for @playwright/test's postinstall, since `npm ci`
+# always installs the full workspace tree (including apps/demo's deps) even
+# though this workflow doesn't build/test that workspace.
+#
+# NOT covered (follow-up — see legion-stage-runtime ROADMAP.md "C4 — CI +
+# deploy"): apps/demo's Playwright e2e / WebGPU chaos suite needs a real
+# GPU device, none on the .88 runner container. workflow_dispatch stub below
+# documents the manual path.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: docker
+    steps:
+      - name: npm ci + build + test (mesh-core, mesh-react)
+        env:
+          REPO_TOKEN: ${{ github.token }}
+          DEPLOY_KEY: ${{ secrets.LEGION_STAGE_RUNTIME_DEPLOY_KEY }}
+        run: |
+          set -eu
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates openssh-client >/dev/null
+
+          mkdir -p /mnt/h/dev
+          git clone -q "http://token:${REPO_TOKEN}@192.168.1.88:8530/${GITHUB_REPOSITORY}.git" /mnt/h/dev/unstable-legion
+          cd /mnt/h/dev/unstable-legion && git checkout -q "${GITHUB_SHA}"
+
+          # Sibling 1: Codec (public on GitHub) -> the codec-local symlink target.
+          mkdir -p "/mnt/h/dev/Project Codec"
+          git clone -q --depth 1 https://github.com/wdunn001/Codec.git "/mnt/h/dev/Project Codec/Codec"
+          ln -s "/mnt/h/dev/Project Codec/Codec" /mnt/h/dev/codec-local
+
+          # Sibling 2: legion-stage-runtime (private, same Forgejo instance)
+          # via the dedicated read-only deploy key.
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 2222 -H 192.168.1.88 >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -p 2222 -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+            git clone -q "git@192.168.1.88:wdunn001/legion-stage-runtime.git" /mnt/h/dev/legion-stage-runtime
+
+          cd /mnt/h/dev/unstable-legion
+          export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+          npm ci --no-audit --no-fund
+          npm run build -w @unstable-legion/core -w @unstable-legion/react
+          npm test -w @unstable-legion/core -w @unstable-legion/react
+
+  e2e-webgpu:
+    # Manual-only stub — see the header comment above for why this isn't
+    # wired into the push trigger yet.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: docker
+    steps:
+      - name: Not implemented — see legion-stage-runtime ROADMAP.md C4 follow-up
+        run: |
+          echo "apps/demo's Playwright e2e + WebGPU chaos suite is not wired into CI."
+          echo "Run it manually: cd apps/demo && npx playwright install --with-deps chromium && npm run test:e2e"
+          exit 0
