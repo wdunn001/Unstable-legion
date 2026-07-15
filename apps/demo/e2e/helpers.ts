@@ -117,6 +117,78 @@ export interface ThreePeerMesh {
   hostBSelfId: string;
 }
 
+export interface PeerMeshOptions {
+  /** Number of stage-hosting peers besides the driver. Mainline is 2
+   * (one active remote + one hot spare); casefile test 2's "2-pages-
+   * no-spare variant" uses 1. */
+  hostCount: 1 | 2;
+  /** 'separate' = one BrowserContext per peer (current mainline shape,
+   * real-machine-like, each peer its own renderer). 'shared' = every
+   * page in ONE BrowserContext (== ONE renderer process) — the shape
+   * every legion-stage-runtime harness control (p2p.spec, parity page)
+   * actually runs under. Casefile test 2: revert to 'shared' and
+   * compare against mainline's 'separate'. */
+  contextMode: 'separate' | 'shared';
+}
+
+export interface PeerMesh {
+  driver: Page;
+  hosts: Page[];
+  hostSelfIds: string[];
+}
+
+/**
+ * Generalized version of `setupThreePeerMesh` — parameterized over host
+ * count and context-sharing so casefile test 2 (multi-page/context
+ * dimension) can flip ONE variable at a time against the same real demo
+ * UI flow the mainline spec drives, instead of a synthetic stand-in.
+ */
+export async function setupPeerMesh(context: BrowserContext, room: string, opts: PeerMeshOptions): Promise<PeerMesh> {
+  const browser = context.browser();
+  if (!browser) throw new Error('setupPeerMesh requires a browser-backed context');
+
+  const contexts: BrowserContext[] = [];
+  const nextContext = async (): Promise<BrowserContext> => {
+    if (opts.contextMode === 'shared') {
+      if (contexts.length === 0) contexts.push(await browser.newContext());
+      return contexts[0]!;
+    }
+    const ctx = await browser.newContext();
+    contexts.push(ctx);
+    return ctx;
+  };
+
+  const driverCtx = await nextContext();
+  const driver = await driverCtx.newPage();
+  wirePageLogging(driver, 'driver');
+  await joinDemo(driver, room, 'driver');
+
+  const hosts: Page[] = [];
+  const hostSelfIds: string[] = [];
+  for (let i = 0; i < opts.hostCount; i++) {
+    const label = opts.hostCount === 1 ? 'host' : i === 0 ? 'hostA' : 'hostB';
+    const hostCtx = await nextContext();
+    const host = await hostCtx.newPage();
+    wirePageLogging(host, label);
+    await joinDemo(host, room, label);
+    await setHostingEnabled(host, true);
+    await waitForHostActive(host);
+    hosts.push(host);
+    hostSelfIds.push((await readStageDebug(host)).selfId!);
+  }
+
+  await expect(
+    async () => {
+      const ids = await rosterStageHostPeerIds(driver);
+      for (const id of hostSelfIds) {
+        if (!ids.includes(id)) throw new Error(`driver roster missing host ${id}: has ${JSON.stringify(ids)}`);
+      }
+    },
+  ).toPass({ timeout: 30_000, intervals: [500, 1000, 2000] });
+
+  return { driver, hosts, hostSelfIds };
+}
+
 /**
  * Join 3 pages to one isolated room: driver + two hosting-enabled stage
  * hosts. Waits until the driver's roster sees BOTH `stageHost` caps

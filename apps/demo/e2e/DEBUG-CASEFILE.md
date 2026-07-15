@@ -103,6 +103,61 @@ the prime remaining difference between the red mainline spec and every
 green control (harness's p2p.spec: 2 pages, ONE shared context/renderer;
 this test 1: 2 workers, ONE page).
 
+## Test 2 (2026-07-15)
+
+Added `setupPeerMesh` (helpers.ts, parameterized over `hostCount` and
+`contextMode`) + `pipeline-split-context-variants.spec.ts` to flip one
+variable at a time against the REAL demo pipeline (not a synthetic
+stand-in).
+
+**Test 2a — revert to ONE SHARED context, 3 peers (driver + hostA +
+hostB), harness shape**: run 1 reproduces the IDENTICAL failure
+signature — hostB (the chosen remote) streams cleanly to exactly 320 MB
+(`[stage-runtime] stream .../full.gguf: 320 MB` is the last progress
+line), then `worker CLOSED` with no ErrorEvent, no pageerror, no wasm
+abort. Driver's load deadline (240s) fires afterward with "worker died
+silently or stalled". **Context-sharing alone does NOT fix it** —
+reverting to the harness's literal shape (one BrowserContext) still
+dies at the same byte offset. Note: Playwright/Chromium doesn't
+guarantee same-renderer-process for multiple `Page`s in one
+`BrowserContext` (unlike test 1's single-page, two-worker shape, which
+IS provably one renderer) — so this doesn't cleanly isolate "renderer
+process count" the way test 1 did, but it does rule out
+"BrowserContext-per-peer" as the fix people assumed it was.
+
+Next: test 2b (2 pages, no spare, separate contexts) to isolate whether
+the mere PRESENCE of a 3rd page/worker (hostB's idle spare sibling, or
+here hostA as the non-selected host) contributes contention, independent
+of context-sharing.
+
+**Test 2b — 2 pages only (driver + host, NO spare), separate contexts
+(mainline's context shape minus the 3rd page)**: run 1 reproduces the
+IDENTICAL failure signature AGAIN — host streams cleanly to exactly
+320 MB, then `worker CLOSED`, no ErrorEvent. Same byte offset as every
+other run (test 2a, and all 14 prior mainline runs).
+
+**Test 2 verdict: multi-page/context dimension RULED OUT.** Neither
+context-sharing (2a) nor the 3rd spare page (2b) is necessary for the
+death — the minimal-as-possible real-pipeline shape (2 pages, driver +
+one host, separate contexts) still dies at the exact same 320 MB mark.
+Combined with test 1 (2 workers, 1 page, succeeds every time), the
+distinguishing factor is NOT page/context topology at all — it's
+something about the REAL page (mesh join, WebRTC/Trystero connections to
+3 public MQTT relay brokers, React app overhead, `useStageHost`'s
+capability-detection/publish cycle) that debug-two-workers.html doesn't
+have. The host in the real pipeline sits alive for tens of seconds
+(mesh discovery, WebGPU limit detection, cap publish/heartbeat) BEFORE
+`stage.load` ever arrives — debug-two-workers.html starts the load
+immediately on page load. That points straight at casefile hypothesis 3
+(timing/aging).
+
+Moving to hypothesis 3, tested in the CLEANEST available environment:
+legion-stage-runtime's own harness (p2p.spec's proven-green host/driver
+pages, dev server, always-immediate load in every prior run) — age the
+host page 60s (idle, no load) before the driver ever starts, isolating
+whether elapsed wall-clock idle time alone (independent of the demo's
+mesh/React overhead) reproduces the death.
+
 ## Environment notes
 
 - Windows 11, RTX 2080 Ti, bundled Playwright chromium, headed, WebGPU via
