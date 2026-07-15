@@ -356,7 +356,12 @@ function Dashboard(props: {
   // pattern lets Vite bundle the worker as a separate chunk and emit a
   // worker-classification flag at build time.
   const llmWorkerRef = useRef<Worker | null>(null);
-  if (llmWorkerRef.current === null && typeof Worker !== 'undefined') {
+  // `?nochat=1` (e2e / dedicated-stage-host mode) skips the chat engine
+  // worker entirely — a page that only hosts pipeline stages has no use for
+  // it, and every live worker in the renderer eats into the same budget the
+  // stage worker's model load needs.
+  const noChat = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nochat');
+  if (llmWorkerRef.current === null && typeof Worker !== 'undefined' && !noChat) {
     llmWorkerRef.current = new Worker(
       new URL('./workers/llmWorker.ts', import.meta.url),
       { type: 'module' },

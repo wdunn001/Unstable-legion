@@ -55,13 +55,23 @@ async function handle(req: StageWorkerRequest): Promise<void> {
     switch (req.type) {
       case 'load': {
         const descriptor = req.descriptor as StageDescriptor;
+        // Checkpoint logging: a worker the browser kills (OOM/GPU) dies with
+        // NO ErrorEvent — the last checkpoint printed localizes the death.
+        const mem = () => {
+          const m = (performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
+          return m ? `heap=${(m.usedJSHeapSize / 1048576).toFixed(0)}MB/${(m.jsHeapSizeLimit / 1048576).toFixed(0)}MB` : 'heap=n/a';
+        };
+        console.log(`[stage-worker] load start layers=[${descriptor.layerStart},${descriptor.layerEnd}) ${mem()}`);
         const { default: createLegionStageModule } = await import(
           /* @vite-ignore */ new URL('/wasm/legion-stage.js', self.location.origin).toString()
         );
+        console.log(`[stage-worker] glue module imported ${mem()}`);
         stage = await loadStage(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
-        });
+          onProgress: (phase: string) => console.log(`[stage-worker] ${phase} ${mem()}`),
+        } as Parameters<typeof loadStage>[1]);
+        console.log(`[stage-worker] stage loaded ${mem()}`);
         post({
           type: 'ready',
           reqId: req.reqId,

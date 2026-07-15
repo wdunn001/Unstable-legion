@@ -10,6 +10,7 @@ const GATE_TIMEOUT_MS = 20 * 60 * 1000;
 
 export default defineConfig({
   testDir: './e2e',
+  globalSetup: './e2e/global-setup.ts',
   timeout: GATE_TIMEOUT_MS,
   expect: { timeout: GATE_TIMEOUT_MS },
   fullyParallel: false,
@@ -27,9 +28,21 @@ export default defineConfig({
     // own playwright.config.ts owns 4173 and may already be running
     // concurrently; picking a distinct port avoids Playwright's
     // `reuseExistingServer` silently attaching to the WRONG app).
-    command: 'npx vite --port 4183 --strictPort --host 127.0.0.1',
+    // build+preview, NOT the dev server: Vite's optimize cache doesn't hash
+    // linked file:-dep dist contents, so a rebuilt @codecai/* or
+    // @unstable-legion/* package invalidates LAZILY mid-run — a full-page
+    // reload lands on a host page right as stage.load arrives and wipes all
+    // wasm/WebGPU state (root-caused twice in C3; optimizeDeps.include alone
+    // does not cover the stale-cache case). A production build has no
+    // optimizer and no HMR: nothing can reload a page mid-session.
+    // Single process (no `&&` chain): Windows process-tree kill reaches it.
+    // The build runs in e2e/global-setup.ts.
+    command: 'npx vite preview --port 4183 --strictPort --host 127.0.0.1',
     url: 'http://127.0.0.1:4183',
-    reuseExistingServer: !process.env.CI,
+    // Never reuse: a lingering preview server from a prior run serves a STALE
+    // bundle — we lost a full debug cycle to a run that silently tested old
+    // code (same chunk hash across "different" builds is the tell).
+    reuseExistingServer: false,
     timeout: 120_000,
   },
   projects: [
@@ -55,6 +68,10 @@ export default defineConfig({
             '--disable-features=WebRtcHideLocalIpsWithMdns',
             // 3 pages share one physical GPU (full.gguf ~610MB each,
             // 3x fits) — no extra flags needed beyond WebGPU enablement.
+            // Diagnostic: dump renderer kill reasons (OOM codes) to the
+            // browser process stderr (visible with DEBUG=pw:browser).
+            '--enable-logging=stderr',
+            '--v=1',
           ],
         },
       },

@@ -29,6 +29,26 @@ export function wirePageLogging(page: Page, label: string): void {
       console.log(`[${label}] main frame navigated -> ${frame.url()}`);
     }
   });
+  // Workers die silently by default: pipe their lifecycle + console so a
+  // stage worker that throws during module init is visible in test output.
+  page.on('worker', (worker) => {
+    // eslint-disable-next-line no-console
+    console.log(`[${label}] worker SPAWNED -> ${worker.url()}`);
+    worker.on('close', () => console.error(`[${label}] worker CLOSED -> ${worker.url()}`));
+  });
+  // Route stage-worker console output through the page logger — a worker that
+  // throws during wasm/model init otherwise dies with its logs unseen.
+  page.on('console', (msg) => {
+    const loc = msg.location()?.url ?? '';
+    if (loc.includes('stageWorker')) {
+      // eslint-disable-next-line no-console
+      console.log(`[${label} stage-worker] ${msg.text()}`);
+    }
+  });
+  page.on('requestfailed', (req) => {
+    // eslint-disable-next-line no-console
+    console.error(`[${label}] request FAILED ${req.failure()?.errorText} -> ${req.url()}`);
+  });
   page.on('websocket', (ws) => {
     // eslint-disable-next-line no-console
     console.log(`[${label}] WS open -> ${ws.url()}`);
@@ -39,7 +59,7 @@ export function wirePageLogging(page: Page, label: string): void {
 
 /** Navigate to the demo with an isolated room + nick, join via PersonaForm. */
 export async function joinDemo(page: Page, roomId: string, nick: string): Promise<void> {
-  await page.goto(`/?room=${encodeURIComponent(roomId)}`);
+  await page.goto(`/?room=${encodeURIComponent(roomId)}&nochat=1`);
   await page.locator('#ul-nick').fill(nick);
   await page.locator('button[type="submit"]').click();
   await page.locator('.ul-app').waitFor({ state: 'visible', timeout: 30_000 });
@@ -103,9 +123,20 @@ export interface ThreePeerMesh {
  * before returning, so callers start from "discovery complete."
  */
 export async function setupThreePeerMesh(context: BrowserContext, room: string): Promise<ThreePeerMesh> {
-  const driver = await context.newPage();
-  const hostA = await context.newPage();
-  const hostB = await context.newPage();
+  // One CONTEXT (= one renderer process) per peer. Same-origin pages in a
+  // shared context share a renderer, and its memory budget with it: with two
+  // ~1.3 GB stage workers, whichever loads second gets OOM-killed by Chrome
+  // with no ErrorEvent (root-caused in the run-8 timeline: perfectly
+  // serialized loads, second stage worker dies right after device init).
+  // Separate contexts also model reality — real peers are separate machines.
+  const browser = context.browser();
+  if (!browser) throw new Error('setupThreePeerMesh requires a browser-backed context');
+  const driverCtx = await browser.newContext();
+  const hostACtx = await browser.newContext();
+  const hostBCtx = await browser.newContext();
+  const driver = await driverCtx.newPage();
+  const hostA = await hostACtx.newPage();
+  const hostB = await hostBCtx.newPage();
   wirePageLogging(driver, 'driver');
   wirePageLogging(hostA, 'hostA');
   wirePageLogging(hostB, 'hostB');

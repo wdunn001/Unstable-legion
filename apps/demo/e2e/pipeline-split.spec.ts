@@ -47,9 +47,20 @@ test('pipeline-split: driver plans a 2-stage split across 2 stage hosts and stre
     .toEqual(expect.arrayContaining([1]));
 
   // ── Streamed completion: >= 32 tokens, status finished. ─────────────
+  // Poll the whole status object (not just the phase) so a failure message
+  // carries the abort reason + progress counters instead of a bare "aborted".
   await expect
     .poll(
-      async () => (await readStageDebug(driver)).pipeline?.status?.phase,
+      async () => {
+        const d = await readStageDebug(driver);
+        const s = d.pipeline?.status;
+        if (s?.phase === 'aborted' || s?.phase === 'finished') {
+          console.log(
+            `[test] terminal status=${JSON.stringify(s)} tokens=${d.pipeline?.tokens?.length ?? 0} restarts=${d.pipeline?.restartCount ?? 0}`,
+          );
+        }
+        return s?.phase === 'aborted' ? `aborted: ${JSON.stringify(s)}` : s?.phase;
+      },
       { timeout: 10 * 60_000, message: 'pipeline should reach finished' },
     )
     .toBe('finished');

@@ -248,14 +248,27 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           log,
         );
         const shardUrls = msg.payload.shardUrls ?? (msg.payload.manifestUrl ? [msg.payload.manifestUrl] : []);
-        await workerClient.load({
-          modelId: msg.payload.modelId,
-          layerStart: msg.payload.layerStart,
-          layerEnd: msg.payload.layerEnd,
-          totalLayers: msg.payload.totalLayers,
-          shardUrls,
-          ctxSize: msg.payload.ctxSize,
-        });
+        // Deadline the load: a worker the browser kills (OOM / GPU-process
+        // death) fires NO ErrorEvent — without a timeout this await hangs
+        // forever, the driver never gets stage.stop, and a dead host looks
+        // identical to a slow one (CHAOS.md layer 1: fail fast, never hang).
+        const loadDeadlineMs = 240_000;
+        await Promise.race([
+          workerClient.load({
+            modelId: msg.payload.modelId,
+            layerStart: msg.payload.layerStart,
+            layerEnd: msg.payload.layerEnd,
+            totalLayers: msg.payload.totalLayers,
+            shardUrls,
+            ctxSize: msg.payload.ctxSize,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`stage worker load exceeded ${loadDeadlineMs}ms (worker died silently or stalled)`)),
+              loadDeadlineMs,
+            ),
+          ),
+        ]);
         log('[stage-host] warming up WebGPU shader pipelines before reporting ready…');
         await warmUpStageWorker(workerClient, log);
         setSession({
