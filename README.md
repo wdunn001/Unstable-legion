@@ -200,6 +200,23 @@ explicit go-ahead first). Until then, deploy is: rsync/tar a prepared
 checkout to `.198:/storage/unstable-legion`, `docker compose build`,
 `docker compose up -d`.
 
+**TURN config gotcha (M0.5 reliability spike, 2026-07-15):** `docker
+compose build` reads `VITE_TURN_URLS` / `VITE_TURN_USERNAME` /
+`VITE_TURN_CREDENTIAL` / `VITE_TURN_USE_DEFAULT` from a `.env` file next
+to `docker-compose.yml` on the deploy host (see `.env.example`). If that
+`.env` is missing, the build **succeeds silently** with a STUN-only
+bundle — no self-hosted coturn, no error, no warning. This is exactly
+what happened in production for the first several days: `legion-coturn`
+ran healthy the whole time while the deployed demo never used it. Always:
+1. Confirm `.198:/storage/unstable-legion/.env` has real values (credential
+   from `.198:/storage/coturn/turnserver.conf`, never commit it).
+2. After `docker compose build legion-demo`, run
+   `scripts/verify-turn-baked.sh` before `up -d` — it fails loud if the
+   TURN URL isn't actually in the built bundle.
+
+See `docs/TURN-RELIABILITY.md` for the full M0.5 reliability findings and
+verdict.
+
 ## Status
 
 Pre-release. The v0.0.1 cut is the cap-announce + roster + chat slice
