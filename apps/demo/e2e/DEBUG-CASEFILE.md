@@ -299,6 +299,26 @@ cleanly 2/2 runs after the fix (54.5s and 54.0s respectively, 63 tokens,
 `restarts: 0`, hostA/hostB both stream cleanly through and past the
 former 320 MB death point with no incident).
 
+### Full green matrix (post-fix, 2026-07-15)
+
+- `apps/demo` e2e (`pipeline-split.spec.ts`, `chaos.spec.ts`,
+  `compat.spec.ts`, `discovery.spec.ts`): **4/4 pass** (2.3m total).
+- `apps/demo` e2e diagnostic specs built during this investigation
+  (`debug-two-workers.spec.ts`, `pipeline-split-context-variants.spec.ts`
+  — the latter's test 2a/2b USED to reproduce the death and now pass
+  cleanly with the fix, additional confirming evidence): **3/3 pass**.
+- `legion-stage-runtime/harness` e2e control (`p2p.spec.ts` x2,
+  `parity.spec.ts`): **3/3 pass** (1.5m total) — unaffected by the fix
+  (harness doesn't use `useStageHost`), confirmed still green throughout.
+- `legion-stage-runtime/harness` e2e diagnostic specs
+  (`p2p-aged-host.spec.ts`, `p2p-adapter-probe-host.spec.ts`): both
+  pass (each run once, decisively negative on their respective
+  hypotheses — not re-run since they don't touch the fixed code path).
+- `@unstable-legion/core` + `@unstable-legion/react` unit tests:
+  **78/78 pass** (67 + 11).
+- `legion-stage-runtime`'s `stage-runtime` + `harness` unit tests:
+  **90/90 pass** (49 + 41).
+
 ## Environment notes
 
 - Windows 11, RTX 2080 Ti, bundled Playwright chromium, headed, WebGPU via
