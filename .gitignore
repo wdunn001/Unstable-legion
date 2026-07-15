@@ -18,10 +18,18 @@ apps/*/.vite/
 .scratch/
 coverage/
 
-# Phase C demo stage assets — copied locally from legion-stage-runtime
-# (wasm glue/binary + the gguf model weights), never committed. See
-# apps/demo/nginx.conf for where production serves these from instead.
+# Phase C demo stage assets — copied locally from legion-stage-runtime by
+# scripts/fetch-stage-assets.sh (wasm glue/binary + the gguf model
+# weights), never committed. Prod serves both from the webllm-mirror
+# volume / the image build context instead — see apps/demo/nginx.conf.
+# webllm-stages/ is the pre-C4 local dev path, kept ignored alongside the
+# current webllm/ one so old local checkouts don't show it as untracked.
 apps/demo/public/wasm/
+apps/demo/public/webllm/
 apps/demo/public/webllm-stages/
 apps/demo/test-results/
 apps/demo/playwright-report/
+
+# scripts/prepare-deploy-context.sh output — real copies of sibling-repo
+# file: deps, materialized fresh before each `docker compose build`.
+.deploy-context/

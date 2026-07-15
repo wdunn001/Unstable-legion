@@ -23,7 +23,7 @@ export const STAGE_N_EMBD = 1024;
 
 /** Public path (relative to a page's own origin) to the full gguf. */
 export function stageShardPath(): string {
-  return `/webllm-stages/${STAGE_MODEL_ID}/full.gguf`;
+  return `/webllm/stages/${STAGE_MODEL_ID}/full.gguf`;
 }
 
 /** Resolve `stageShardPath()` against `baseUrl` — every stage in this demo

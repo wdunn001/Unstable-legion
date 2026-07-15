@@ -13,13 +13,24 @@ COPY packages/mesh-core/package.json packages/mesh-core/
 COPY packages/mesh-react/package.json packages/mesh-react/
 COPY apps/demo/package.json apps/demo/
 
-# The mesh-core file: deps point at ../../../codec-local/packages/{web,web-safety},
-# which is the build-host's path-clean symlink to the Codec repo. In the
-# container we need those resolvable too — the build script that calls
-# `docker compose build` (deploy.sh) copies the relevant Codec packages
-# into ./codec-local/ at the repo root before invoking the build so the
-# relative path resolves inside the image.
+# mesh-core's file: deps point at ../../codec-local/packages/{web,web-safety,web-llm},
+# which on the dev machine is a path-clean symlink to the Codec repo. In the
+# container we need those resolvable too — scripts/prepare-deploy-context.sh
+# (run on the deploy host before `docker compose build`) materializes real
+# copies (package.json + built dist/) into ./codec-local/ at the repo root,
+# since Docker's build-context tar doesn't dereference symlinks that point
+# outside the context.
 COPY codec-local/ ./codec-local/
+
+# mesh-core, mesh-react, and apps/demo all also depend on
+# @unstable-legion/stage-runtime via file:../../../legion-stage-runtime/packages/stage-runtime
+# (three levels up from packages/mesh-core, or apps/demo — i.e. one level
+# above the repo root on the dev machine, where legion-stage-runtime is a
+# sibling checkout). Same fix, same script: prepare-deploy-context.sh stages
+# a real copy at .deploy-context/legion-stage-runtime/packages/stage-runtime,
+# and we COPY it to the exact absolute path those relative references
+# resolve to from inside /app.
+COPY .deploy-context/legion-stage-runtime/ /legion-stage-runtime/
 
 RUN npm install --no-audit --no-fund --workspaces --include-workspace-root
 
