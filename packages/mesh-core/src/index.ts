@@ -258,6 +258,25 @@ export {
   type LlmSummarizeOptions,
 } from './aggregators.js';
 
+// ── M4: contribution economy ("standing") ───────────────────────────
+export {
+  StandingLedger,
+  createStandingLedger,
+  bindPriorityScore,
+  defaultNoiseSource,
+  DEFAULT_STANDING_CONFIG,
+  DEFAULT_HALF_LIFE_MS,
+  DEFAULT_NEWCOMER_FLOOR,
+  DEFAULT_LOWEST_LANE,
+  DEFAULT_NOISE_AMPLITUDE,
+  DEFAULT_NOISE_BUCKET_MS,
+  type StandingConfig,
+  type NoiseSource,
+  type RecordServiceInput,
+  type RecordConsumptionInput,
+  type StandingSnapshot,
+} from './standing.js';
+
 // ── Optional: Codec-over-WebRTC advanced path ──────────────────────
 //
 // HELLO/READY handshake + stream-id multiplexing + MTU chunking, for
