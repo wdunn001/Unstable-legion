@@ -42,13 +42,22 @@ import {
   usePersona,
   type ModelCatalogEntry,
   type MeshProviderProps,
+  type MeshPeerCap,
   type MeshToolDescriptor,
   type UseMcpAttachmentsHandle,
   type UseLocalLlmHandle,
   type CodecMapHandle,
 } from '@unstable-legion/react';
+import { StagePipelinePanel } from './components/StagePipelinePanel.js';
 
-const ROOM_ID = 'legion-demo';
+// `?room=` override lets e2e runs (and anyone testing against a live
+// deploy) use an isolated room instead of the shared public one —
+// Trystero's MQTT strategy uses public relays by default, so without
+// this every Playwright run would cross-talk with real demo users on
+// `legion-demo`. Mirrors legion-stage-runtime's harness `roomSuffix`
+// query param (H:\dev\legion-stage-runtime\harness\e2e\*.spec.ts).
+const ROOM_ID =
+  (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : null) ?? 'legion-demo';
 
 /**
  * Same-origin mirror of the @mlc-ai/web-llm prebuilt model repos.
@@ -289,6 +298,7 @@ export function App() {
         mcp={mcp}
         compatTier={deviceCompat?.tier}
         compatReason={deviceCompat?.reason}
+        baseCap={cap}
       />
     </MeshProvider>
   );
@@ -330,6 +340,7 @@ function Dashboard(props: {
   mcp: UseMcpAttachmentsHandle;
   compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
   compatReason?: string;
+  baseCap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
 }) {
   // Thin-client notice dismissal — persisted to localStorage so it
   // doesn't reappear on every reload on the same device.
@@ -466,6 +477,7 @@ function Dashboard(props: {
         emptyMessage="no MCP endpoints attached. add via the persona form (change nick → MCP list)."
       />
       <AudioKeepaliveToggle handle={audioKeepalive} />
+      <StagePipelinePanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} />
       <div className="ul-cols">
         <MeshRosterPanel />
         <MeshChatPanel

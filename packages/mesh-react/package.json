@@ -20,10 +20,12 @@
     "build:esm": "tsc -p tsconfig.esm.json",
     "build:cjs": "tsc -p tsconfig.cjs.json && node -e \"require('fs').readdirSync('dist/cjs').filter(f=>f.endsWith('.js')).forEach(f=>require('fs').renameSync('dist/cjs/'+f,'dist/cjs/'+f.replace(/\\.js$/,'.cjs')))\"",
     "build:types": "tsc -p tsconfig.types.json",
+    "test": "node --test --import tsx test/*.test.ts",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@unstable-legion/core": "0.0.1"
+    "@unstable-legion/core": "0.0.1",
+    "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
@@ -31,6 +33,7 @@
   "devDependencies": {
     "@types/react": "^18.2.0",
     "react": "^18.2.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "repository": {

@@ -514,3 +514,60 @@ code {
 .ul-dialog-actions button.ul-primary {
   background: var(--accent); color: #001a07; border-color: var(--accent);
 }
+
+/* ── StagePipelinePanel (demo-owned, not a library component — sp-*
+   instead of ul-* so it's visually distinct from what @unstable-legion/
+   react ships) ─────────────────────────────────────────────────────── */
+.sp-panel {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 16px 12px;
+  font-size: 12px;
+}
+.sp-panel h3 {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 13px;
+}
+.sp-model { color: var(--muted); font-weight: normal; font-size: 11px; }
+.sp-host-row, .sp-run-row, .sp-status-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 6px;
+}
+.sp-host-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.sp-prompt {
+  flex: 1 1 320px; min-width: 200px;
+  background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+  padding: 6px 8px; font-family: inherit; font-size: 12px;
+}
+.sp-run-row button {
+  background: var(--accent); color: #001a07; border: 0; padding: 6px 14px;
+  font-family: inherit; font-weight: bold; cursor: pointer; font-size: 12px;
+}
+.sp-run-row button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.sp-run-row button.sp-abort {
+  background: var(--chip-danger-bg); color: var(--chip-danger-fg);
+}
+.sp-badge {
+  background: #1c1c1c; color: var(--fg);
+  padding: 1px 8px; border-radius: 2px; font-size: 11px;
+}
+.sp-badge-warn { background: var(--chip-danger-bg); color: var(--chip-danger-fg); }
+.sp-warn { color: var(--warn); }
+.sp-err { color: var(--danger); }
+.sp-small { font-size: 11px; }
+.sp-topology {
+  border: 1px solid var(--border); background: #101010;
+  padding: 6px 10px; margin-bottom: 6px;
+}
+.sp-topology-title { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.sp-topology ol { margin: 0; padding-left: 18px; }
+.sp-topology li { margin-bottom: 2px; }
+.sp-stage-ready { color: var(--chip-fg); }
+.sp-stage-pending { color: var(--warn); }
+.sp-output {
+  background: #0a0a0a; border: 1px solid var(--border);
+  padding: 8px 10px; margin: 0; max-height: 160px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word; font-size: 12px;
+  min-height: 20px;
+}

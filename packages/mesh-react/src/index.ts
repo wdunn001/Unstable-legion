@@ -117,6 +117,44 @@ export {
   type DraftMutator,
 } from './draftBridge.js';
 
+// ── Phase C: pipeline-split stage hosting + driving ─────────────────
+export {
+  useStageHost,
+  type UseStageHostOptions,
+  type UseStageHostHandle,
+  type UseStageHostSession,
+} from './useStageHost.js';
+export {
+  useStagePipeline,
+  type UseStagePipelineOptions,
+  type UseStagePipelineHandle,
+  type StagePipelineStatus,
+} from './useStagePipeline.js';
+export {
+  buildStageHostCap,
+  buildLocalCapacityCap,
+  planPipelineForDriver,
+  sanitizeWasmHeapBudget,
+  WASM_HEAP_CEILING_BYTES,
+  type StageHostLimits,
+  type StageHostStabilityInputs,
+  type PlanPipelineForDriverOptions,
+} from './stagePipelinePlanning.js';
+export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
+export {
+  STAGE_MODEL_ID,
+  STAGE_TOTAL_LAYERS,
+  STAGE_CTX_SIZE,
+  STAGE_AVG_LAYER_BYTES,
+  STAGE_N_EMBD,
+  stageShardPath,
+  stageShardUrl,
+  stageShardUrls,
+  stageWasmGlueUrl,
+} from './stageModelSource.js';
+export { StageWorkerClient, type StageWorkerLog } from './stageWorkerClient.js';
+export type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+
 // ── UI components (host styles them via `ul-*` classes) ─────────────
 export { LlmStatusPanel, type LlmStatusPanelProps } from './components/LlmStatusPanel.js';
 export {

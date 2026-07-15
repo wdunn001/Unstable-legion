@@ -17,3 +17,11 @@ apps/*/.vite/
 
 .scratch/
 coverage/
+
+# Phase C demo stage assets — copied locally from legion-stage-runtime
+# (wasm glue/binary + the gguf model weights), never committed. See
+# apps/demo/nginx.conf for where production serves these from instead.
+apps/demo/public/wasm/
+apps/demo/public/webllm-stages/
+apps/demo/test-results/
+apps/demo/playwright-report/

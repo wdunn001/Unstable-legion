@@ -1,0 +1,155 @@
+/**
+ * Thin request/response client over one stage-worker DedicatedWorker.
+ * Ported from the proven Phase B harness client
+ * (H:\dev\legion-stage-runtime\harness\src\stageWorkerClient.ts) — same
+ * reqId-keyed pending-map, same method surface. Both `useStageHost`
+ * (answers `stage.load` as a remote stage) and `useStagePipeline` (runs
+ * the driver's own local stage-0) construct one of these per worker.
+ *
+ * The caller supplies the already-constructed `Worker` (host apps build
+ * it via `new Worker(new URL('./workers/stageWorker.ts', import.meta.url),
+ * { type: 'module' })` so Vite's bundler sees a static worker entry) —
+ * this package never constructs a Worker itself, keeping it bundler-agnostic.
+ */
+import type { StageDescriptor } from '@unstable-legion/stage-runtime';
+import type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+
+export type StageWorkerLog = (line: string) => void;
+
+/** `Omit` over a discriminated union collapses to the shared-keys-only
+ * intersection (a well-known TS gotcha) — this distributes the omission
+ * over each union member instead, so `send()` below still gets the
+ * per-request-kind field set with `reqId` stripped. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+export class StageWorkerClient {
+  private nextReqId = 1;
+  private readonly pending = new Map<
+    number,
+    { resolve: (v: StageWorkerResponse) => void; reject: (e: Error) => void }
+  >();
+  isFirst = false;
+  isFinal = false;
+  nEmbd = 0;
+
+  constructor(
+    private readonly worker: Worker,
+    private readonly label: string,
+    private readonly log: StageWorkerLog = () => undefined,
+  ) {
+    this.worker.addEventListener('message', (ev: MessageEvent<StageWorkerResponse>) => this.onMessage(ev.data));
+    this.worker.addEventListener('error', (ev: ErrorEvent) => {
+      this.log(`[${label}] worker error: ${ev.message}`);
+      for (const [, p] of this.pending) p.reject(new Error(`[${label}] worker error: ${ev.message}`));
+      this.pending.clear();
+    });
+  }
+
+  private onMessage(msg: StageWorkerResponse): void {
+    const pending = this.pending.get(msg.reqId);
+    if (!pending) return;
+    this.pending.delete(msg.reqId);
+    if (msg.type === 'error') {
+      pending.reject(new Error(`[${this.label}] ${msg.message}`));
+      return;
+    }
+    pending.resolve(msg);
+  }
+
+  private send(req: DistributiveOmit<StageWorkerRequest, 'reqId'>, transfer: Transferable[] = []): Promise<StageWorkerResponse> {
+    const reqId = this.nextReqId++;
+    const full = { ...req, reqId } as StageWorkerRequest;
+    return new Promise((resolve, reject) => {
+      this.pending.set(reqId, { resolve, reject });
+      this.worker.postMessage(full, transfer);
+    });
+  }
+
+  async load(descriptor: StageDescriptor): Promise<void> {
+    const res = await this.send({ type: 'load', descriptor });
+    if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
+    this.isFirst = res.isFirst;
+    this.isFinal = res.isFinal;
+    this.nEmbd = res.nEmbd;
+  }
+
+  async prefill(
+    tokens: number[],
+    positions: number[],
+    input?: WireActivationFrame,
+  ): Promise<{ activation?: WireActivationFrame; predictedToken?: number }> {
+    const res = await this.send({ type: 'prefill', tokens, positions, input }, input ? [input.payload] : []);
+    if (res.type !== 'result' || res.kind !== 'prefill') throw new Error(`[${this.label}] unexpected prefill response`);
+    return { activation: res.activation, predictedToken: res.predictedToken };
+  }
+
+  async decode(
+    token: number,
+    input?: WireActivationFrame,
+  ): Promise<{ activation?: WireActivationFrame; predictedToken?: number }> {
+    const res = await this.send({ type: 'decode', token, input }, input ? [input.payload] : []);
+    if (res.type !== 'result' || res.kind !== 'decode') throw new Error(`[${this.label}] unexpected decode response`);
+    return { activation: res.activation, predictedToken: res.predictedToken };
+  }
+
+  async tokenize(text: string, addSpecial: boolean): Promise<number[]> {
+    const res = await this.send({ type: 'tokenize', text, addSpecial });
+    if (res.type !== 'result' || res.kind !== 'tokenize') throw new Error(`[${this.label}] unexpected tokenize response`);
+    return res.tokens;
+  }
+
+  async detokenize(tokens: number[]): Promise<string> {
+    const res = await this.send({ type: 'detokenize', tokens });
+    if (res.type !== 'result' || res.kind !== 'detokenize') throw new Error(`[${this.label}] unexpected detokenize response`);
+    return res.text;
+  }
+
+  async tokenIsEog(token: number): Promise<boolean> {
+    const res = await this.send({ type: 'tokenIsEog', token });
+    if (res.type !== 'result' || res.kind !== 'tokenIsEog') throw new Error(`[${this.label}] unexpected tokenIsEog response`);
+    return res.isEog;
+  }
+
+  async reset(): Promise<void> {
+    await this.send({ type: 'reset' });
+  }
+
+  async dispose(): Promise<void> {
+    await this.send({ type: 'dispose' }).catch(() => undefined);
+    this.worker.terminate();
+  }
+}
+
+function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivationFrame {
+  return { dtype: 'f32', layout: 'token-major', tokenCount, payload: new ArrayBuffer(tokenCount * nEmbd * 4) };
+}
+
+/**
+ * Force WebGPU shader-pipeline compilation NOW (during an already-
+ * generous caller-side timeout window — `stage.load` for a remote host,
+ * or the local stage-0 setup before the driver session even starts)
+ * instead of on the first REAL prefill/decode dispatch. Dawn/WebGPU
+ * compiles compute pipelines lazily on first dispatch, and under
+ * multi-tab GPU contention (several peers sharing one adapter) that
+ * cold compile can take well past a minute — enough to blow a
+ * decode-step timeout on an otherwise-healthy pipeline (observed
+ * directly while building Phase C's e2e coverage: a real first
+ * dispatch exceeded 90s under 3-tab contention). Exercises both shapes
+ * a real session hits — a multi-token prefill dispatch and a
+ * single-token decode dispatch — with throwaway dummy input, then
+ * resets KV state. Failures here are logged but non-fatal (best-effort
+ * warm-up; a real load-order or shape bug still surfaces on the real
+ * request).
+ */
+export async function warmUpStageWorker(client: StageWorkerClient, log: StageWorkerLog = () => undefined): Promise<void> {
+  try {
+    const prefillInput = client.isFirst ? undefined : dummyActivationFrame(2, client.nEmbd);
+    await client.prefill([0, 0], [0, 1], prefillInput);
+    const decodeInput = client.isFirst ? undefined : dummyActivationFrame(1, client.nEmbd);
+    await client.decode(0, decodeInput);
+  } catch (err) {
+    log(`[stage-warmup] dispatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    await client.reset();
+  }
+}
