@@ -115,6 +115,25 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   const baseCapRef = useRef(opts.baseCap);
   baseCapRef.current = opts.baseCap;
   const mountedAtRef = useRef(Date.now());
+  // ROOT CAUSE (casefile DEBUG-CASEFILE.md in unstable-legion's demo app):
+  // callers construct `log` inline (`log: (line) => console.info(...)`),
+  // a fresh function identity on every render. The "answer stage-control +
+  // activation frames" effect below used to list `log` directly in its
+  // dependency array — any parent re-render (roster changes from a peer
+  // re-cap/heartbeat, which useMeshRoster treats as a snapshot change and
+  // therefore a re-render trigger, fire roughly every republishMs/
+  // heartbeatMs) changed `log`'s identity, so the effect tore down
+  // (cleanup unconditionally calls `disposeWorker()`, which calls
+  // `StageWorkerClient.dispose()` -> `worker.terminate()`) and re-ran —
+  // silently killing a worker mid-`stage.load` with NO ErrorEvent
+  // (`.terminate()` doesn't fire one), which is exactly the casefile's
+  // "silent death, no ErrorEvent, no wasm abort" signature. Captured via a
+  // ref instead so the effect's own identity churn can never be driven by
+  // the CALLER's callback identity — the fix belongs here, not at every
+  // call site, since any consumer passing an inline logger hits the same
+  // bug otherwise.
+  const logRef = useRef(log);
+  logRef.current = log;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -210,6 +229,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     // functions below (closures over an outer-scope variable aren't
     // re-narrowed), so capture the non-null value once here.
     const meshPeer: Peer = peer;
+    // Shadows the destructured `opts.log` for the rest of this effect —
+    // delegates to logRef so this effect's own identity never depends on
+    // the CALLER's log callback (see logRef's doc comment above: an
+    // inline `log` prop churning on every parent re-render used to tear
+    // down this effect mid-load and silently `.terminate()` the worker).
+    const log = (line: string) => logRef.current(line);
 
     let workerClient: StageWorkerClient | undefined;
     let decoder: ActivationWireDecoder | undefined;
@@ -398,7 +423,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       unsubFrame();
       void disposeWorker();
     };
-  }, [peer, enabled, createStageWorker, progressEveryN, log]);
+    // `log` deliberately excluded — see logRef above; this effect must not
+    // tear down (and silently terminate an in-flight worker) just because
+    // the caller's log callback identity changed on an unrelated re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peer, enabled, createStageWorker, progressEveryN]);
 
   return {
     supported: supportState.ok,

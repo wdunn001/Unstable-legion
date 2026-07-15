@@ -53,19 +53,28 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
     [],
   );
 
+  // Stable identities — `useStageHost`'s internal ref-capture (see that
+  // hook's `logRef` doc comment) already defends against an unstable
+  // logger tearing down an in-flight worker load, but passing a fresh
+  // arrow function on every render is still a footgun (any future effect
+  // that lists `log` in its deps reintroduces the bug) and costs nothing
+  // to avoid.
+  const logStageHost = useCallback((line: string) => console.info('[stage-host]', line), []);
+  const logStagePipeline = useCallback((line: string) => console.info('[stage-pipeline]', line), []);
+
   const host = useStageHost({
     enabled: hostingEnabled,
     peer,
     baseCap: props.baseCap,
     createStageWorker,
     keepaliveEnabled: props.keepaliveEnabled,
-    log: (line) => console.info('[stage-host]', line),
+    log: logStageHost,
   });
 
   const pipeline = useStagePipeline({
     peer,
     createStageWorker,
-    log: (line) => console.info('[stage-pipeline]', line),
+    log: logStagePipeline,
   });
 
   // Debug surface for Playwright + manual console poking. Cheap to keep

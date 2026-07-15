@@ -1,7 +1,12 @@
 # Casefile: second stage worker dies silently in the pipeline-split e2e
 
-Status: OPEN. Mainline `pipeline-split.spec.ts` red; every other suite green.
-14 instrumented runs, 2026-07-15. Full logs: `%TEMP%\c3-mainline-run*.log`.
+Status: **CLOSED — ROOT CAUSE FOUND AND FIXED, 2026-07-15.** See
+"ROOT CAUSE" section near the bottom for the mechanism and fix; the
+narrative below is kept as the full investigation trail (useful context
+for anyone touching `useStageHost` or `StagePipelinePanel` later).
+
+14 instrumented runs before this session, 2026-07-15. Full logs:
+`%TEMP%\c3-mainline-run*.log`.
 
 ## The failure (stable signature)
 
@@ -189,6 +194,110 @@ adapter+device, corrupt or destabilize the worker's later WebGPU state?
 Testing directly in the harness (add the exact `requestAdapter()` call
 demo's host makes, nothing else, to the otherwise-untouched harness
 host) to isolate this one variable cleanly.
+
+## Test 4 (2026-07-15)
+
+Added `legion-stage-runtime/harness/e2e/p2p-adapter-probe-host.spec.ts`:
+same shape as test 3, but instead of pure idle, the host page runs
+`navigator.gpu.requestAdapter()` on its main thread (exactly what the
+demo's `useStageHost` does via `detectWebGpuLimits()` on mount) — held,
+never destroyed — immediately before the driver proceeds with its
+normal `stage.load`.
+
+Run 1: **PASSED.** Host loaded past 320 MB with zero incident.
+**Main-thread adapter probing is RULED OUT** as sufficient on its own.
+
+## ROOT CAUSE
+
+With bundle, context/page topology, pure idle time, and adapter probing
+all ruled out, the remaining question was: what does the REAL
+`useStageHost` React hook do differently from every harness/debug
+stand-in that never dies? Reading `useStageHost.ts`'s "Answer
+stage-control + activation frames" `useEffect` end to end found it:
+
+```ts
+}, [peer, enabled, createStageWorker, progressEveryN, log]);
+```
+
+`log` was in the dependency array, and every real call site
+(`StagePipelinePanel.tsx`) passed it as an **inline arrow function**
+(`log: (line) => console.info('[stage-host]', line)`) — a fresh
+identity on every render. `useMeshRoster()`'s doc comment says its
+returned array "is the same reference until a peer is added / removed /
+**re-capped**" — and every peer in the room re-broadcasts its cap on a
+heartbeat (`useStageHost`'s own `republishMs`, default 15s, for any
+hosting-enabled peer; `MeshProvider`'s own `heartbeatMs` for the base
+presence cap) — so `StagePipelinePanel` re-renders roughly every 15s
+purely from roster churn, REGARDLESS of anything the local peer itself
+is doing. Every such re-render created a new `log` closure, which
+changed the effect's dependency array, which tore the effect down.
+
+The effect's cleanup unconditionally calls `disposeWorker()`:
+
+```ts
+async function disposeWorker(): Promise<void> {
+  const w = workerClient;
+  workerClient = undefined;
+  if (w) await w.dispose().catch(() => undefined);
+}
+```
+
+`StageWorkerClient.dispose()` sends a `dispose` request (resolves fast —
+the worker isn't yet holding a `stage` object mid-load, so it responds
+immediately) and then unconditionally calls `this.worker.terminate()`.
+**`Worker.terminate()` fires no `ErrorEvent`, no `pageerror`, nothing —
+it just silently stops the thread** — which is EXACTLY the casefile's
+signature: `full.gguf` streams cleanly to some point, then `worker
+CLOSED` with no error of any kind. The OLD effect closure's in-flight
+`await workerClient.load(...)` (inside the STALE `handleLoad` from
+before the re-run) then just hangs — nothing ever resolves or rejects
+it — until the 240s `loadDeadlineMs` `Promise.race` timeout fires and
+logs "stage worker load exceeded 240000ms (worker died silently or
+stalled)", which matches driver-side logs seen in every failing run.
+
+The consistent ~320 MB death point across 14+ runs (rather than a
+variable point tied to network jitter) makes sense under this
+mechanism: a heartbeat-driven timer firing at a roughly fixed wall-clock
+offset lines up with a roughly fixed number of streamed MB on this
+box's local (loopback, disk-cached) `vite preview` static server —
+timing-driven, not memory-driven, exactly matching casefile hypothesis
+3's spirit even though the precise mechanism (React effect teardown, not
+GPU/device aging) wasn't one of the 3 originally ranked hypotheses. It
+only became visible after tests 1-4 eliminated every other axis and left
+"the real `useStageHost` hook, and nothing else" as the one common
+factor between every failing configuration.
+
+This also explains why test 1 (no React/mesh — direct worker
+construction) never dies, and why tests 2a/2b (real `useStageHost`, any
+context/page shape) always die: the vulnerability lives entirely inside
+that hook's effect, independent of page count or context sharing.
+
+### Fix
+
+`packages/mesh-react/src/useStageHost.ts`: capture `log` via a ref
+(`logRef`, same pattern the file already uses for `baseCapRef`) instead
+of depending on it directly. The "answer" effect now shadows `log` with
+a stable wrapper that reads `logRef.current`, and `log` is removed from
+that effect's dependency array (with an explicit comment — not a lint
+suppression to shut the linter up, but a deliberate exclusion because
+this identity must never affect the effect's lifecycle). This is a
+framework-level fix: it protects EVERY caller, not just this demo's
+call site, from an unstable logger silently killing an in-flight worker
+load.
+
+`apps/demo/src/components/StagePipelinePanel.tsx`: also stabilized the
+two inline `log` props with `useCallback(..., [])` (`logStageHost`,
+`logStagePipeline`) — defense in depth / good hygiene, though the
+`logRef` fix alone is sufficient (verified: the demo's node_modules
+symlinks to `packages/mesh-react`'s rebuilt `dist/`, so the workspace
+build was picked up automatically — no robocopy needed for this fix
+since those symlinks resolve correctly on this box, see the plumbing
+notes at the end of this file for when a copy step WOULD be needed).
+
+Verified: `pipeline-split.spec.ts` (the mainline red spec) passes
+cleanly 2/2 runs after the fix (54.5s and 54.0s respectively, 63 tokens,
+`restarts: 0`, hostA/hostB both stream cleanly through and past the
+former 320 MB death point with no incident).
 
 ## Environment notes
 
