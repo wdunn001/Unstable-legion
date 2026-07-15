@@ -101,6 +101,21 @@ export interface Peer {
   sendTool(frame: MeshToolFrame, peers?: string | string[]): Promise<void>;
   /** Subscribe to inbound tool frames. */
   onTool(cb: (frame: MeshToolFrame, peerId: string) => void): () => void;
+  /**
+   * Send a pipeline-split stage-activation frame (Phase C). Bytes are
+   * opaque here — the wire format is `@unstable-legion/stage-runtime`'s
+   * activation-wire encoding (see `stageOrchestrator.ts` /
+   * `createActivationWireEncoder`), a header once per stream then one
+   * frame per prefill chunk / decode token. Unlike `cf`, there's no
+   * envelope/backward-compat fallback to try — `sf` is a Phase C-only
+   * action, so a v1 peer without stage support simply never registers a
+   * handler for it (Trystero actions are per-name; unknown actions on
+   * the sender side are a no-op for receivers that never called
+   * `makeAction('sf')`).
+   */
+  sendStageFrame(bytes: Uint8Array, peers?: string | string[]): Promise<void>;
+  /** Subscribe to inbound stage-activation frames. */
+  onStageFrame(cb: (bytes: Uint8Array, peerId: string) => void): () => void;
   /** Leave the room and stop the heartbeat. */
   leave(): void;
 }
@@ -108,7 +123,7 @@ export interface Peer {
 // ── joinMesh ──────────────────────────────────────────────────────────────
 
 /**
- * Connect to a Trystero room with the four mesh actions wired up.
+ * Connect to a Trystero room with the five mesh actions wired up.
  * Returns the `Peer` handle the consumer interacts with.
  *
  * Action mapping:
@@ -120,7 +135,13 @@ export interface Peer {
  *           `decodeEnvelope` first; on miss, fall back to
  *           `decodeFrameBytes` for backward-compat with pre-envelope
  *           peers. New peers should always emit envelopes.
- *   tc   →  MeshToolFrame ({kind: 'call' | 'result'})
+ *   tc   →  MeshToolFrame ({kind: 'call' | 'result'}) — also carries
+ *           Phase C stage-control messages (stage.load/ready/stop/
+ *           ping/pong/progress/token), see `stageControl.ts`.
+ *   sf   →  Uint8Array — Phase C pipeline-split activation-wire frame
+ *           (see `stageOrchestrator.ts`). Bytes only, no fallback
+ *           decode — a v1-only peer never calls `onStageFrame` and
+ *           Trystero simply has no receiver-side listener for it.
  */
 export function joinMesh(opts: PeerOptions): Peer {
   const { joinRoom, selfId, trysteroConfig, roomId, cap: initialCap } = opts;
@@ -146,12 +167,14 @@ export function joinMesh(opts: PeerOptions): Peer {
   const [sendChat, onChat] = room.makeAction<MeshChatMessage>('cm');
   const [sendFrameBytes, onFrameBytes] = room.makeAction<Uint8Array>('cf');
   const [sendTool, onTool] = room.makeAction<MeshToolFrame>('tc');
+  const [sendStageFrameBytes, onStageFrameBytes] = room.makeAction<Uint8Array>('sf');
 
   // ── Local listener registries ────────────────────────────────────────
   const chatListeners = new Set<(msg: MeshChatMessage, peerId: string) => void>();
   const frameListeners = new Set<(frame: CodecMsgpackFrame, peerId: string) => void>();
   const envelopeListeners = new Set<(env: WebRtcEnvelope, peerId: string) => void>();
   const toolListeners = new Set<(frame: MeshToolFrame, peerId: string) => void>();
+  const stageFrameListeners = new Set<(bytes: Uint8Array, peerId: string) => void>();
 
   // ── Debug logging — ON by default while we diagnose roster /
   //    chat-doesn't-work reports. To silence:
@@ -215,6 +238,11 @@ export function joinMesh(opts: PeerOptions): Peer {
   onTool((raw, peerId) => {
     if (!isMeshToolFrame(raw)) return;
     for (const cb of toolListeners) cb(raw, peerId);
+  });
+
+  onStageFrameBytes((raw, peerId) => {
+    if (!(raw instanceof Uint8Array)) return;
+    for (const cb of stageFrameListeners) cb(raw, peerId);
   });
 
   // ── Peer join/leave: cap broadcast + roster prune ────────────────────
@@ -317,6 +345,13 @@ export function joinMesh(opts: PeerOptions): Peer {
     onTool(cb) {
       toolListeners.add(cb);
       return () => toolListeners.delete(cb);
+    },
+    async sendStageFrame(bytes, peers) {
+      await sendStageFrameBytes(bytes, peers);
+    },
+    onStageFrame(cb) {
+      stageFrameListeners.add(cb);
+      return () => stageFrameListeners.delete(cb);
     },
     leave() {
       if (heartbeat) clearInterval(heartbeat);

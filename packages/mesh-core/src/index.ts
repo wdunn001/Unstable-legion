@@ -53,6 +53,71 @@ export {
 export { joinMesh, type Peer, type PeerOptions, type JoinRoomFn, type TrysteroRoom } from './peer.js';
 export { Roster, type RosterOptions } from './roster.js';
 
+// ── Phase C: pipeline-split stage-control protocol (over `tc`) ──────
+// Stays MESH_PROTOCOL_VERSION-compatible (v1, additive fields only) —
+// no subprotocol/generation bump implemented in this pass.
+export {
+  newCallId as newStageCallId,
+  newSessionId as newStageSessionId,
+  stageTokenCallId,
+  encodeStageControl,
+  decodeStageControl,
+  isStageControlFrame,
+  isStageLoadPayload,
+  isStageReadyPayload,
+  isStageStopPayload,
+  isStagePingPayload,
+  isStagePongPayload,
+  isStageProgressPayload,
+  isStageTokenPayload,
+  makeStageLoad,
+  makeStageReady,
+  makeStageStop,
+  makeStagePing,
+  makeStagePong,
+  makeStageProgress,
+  makeStageToken,
+  type StageControlKind,
+  type StageControlMessage,
+  type StageControlMessageFor,
+  type StageLoadPayload,
+  type StageReadyPayload,
+  type StageStopPayload,
+  type StagePingPayload,
+  type StagePongPayload,
+  type StageProgressPayload,
+  type StageTokenPayload,
+} from './stageControl.js';
+
+// ── Phase C: pipeline-split planner ──────────────────────────────────
+export {
+  planPipeline,
+  filterStageHosts,
+  hostCapacityBytes,
+  hostStabilityScore,
+  layerFragmentId,
+  type StagePipelineRequest,
+  type StageHostCap,
+  type RosterEntryWithStageHost,
+  type PlanPipelineOptions,
+  type PlannedStage,
+  type StagePlan,
+} from './stagePlanner.js';
+
+// ── Phase C: driver-side stage-session orchestrator ──────────────────
+export {
+  runDriverStageSession,
+  type DriverStageHooks,
+  type StageOrchestratorTimeouts,
+  type StageOrchestratorPeer,
+  type ReplanFn,
+  type DriverStageSessionOptions,
+  type StageOrchestratorEvent,
+  type StageOrchestratorListener,
+  type StageSessionResult,
+  type StageSessionHandle,
+} from './stageOrchestrator.js';
+
 // ── Codec frame plumbing (the primary path — Codec frames over WebRTC) ──
 export {
   encodeFrameBytes,

@@ -85,6 +85,51 @@ export interface MeshPeerCap {
   systemPromptSummary: string;
   /** Tool descriptors this peer will execute over the `tc` action. */
   tools: readonly MeshToolDescriptor[];
+  /**
+   * Phase C — pipeline-split stage hosting. Optional; absent means this
+   * peer doesn't participate in split-model inference (v1-compatible: an
+   * older peer or a peer without stage-runtime simply omits the field,
+   * and `stagePlanner.ts` filters it out of candidacy). See
+   * `H:\dev\legion-stage-runtime\docs\SLICING.md` / `docs/CHAOS.md` for
+   * the capacity model and stability-scoring rationale this shape backs.
+   */
+  stageHost?: {
+    /** GPU VRAM budget in bytes, when the peer can determine it (WebGPU
+     * adapter limits are often approximate/unavailable — falls back to
+     * `maxStorageBufferBytes` in the planner's capacity calc when absent). */
+    vramBytes?: number;
+    /** WebGPU `maxStorageBufferBindingSize` (or equivalent) — a hard
+     * per-binding ceiling independent of total VRAM. */
+    maxStorageBufferBytes: number;
+    /** wasm linear-memory budget this peer is willing to dedicate to a
+     * stage runtime instance. */
+    wasmHeapBudget: number;
+    /**
+     * Fragment ids of per-layer artifacts already resident in this
+     * peer's OPFS cache (see SLICING.md "Target state (Phase C)" —
+     * `layer-00005` etc.). Absent/empty = no cache locality signal.
+     * The planner uses this to prefer reassigning a peer the range it
+     * already holds (cheap failover / replan).
+     */
+    cachedFragments?: readonly string[];
+    /**
+     * Chaos-model stability signals (CHAOS.md Layer 4) — the planner
+     * uses these to prefer a stable desktop tab over a freshly-joined
+     * one at equal capacity, and to pick hot-spare candidates.
+     */
+    stability?: {
+      /** Audio-keepalive (or equivalent) active — peer is trying to stay backgrounded-alive. */
+      keepalive: boolean;
+      /** Tab is pinned (harder for the user to accidentally close). */
+      pinned?: boolean;
+      /** document.visibilityState === 'visible' at cap-mint time. */
+      visible: boolean;
+      /** true = running on battery (deprioritized vs AC power). */
+      onBattery?: boolean;
+      /** Milliseconds since this peer joined the mesh (tab/session age). */
+      uptimeMs: number;
+    };
+  };
 }
 
 // ── cm: chat-message frame ─────────────────────────────────────────────────

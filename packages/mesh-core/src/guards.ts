@@ -49,6 +49,35 @@ export function isMeshPeerCap(x: unknown): x is MeshPeerCap {
   // Missing field = empty array semantically (handled in resolver).
   if (x.authoritative !== undefined && !isStringArr(x.authoritative)) return false;
   if (x.delegating !== undefined && !isStringArr(x.delegating)) return false;
+  // Phase C: stageHost is optional but, when present, MUST be well-formed —
+  // a malformed stageHost block shouldn't sink the whole cap (v1 additive
+  // idiom), so we reject only the cap if stageHost itself is garbage,
+  // not merely absent.
+  if (x.stageHost !== undefined && !isStageHostCap(x.stageHost)) return false;
+  return true;
+}
+
+/**
+ * Runtime guard for the `MeshPeerCap.stageHost` block (Phase C). Exported
+ * separately so callers that only care about stage-hosting capability
+ * (e.g. `stagePlanner.ts` filtering a roster snapshot) can validate a
+ * loosely-typed value without going through the full cap guard.
+ */
+export function isStageHostCap(x: unknown): x is NonNullable<MeshPeerCap['stageHost']> {
+  if (!isRecord(x)) return false;
+  if (x.vramBytes !== undefined && typeof x.vramBytes !== 'number') return false;
+  if (typeof x.maxStorageBufferBytes !== 'number' || x.maxStorageBufferBytes <= 0) return false;
+  if (typeof x.wasmHeapBudget !== 'number' || x.wasmHeapBudget <= 0) return false;
+  if (x.cachedFragments !== undefined && !isStringArr(x.cachedFragments)) return false;
+  if (x.stability !== undefined) {
+    const s = x.stability;
+    if (!isRecord(s)) return false;
+    if (typeof s.keepalive !== 'boolean') return false;
+    if (typeof s.visible !== 'boolean') return false;
+    if (s.pinned !== undefined && typeof s.pinned !== 'boolean') return false;
+    if (s.onBattery !== undefined && typeof s.onBattery !== 'boolean') return false;
+    if (typeof s.uptimeMs !== 'number' || s.uptimeMs < 0) return false;
+  }
   return true;
 }
 
