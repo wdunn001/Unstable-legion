@@ -31,9 +31,16 @@ services:
     expose:
       - "80"
     environment:
-      VIRTUAL_HOST: legion.codecai.net
+      # cdn.codecai.net is an alias onto the same nginx: it serves the model
+      # mirror (/webllm/...) — including the per-layer stage packages — with
+      # its own ACME cert, so model artifacts can be fetched from a dedicated
+      # CDN hostname (immutable, content-addressed → long-cache friendly)
+      # instead of contending with the app origin. Same content, same box for
+      # now; a caching front / object-store can slot behind this name later
+      # without touching the app.
+      VIRTUAL_HOST: legion.codecai.net,cdn.codecai.net
       VIRTUAL_PORT: "80"
-      LETSENCRYPT_HOST: legion.codecai.net
+      LETSENCRYPT_HOST: legion.codecai.net,cdn.codecai.net
       LETSENCRYPT_EMAIL: licensing@quasarke.com
     volumes:
       # Shared MLC web-llm mirror — populated by the mass-zero scripts/mirror-webllm-models.sh
