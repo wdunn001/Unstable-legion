@@ -65,6 +65,18 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates openssh-client >/dev/null
 
+          # .88 has a documented IPv6 blackhole for some external pulls
+          # (ghcr.io/pkg-containers.githubusercontent.com/codeload.github.com
+          # are pinned to IPv4 in /etc/hosts for docker pulls — see
+          # lab-88-ghcr-ipv6-blackhole). Plain github.com isn't pinned there,
+          # and this job's container doesn't share the host's /etc/hosts, so
+          # onnxruntime-node's postinstall (a transitive dep pulled in by
+          # @codecai/web-llm's package tree — it downloads a prebuilt native
+          # binary from a github.com-hosted release) hung indefinitely the
+          # first two times this ran. Force IPv4-first DNS resolution for
+          # every Node process in this job rather than pinning /etc/hosts.
+          export NODE_OPTIONS=--dns-result-order=ipv4first
+
           mkdir -p /mnt/h/dev
           git clone -q "http://token:${REPO_TOKEN}@192.168.1.88:8530/${GITHUB_REPOSITORY}.git" /mnt/h/dev/unstable-legion
           cd /mnt/h/dev/unstable-legion && git checkout -q "${GITHUB_SHA}"
