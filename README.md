@@ -167,6 +167,39 @@ Bandwidth on a 500-token completion:
 Over Trystero relays with ≤100 KB/s sustained throughput per peer,
 that's the difference between a usable mesh and a stalling one.
 
+## CI + deploy (workstream C4)
+
+CI: `.forgejo/workflows/ci.yml`, runs on the Forgejo mirror's sync
+pushes (this repo's Forgejo copy is a read-only pull mirror of
+GitHub — commit workflow/source changes to GitHub `main`, they show up
+on Forgejo within its mirror-sync interval). Builds `@unstable-legion/core`
++ `@unstable-legion/react` and runs their unit suites, after materializing
+the two sibling-repo `file:` dependencies (Codec's `web`/`web-safety`/`web-llm`
+and legion-stage-runtime's `stage-runtime`) at the same absolute paths the
+dev machine's `/mnt/h/dev` layout uses. `apps/demo`'s Playwright e2e /
+WebGPU chaos suite is a `workflow_dispatch`-only stub — no GPU on the
+runner yet.
+
+Deploy: the demo (`apps/demo`) ships to `legion.codecai.net`, built by
+`docker-compose.yml` on the `.198` public-edge host (behind the existing
+`nginx-proxy` + `acme-companion` stack). Before `docker compose build`:
+
+1. `scripts/prepare-deploy-context.sh [legion-stage-runtime-dir] [codec-dir]`
+   — materializes `codec-local/` and `.deploy-context/legion-stage-runtime/`
+   as real files (Docker's build-context tar doesn't dereference symlinks
+   pointing outside the context) from built sibling checkouts, and copies
+   the wasm glue/binary into `apps/demo/public/wasm/`.
+2. The model weights (`full.gguf` + the per-layer package) are NOT part
+   of the image — they live on the host's `webllm-mirror` volume under a
+   `stages/<model-id>/` subpath, same mount `/webllm/` already reads from.
+
+This isn't wired to CD yet (no Forgejo Actions secret grants deploy SSH
+access to `.198` — that's a deliberate gap, not an oversight: minting a
+new persistent credential onto a shared production edge host needs an
+explicit go-ahead first). Until then, deploy is: rsync/tar a prepared
+checkout to `.198:/storage/unstable-legion`, `docker compose build`,
+`docker compose up -d`.
+
 ## Status
 
 Pre-release. The v0.0.1 cut is the cap-announce + roster + chat slice

@@ -67,6 +67,31 @@ stage_package "$LSR_DIR/packages/stage-runtime" \
   "$ROOT/.deploy-context/legion-stage-runtime/packages/stage-runtime" \
   "@unstable-legion/stage-runtime"
 
+# stage-runtime's own package.json carries a file:../../../Project Codec/Codec/packages/web
+# dependency on @codecai/web (its compiled dist/esm/frames.js has a bare
+# `from '@codecai/web'` import). We never `npm install` inside the staged
+# copy (no network / no nested npm run in the Dockerfile), so give it its
+# own node_modules with a real copy — this is exactly what Node/vite's
+# upward node_modules walk from /legion-stage-runtime/packages/stage-runtime
+# needs to resolve that bare specifier once it's relocated into the image.
+stage_package "$CODEC_DIR/packages/web" \
+  "$ROOT/.deploy-context/legion-stage-runtime/packages/stage-runtime/node_modules/@codecai/web" \
+  "@codecai/web (stage-runtime's own dep)"
+
+# ...and @codecai/web's own single runtime dependency, @msgpack/msgpack (a
+# plain registry package, zero deps of its own — normally hoisted to
+# Codec's root node_modules, which doesn't exist at all in the image).
+MSGPACK_SRC="$CODEC_DIR/node_modules/@msgpack/msgpack"
+MSGPACK_DST="$ROOT/.deploy-context/legion-stage-runtime/packages/stage-runtime/node_modules/@codecai/web/node_modules/@msgpack/msgpack"
+if [[ ! -d "$MSGPACK_SRC" ]]; then
+  echo "missing @msgpack/msgpack in $CODEC_DIR/node_modules — run npm install in the Codec checkout first" >&2
+  exit 1
+fi
+rm -rf "$MSGPACK_DST"
+mkdir -p "$(dirname "$MSGPACK_DST")"
+cp -a "$MSGPACK_SRC" "$MSGPACK_DST"
+echo "staged @msgpack/msgpack -> $MSGPACK_DST"
+
 # --- wasm glue/binary for apps/demo/public/wasm ---
 bash "$ROOT/scripts/fetch-stage-assets.sh" "$LSR_DIR"
 
