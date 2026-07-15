@@ -84,7 +84,14 @@ export async function waitForHostActive(page: Page, timeoutMs = 30_000): Promise
 export interface DebugStageSnapshot {
   selfId?: string;
   roster?: { peerId: string; hasStageHost: boolean; nick: string }[];
-  host?: { active: boolean; session?: unknown; tokensDecoded: number; lastError?: string };
+  host?: {
+    active: boolean;
+    sessions?: { sessionId: string; driverPeerId: string; layerStart: number; layerEnd: number; decodedCount: number }[];
+    tokensDecoded: number;
+    maxSessions?: number;
+    queueLength?: number;
+    lastError?: string;
+  };
   pipeline?: {
     status: { phase: string; error?: string; reason?: string };
     plan?: {
@@ -101,6 +108,38 @@ export interface DebugStageSnapshot {
 
 export async function readStageDebug(page: Page): Promise<DebugStageSnapshot> {
   return page.evaluate(() => (window as unknown as { __legionStage?: DebugStageSnapshot }).__legionStage ?? {});
+}
+
+/** Fill the prompt box and click "run split inference" — does not await
+ * completion, so callers can kick off two drivers back-to-back and poll
+ * both concurrently (see multi-session-host.spec.ts). */
+export async function runSplitInference(page: Page, prompt: string): Promise<void> {
+  await page.locator('.sp-prompt').fill(prompt);
+  await page.locator('.sp-run-row button', { hasText: 'run split inference' }).click();
+}
+
+/** Poll a driver page's `pipeline.status.phase` until it reaches
+ * 'finished'. Mirrors pipeline-split.spec.ts's polling idiom — returns a
+ * distinctive string on abort/error (rather than throwing) so a failed
+ * run's status/reason shows up in the assertion diff instead of just
+ * "expected finished, got aborted". */
+export async function waitForPipelineFinished(page: Page, label: string, timeoutMs = 10 * 60_000): Promise<DebugStageSnapshot> {
+  await expect
+    .poll(
+      async () => {
+        const d = await readStageDebug(page);
+        const s = d.pipeline?.status;
+        if (s?.phase === 'aborted' || s?.phase === 'error') {
+          // eslint-disable-next-line no-console
+          console.log(`[test] ${label} terminal status=${JSON.stringify(s)} tokens=${d.pipeline?.tokens?.length ?? 0}`);
+          return s.phase === 'aborted' ? `aborted: ${JSON.stringify(s)}` : `error: ${JSON.stringify(s)}`;
+        }
+        return s?.phase;
+      },
+      { timeout: timeoutMs, message: `${label} pipeline should reach finished` },
+    )
+    .toBe('finished');
+  return readStageDebug(page);
 }
 
 /** Roster peerIds (excluding self) that currently advertise a `stageHost` cap. */

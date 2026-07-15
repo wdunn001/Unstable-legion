@@ -78,6 +78,8 @@ export function isStageHostCap(x: unknown): x is NonNullable<MeshPeerCap['stageH
     if (s.onBattery !== undefined && typeof s.onBattery !== 'boolean') return false;
     if (typeof s.uptimeMs !== 'number' || s.uptimeMs < 0) return false;
   }
+  if (x.maxSessions !== undefined && (typeof x.maxSessions !== 'number' || x.maxSessions <= 0)) return false;
+  if (x.activeSessions !== undefined && (typeof x.activeSessions !== 'number' || x.activeSessions < 0)) return false;
   return true;
 }
 

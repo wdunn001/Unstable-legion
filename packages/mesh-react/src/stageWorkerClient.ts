@@ -73,12 +73,17 @@ export class StageWorkerClient {
     this.nEmbd = res.nEmbd;
   }
 
+  /** `sessionId` absent = the legacy fused single-session path (unchanged
+   * since before M2 — the driver's own local stage-0 worker and every
+   * pre-M2 e2e suite never pass one). Present = M2's multi-session path:
+   * routes to that session's own KV state on the same loaded worker. */
   async prefill(
     tokens: number[],
     positions: number[],
     input?: WireActivationFrame,
+    sessionId?: string,
   ): Promise<{ activation?: WireActivationFrame; predictedToken?: number }> {
-    const res = await this.send({ type: 'prefill', tokens, positions, input }, input ? [input.payload] : []);
+    const res = await this.send({ type: 'prefill', tokens, positions, input, sessionId }, input ? [input.payload] : []);
     if (res.type !== 'result' || res.kind !== 'prefill') throw new Error(`[${this.label}] unexpected prefill response`);
     return { activation: res.activation, predictedToken: res.predictedToken };
   }
@@ -86,8 +91,9 @@ export class StageWorkerClient {
   async decode(
     token: number,
     input?: WireActivationFrame,
+    sessionId?: string,
   ): Promise<{ activation?: WireActivationFrame; predictedToken?: number }> {
-    const res = await this.send({ type: 'decode', token, input }, input ? [input.payload] : []);
+    const res = await this.send({ type: 'decode', token, input, sessionId }, input ? [input.payload] : []);
     if (res.type !== 'result' || res.kind !== 'decode') throw new Error(`[${this.label}] unexpected decode response`);
     return { activation: res.activation, predictedToken: res.predictedToken };
   }
@@ -110,13 +116,30 @@ export class StageWorkerClient {
     return res.isEog;
   }
 
-  async reset(): Promise<void> {
-    await this.send({ type: 'reset' });
+  async reset(sessionId?: string): Promise<void> {
+    await this.send({ type: 'reset', sessionId });
   }
 
   async dispose(): Promise<void> {
     await this.send({ type: 'dispose' }).catch(() => undefined);
     this.worker.terminate();
+  }
+
+  /** M2: open a new lane (StageSessionHandle) on this already-loaded
+   * stage. Rejects if the worker hasn't loaded a stage yet or the
+   * model's lane_count (maxSessions, fixed at load time) is exhausted. */
+  async sessionCreate(sessionId: string): Promise<void> {
+    const res = await this.send({ type: 'sessionCreate', sessionId });
+    if (res.type !== 'result' || res.kind !== 'sessionCreate') {
+      throw new Error(`[${this.label}] unexpected sessionCreate response`);
+    }
+  }
+
+  /** M2: free a lane. Best-effort by design (mirrors `dispose()` — a
+   * session teardown during host-side cleanup shouldn't throw and block
+   * freeing the next queued session). */
+  async sessionFree(sessionId: string): Promise<void> {
+    await this.send({ type: 'sessionFree', sessionId }).catch(() => undefined);
   }
 }
 

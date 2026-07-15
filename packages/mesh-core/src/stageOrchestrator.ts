@@ -50,6 +50,7 @@ import {
   type StageControlMessage,
   type StageLoadPayload,
 } from './stageControl.js';
+import { encodeStageFrameEnvelope } from './stageFrameEnvelope.js';
 import type { MeshToolFrame } from './types.js';
 import type { StagePlan } from './stagePlanner.js';
 
@@ -269,6 +270,27 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
     resolveResult(result);
   }
 
+  /**
+   * M2: tell every currently-assigned remote stage host this session is
+   * done, on a NATURAL (non-aborted) finish — not just on abort
+   * (`doAbort` already does that). Pre-M2 this didn't matter much: a
+   * single-session host just got torn down by the next `stage.load`
+   * anyway. Post-M2, a host can serve several concurrent sessions on one
+   * loaded stage (`useStageHost.ts`), so a session that finishes cleanly
+   * (hits `maxDecodeTokens` without an explicit EOS token, or gets an
+   * EOS the host itself already detects and frees on) should still
+   * release its lane PROMPTLY instead of waiting out the host's 5-minute
+   * idle-eviction sweep — best-effort, matching `doAbort`'s fire-and-forget
+   * `sendTool` discipline (a session that finished successfully shouldn't
+   * be held up by a flaky notify).
+   */
+  function notifyRemotesDone(reason: string): void {
+    const stop = makeStageStop(sessionId, reason);
+    for (const peerId of currentRemotePeerIds) {
+      void opts.peer.sendTool(encodeStageControl(stop), peerId).catch(() => {});
+    }
+  }
+
   function doAbort(reason: string): void {
     if (aborted) return;
     aborted = true;
@@ -338,7 +360,11 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       nEmbd: opts.localHooks.nEmbd,
       dtype: opts.wireDtype,
     });
-    await opts.peer.sendStageFrame(encoder.headerBytes(), firstRemotePeerId(p));
+    // M2: envelope the wire header with this session's id (see
+    // stageFrameEnvelope.ts) — a host serving several concurrent driver
+    // sessions needs this to route inbound `sf` bytes before it can even
+    // tell "is this a header or a frame" for the right session.
+    await opts.peer.sendStageFrame(encodeStageFrameEnvelope(sessionId, encoder.headerBytes()), firstRemotePeerId(p));
   }
 
   /**
@@ -359,7 +385,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
     timeoutMs: number,
   ): Promise<{ token: number; done: boolean; finishReason?: string }> {
     const waiter = tokenTracker.expect(stageTokenCallId(sessionId, seq), timeoutMs);
-    await opts.peer.sendStageFrame(bytes, peerId);
+    await opts.peer.sendStageFrame(encodeStageFrameEnvelope(sessionId, bytes), peerId);
     const reply = await waiter;
     const decoded = decodeStageControl({ kind: 'result', ...reply });
     if (!decoded || decoded.kind !== 'stage.token') throw new Error(`expected stage.token for seq=${seq}, got ${decoded?.kind ?? 'unparsable'}`);
@@ -428,6 +454,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
         stepTimeoutMs = Math.max(stepTimeoutFloorMs, 10 * meanOf(tpotSamples));
         generatedTokens.push(tok.token);
         if (tok.done) {
+          notifyRemotesDone('driver finished generation (eos)');
           void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           return;
@@ -439,6 +466,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       }
     }
     if (!aborted && !finished) {
+      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
       void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
       emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
     }
@@ -455,6 +483,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(plan), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {
+        notifyRemotesDone('driver finished generation (eos)');
         void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         return;

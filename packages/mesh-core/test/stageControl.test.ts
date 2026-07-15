@@ -11,6 +11,9 @@ import {
   isStageControlFrame,
   isStageLoadPayload,
   isStageTokenPayload,
+  isStageSessionOpenPayload,
+  isStageSessionAcceptPayload,
+  isStageSessionBusyPayload,
   makeStageLoad,
   makeStageReady,
   makeStagePing,
@@ -18,6 +21,9 @@ import {
   makeStageStop,
   makeStageProgress,
   makeStageToken,
+  makeStageSessionOpen,
+  makeStageSessionAccept,
+  makeStageSessionBusy,
   stageTokenCallId,
   newSessionId,
 } from '../src/stageControl.ts';
@@ -193,6 +199,139 @@ test('tracker flow: unresolved call rejects after timeout', async () => {
   const tracker = new PendingToolCallTracker();
   const callId = newCallId();
   await assert.rejects(tracker.expect(callId, 20), /timed out/);
+});
+
+// ── M2: stage.session.open / accept / busy ──────────────────────────────────
+
+test('isStageSessionOpenPayload: requires wireHeader + a well-formed layer range', () => {
+  const base = {
+    sessionId: 's1',
+    modelId: 'qwen3-0.6b-q8_0',
+    layerStart: 0,
+    layerEnd: 28,
+    totalLayers: 28,
+    ctxSize: 2048,
+    wireDtype: 'f16' as const,
+    wireHeader: 'YmFzZTY0aGVhZGVy',
+  };
+  assert.equal(isStageSessionOpenPayload(base), true);
+  assert.equal(isStageSessionOpenPayload({ ...base, wireHeader: '' }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, wireHeader: undefined }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, layerEnd: 0 }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, wireDtype: 'bogus' }), false);
+});
+
+test('isStageSessionAcceptPayload: requires positive nEmbd/activeSessions/maxSessions', () => {
+  const base = { sessionId: 's1', nEmbd: 1024, isFirst: true, isFinal: true, activeSessions: 1, maxSessions: 4 };
+  assert.equal(isStageSessionAcceptPayload(base), true);
+  assert.equal(isStageSessionAcceptPayload({ ...base, nEmbd: 0 }), false);
+  assert.equal(isStageSessionAcceptPayload({ ...base, maxSessions: 0 }), false);
+  assert.equal(isStageSessionAcceptPayload({ ...base, activeSessions: -1 }), false);
+  assert.equal(isStageSessionAcceptPayload({ ...base, isFirst: 'yes' }), false);
+});
+
+test('isStageSessionBusyPayload: queuePosition/estWaitMs are optional but must be well-typed when present', () => {
+  assert.equal(isStageSessionBusyPayload({ sessionId: 's1' }), true);
+  assert.equal(isStageSessionBusyPayload({ sessionId: 's1', queuePosition: 3 }), true);
+  assert.equal(isStageSessionBusyPayload({ sessionId: 's1', queuePosition: -1 }), false);
+  assert.equal(isStageSessionBusyPayload({ sessionId: 's1', estWaitMs: -5 }), false);
+  assert.equal(isStageSessionBusyPayload({ sessionId: 's1', queuePosition: 1.5 }), false);
+});
+
+test('encodeStageControl/decodeStageControl round-trip: stage.session.open (call-shaped)', () => {
+  const sessionId = newSessionId();
+  const msg = makeStageSessionOpen(sessionId, {
+    modelId: 'qwen3-0.6b-q8_0',
+    layerStart: 0,
+    layerEnd: 28,
+    totalLayers: 28,
+    ctxSize: 2048,
+    wireDtype: 'f16',
+    wireHeader: 'aGVhZGVyLWJ5dGVz',
+  });
+  const frame = encodeStageControl(msg);
+  assert.equal(frame.kind, 'call');
+  const decoded = decodeStageControl(frame);
+  assert.ok(decoded);
+  assert.equal(decoded!.kind, 'stage.session.open');
+  assert.equal(decoded!.sessionId, sessionId);
+  assert.deepEqual(decoded, msg);
+});
+
+test('encodeStageControl/decodeStageControl round-trip: stage.session.accept (result-shaped)', () => {
+  const sessionId = newSessionId();
+  const callId = newCallId();
+  const msg = makeStageSessionAccept(sessionId, { nEmbd: 1024, isFirst: true, isFinal: true, activeSessions: 2, maxSessions: 4 }, callId);
+  const frame = encodeStageControl(msg);
+  assert.equal(frame.kind, 'result');
+  const decoded = decodeStageControl(frame);
+  assert.deepEqual(decoded, msg);
+});
+
+test('encodeStageControl/decodeStageControl round-trip: stage.session.busy, with and without queuePosition', () => {
+  const sessionId = newSessionId();
+  const callId = newCallId();
+  const queued = makeStageSessionBusy(sessionId, { queuePosition: 2, estWaitMs: 4000 }, callId);
+  assert.deepEqual(decodeStageControl(encodeStageControl(queued)), queued);
+
+  const rejected = makeStageSessionBusy(sessionId, {}, callId);
+  assert.deepEqual(decodeStageControl(encodeStageControl(rejected)), rejected);
+  assert.equal((rejected.payload as { queuePosition?: number }).queuePosition, undefined);
+});
+
+test('isStageControlFrame: true for the new stage.session.* kinds', () => {
+  const open = encodeStageControl(makeStageSessionOpen('s1', {
+    modelId: 'm', layerStart: 0, layerEnd: 1, totalLayers: 1, ctxSize: 512, wireDtype: 'f16', wireHeader: 'aGk=',
+  }));
+  assert.equal(isStageControlFrame(open), true);
+  const accept = encodeStageControl(makeStageSessionAccept('s1', { nEmbd: 8, isFirst: true, isFinal: true, activeSessions: 1, maxSessions: 1 }, 'c1'));
+  assert.equal(isStageControlFrame(accept), true);
+  const busy = encodeStageControl(makeStageSessionBusy('s1', {}, 'c1'));
+  assert.equal(isStageControlFrame(busy), true);
+});
+
+test('tracker flow: stage.session.open -> stage.session.accept settles the waiter keyed by callId', async () => {
+  const tracker = new PendingToolCallTracker();
+  const sessionId = newSessionId();
+  const open = makeStageSessionOpen(sessionId, {
+    modelId: 'm', layerStart: 0, layerEnd: 4, totalLayers: 8, ctxSize: 512, wireDtype: 'f16', wireHeader: 'aGVhZA==',
+  });
+  const waiter = tracker.expect(open.callId, 1000);
+  const accept = makeStageSessionAccept(sessionId, { nEmbd: 1024, isFirst: true, isFinal: false, activeSessions: 1, maxSessions: 4 }, open.callId);
+  const resultFrame = encodeStageControl(accept) as { kind: 'result' } & import('../src/types.ts').MeshToolResult;
+  const settled = tracker.settle(resultFrame);
+  assert.equal(settled, true);
+  const got = await waiter;
+  const decoded = decodeStageControl({ kind: 'result', ...got });
+  assert.equal(decoded?.kind, 'stage.session.accept');
+});
+
+test('tracker flow: stage.session.open -> stage.session.busy settles the waiter (host at capacity)', async () => {
+  const tracker = new PendingToolCallTracker();
+  const sessionId = newSessionId();
+  const open = makeStageSessionOpen(sessionId, {
+    modelId: 'm', layerStart: 0, layerEnd: 4, totalLayers: 8, ctxSize: 512, wireDtype: 'f16', wireHeader: 'aGVhZA==',
+  });
+  const waiter = tracker.expect(open.callId, 1000);
+  const busy = makeStageSessionBusy(sessionId, { queuePosition: 1, estWaitMs: 2000 }, open.callId);
+  const resultFrame = encodeStageControl(busy) as { kind: 'result' } & import('../src/types.ts').MeshToolResult;
+  tracker.settle(resultFrame);
+  const got = await waiter;
+  const decoded = decodeStageControl({ kind: 'result', ...got });
+  assert.equal(decoded?.kind, 'stage.session.busy');
+  assert.equal((decoded as { payload: { queuePosition?: number } }).payload.queuePosition, 1);
+});
+
+test('decodeStageControl: rejects malformed stage.session.open (missing wireHeader) without throwing', () => {
+  const malformed: MeshToolFrame = {
+    kind: 'call',
+    v: 1,
+    ts: Date.now(),
+    callId: 'c1',
+    toolName: 'stage.session.open',
+    args: { sessionId: 's1', modelId: 'm', layerStart: 0, layerEnd: 1, totalLayers: 1, ctxSize: 512, wireDtype: 'f16' },
+  };
+  assert.equal(decodeStageControl(malformed), null);
 });
 
 test('tracker flow: stage.token settles keyed by the seq-derived callId, not a preceding call', async () => {

@@ -1,40 +1,80 @@
 /**
  * useStageHost — makes THIS peer answer pipeline-split stage-hosting
- * requests (Phase C). Two responsibilities in one hook because they
- * share state (the current session) and lifecycle (both gated by the
- * same `enabled` flag):
+ * requests (Phase C), and — as of M2 — serve MULTIPLE concurrent driver
+ * sessions over the ONE stage it loads.
  *
  *   1. Advertise `cap.stageHost` (WebGPU-limit-derived capacity +
- *      stability signals) so `stagePlanner.ts` can consider this peer.
+ *      stability signals + M2's session-capacity fields) so
+ *      `stagePlanner.ts` can consider this peer.
  *   2. Answer the stage-control protocol (`stageControl.ts` over the
- *      `tc` action) and the activation data-plane (`sf` action):
- *      `stage.load` spins a stage worker for the requested layer range,
- *      `stage.ping`/`stage.stop` are trivial, and inbound `sf` frames
- *      are decoded, run through `decodeStep`/`prefill`, and answered
- *      with `stage.token` (+ periodic `stage.progress`).
+ *      `tc` action) and the activation data-plane (`sf` action) for as
+ *      many concurrent sessions as it committed to at load time.
  *
- * Ported from the proven Phase B harness host loop
- * (H:\dev\legion-stage-runtime\harness\src\p2p\host.ts) onto mesh-core's
- * `Peer` — same "first `sf` after `stage.load` is the wire header, every
- * `sf` after that is a frame" single-session convention (see that file's
- * doc comment), same prefill-at-seq-0 / decode-otherwise split.
+ * ── M2: from one session to a session MAP ───────────────────────────
  *
- * Scope: only the FINAL-stage host role is implemented (this demo's
- * plans never assign a non-final remote stage to more than one host —
- * see `stagePipelinePlanning.ts`'s doc comment and
- * `stageOrchestrator.ts`'s SCOPE NOTE on why N>2-stage relay is out of
- * scope). A `stage.load` for a non-final range still loads and decodes
- * correctly; it just never needs to itself forward an `sf` frame
- * onward, because this demo's orchestrator never asks it to.
+ * Pre-M2 this hook held scalar `workerClient`/`decoder`/`sessionId`/
+ * `driverPeerId` state — a second `stage.load` tore down the first
+ * unconditionally. M1 (legion-stage-runtime) proved a stage's underlying
+ * skippy model can serve N independent KV sessions
+ * (`StageHandle.createSession()`) once `legion_stage_open` is told the
+ * lane ceiling up front (`StageDescriptor.maxSessions`) — a host commits
+ * its session capacity when it LOADS the stage, not elastically
+ * per-request (see legion-stage-runtime/docs/MULTI-SESSION.md).
+ *
+ * This hook now holds ONE `StageWorkerClient` per LOADED stage (weights
+ * fetched once) and a `Map<sessionId, HostSession>` of independent
+ * generation sessions against it. Two ways a session gets opened:
+ *
+ *   - `stage.load` (legacy, kept for backward compat — this is what
+ *     `stageOrchestrator.ts`'s driver still sends): the host builds this
+ *     session's activation-wire decoder from the OLD "first `sf` frame
+ *     after open is the header" convention, now scoped PER-SESSION
+ *     instead of globally (that convention was fine for exactly one
+ *     concurrent session; per-session it stays fine for any number).
+ *     Replies with `stage.ready` (unchanged wire shape).
+ *   - `stage.session.open` (new, M2): carries the wire header up front
+ *     (base64), so the host builds the decoder AT ACCEPT TIME — no
+ *     "first frame is special" ambiguity at all, which matters once
+ *     several sessions' `sf` traffic can interleave on one host. Replies
+ *     with `stage.session.accept` (or `stage.session.busy` if the host
+ *     is at its committed ceiling — queued, bounded + TTL'd, see
+ *     `stageSessionAdmission.ts`).
+ *
+ * Every inbound `sf` frame is first unwrapped through
+ * `decodeStageFrameEnvelope` (mesh-core) to learn which session it's
+ * for, THEN dispatched to that session's own `awaitingHeader`/`decoder`
+ * state and routed to `workerClient.prefill/decode(..., sessionId)` —
+ * see `stageWorkerProtocol.ts`'s M2 doc comment for why `sessionId`
+ * absent still means "the legacy fused single-session path", which this
+ * hook never uses directly except for the one-time warm-up dispatch
+ * (every real session, legacy or new, is a `createSession()` lane).
+ *
+ * `driverMaxSessions` (the number of CONCURRENT DRIVER sessions this
+ * host commits to) is NOT the same number passed to
+ * `StageDescriptor.maxSessions` (the native lane ceiling): skippy's
+ * `legion_stage_open` always creates one additional FUSED session
+ * internally (used only by this hook's one-time warm-up dispatch) that
+ * permanently occupies a lane — so the native lane count is
+ * `driverMaxSessions + 1`. Getting this off-by-one wrong silently steals
+ * one driver's worth of concurrency (see legion-stage-runtime's
+ * MULTI-SESSION.md: "1 fused + 2 wanted = 3").
+ *
+ * Scope: only the FINAL-stage host role is implemented — same scope note
+ * as pre-M2 (`stageOrchestrator.ts`'s SCOPE NOTE; N>2-stage relay is out
+ * of scope). A `stage.load`/`stage.session.open` for a non-final range
+ * still loads and serves sessions correctly.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
   decodeStageControl,
+  decodeStageFrameEnvelope,
   encodeStageControl,
   isStageControlFrame,
   makeStagePong,
   makeStageProgress,
   makeStageReady,
+  makeStageSessionAccept,
+  makeStageSessionBusy,
   makeStageStop,
   makeStageToken,
   type MeshPeerCap,
@@ -44,8 +84,20 @@ import {
 import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { WireActivationFrame } from './stageWorkerProtocol.js';
-import { buildStageHostCap, type StageHostLimits } from './stagePipelinePlanning.js';
+import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import {
+  canAdmitNow,
+  enqueue,
+  expireQueue,
+  isSessionIdle,
+  popNextByPriority,
+  DEFAULT_IDLE_EVICT_MS,
+  DEFAULT_QUEUE_CAP,
+  DEFAULT_QUEUE_TTL_MS,
+  type PriorityScoreFn,
+  type QueueEntry,
+} from './stageSessionAdmission.js';
 
 export interface UseStageHostOptions {
   /** Operator toggle — "Host stages". Publishing + answering both gate on this. */
@@ -68,21 +120,42 @@ export interface UseStageHostOptions {
   /** Fragment ids already resident in this peer's cache (future OPFS
    * work) — omitted today (this demo always cold-loads). */
   cachedFragments?: readonly string[];
-  /** Send `stage.progress` every N decoded tokens. Default 8. */
+  /** Send `stage.progress` every N decoded tokens (per session). Default 8. */
   progressEveryN?: number;
   /** Re-publish `cap.stageHost` (refreshing uptimeMs/stability) this
    * often. Default 15_000ms. */
   republishMs?: number;
+  /**
+   * M2 — number of CONCURRENT DRIVER sessions this host commits to
+   * serving when it loads a stage (clamped to [1, 8], default 4 — see
+   * `chooseMaxSessions`). Chosen ONCE per load, not elastic; a session
+   * request beyond this ceiling is queued (bounded, TTL'd) or answered
+   * `stage.session.busy` / `stage.stop`.
+   */
+  desiredMaxSessions?: number;
+  /** M2 — scores a waiting driver peer for queue ordering when a lane
+   * frees (highest first, FIFO among ties). Defaults to pure FIFO
+   * (`() => 0`); a future milestone wires real prioritization. */
+  priorityScore?: PriorityScoreFn;
+  /** How often (ms) to sweep for idle sessions to evict. Default 30_000. */
+  idleSweepMs?: number;
+  /** Idle threshold (ms, no inbound `sf` frame) before a session is
+   * evicted. Default 5 minutes. */
+  idleEvictMs?: number;
   log?: StageWorkerLog;
 }
 
 export interface UseStageHostSession {
   sessionId: string;
+  driverPeerId: string;
   layerStart: number;
   layerEnd: number;
   totalLayers: number;
   isFirst: boolean;
   isFinal: boolean;
+  decodedCount: number;
+  createdAt: number;
+  lastFrameAt: number;
 }
 
 export interface UseStageHostHandle {
@@ -92,13 +165,92 @@ export interface UseStageHostHandle {
   /** enabled && supported && cap published. */
   active: boolean;
   stageHostCap?: NonNullable<MeshPeerCap['stageHost']>;
-  session?: UseStageHostSession;
+  /** Every session currently occupying a lane on this host. */
+  sessions: readonly UseStageHostSession[];
+  /** Sum of `decodedCount` across `sessions` — cheap aggregate for a
+   * single "tokens decoded" badge; per-session detail is in `sessions`. */
   tokensDecoded: number;
+  /** The lane ceiling committed at load time (see `desiredMaxSessions`). */
+  maxSessions: number;
+  /** Requests currently waiting for a lane to free. */
+  queueLength: number;
   lastError?: string;
 }
 
 const DEFAULT_REPUBLISH_MS = 15_000;
 const DEFAULT_PROGRESS_EVERY_N = 8;
+const DEFAULT_IDLE_SWEEP_MS = 30_000;
+
+// ── base64 <-> bytes (browser main-thread; Buffer fallback for Node test hosts) ──
+
+function base64ToBytes(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  // eslint-disable-next-line no-undef
+  const buf = (globalThis as unknown as { Buffer?: { from(s: string, enc: string): Uint8Array } }).Buffer;
+  if (buf) return buf.from(b64, 'base64');
+  throw new Error('no base64 decoder available in this environment');
+}
+
+// ── Internal request shape: unifies legacy `stage.load` and new
+//    `stage.session.open` into one admission/open pipeline. ──────────────
+
+interface PendingOpen {
+  origin: 'legacy' | 'session';
+  sessionId: string;
+  peerId: string;
+  callId: string;
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  shardUrls: readonly string[];
+  /** Present only for `origin === 'session'` — lets the host build the
+   * decoder at accept time instead of via the legacy first-frame convention. */
+  wireHeaderB64?: string;
+}
+
+interface HostSessionState {
+  sessionId: string;
+  driverPeerId: string;
+  origin: 'legacy' | 'session';
+  decoder?: ActivationWireDecoder;
+  /** Legacy-origin sessions start `true` (first `sf` frame is the wire
+   * header); session-origin sessions start `false` (header arrived in
+   * the open payload, decoder built immediately). */
+  awaitingHeader: boolean;
+  decodedCount: number;
+  createdAt: number;
+  lastFrameAt: number;
+  isFirst: boolean;
+  isFinal: boolean;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+}
+
+interface LoadedConfig {
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+}
+
+function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
+  return (
+    a.modelId === b.modelId &&
+    a.layerStart === b.layerStart &&
+    a.layerEnd === b.layerEnd &&
+    a.totalLayers === b.totalLayers &&
+    a.ctxSize === b.ctxSize
+  );
+}
 
 export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   const {
@@ -109,31 +261,28 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     cachedFragments,
     progressEveryN = DEFAULT_PROGRESS_EVERY_N,
     republishMs = DEFAULT_REPUBLISH_MS,
+    idleSweepMs = DEFAULT_IDLE_SWEEP_MS,
+    idleEvictMs = DEFAULT_IDLE_EVICT_MS,
     log = () => undefined,
   } = opts;
+
+  const driverMaxSessions = chooseMaxSessions(opts.desiredMaxSessions);
 
   const baseCapRef = useRef(opts.baseCap);
   baseCapRef.current = opts.baseCap;
   const mountedAtRef = useRef(Date.now());
-  // ROOT CAUSE (casefile DEBUG-CASEFILE.md in unstable-legion's demo app):
-  // callers construct `log` inline (`log: (line) => console.info(...)`),
-  // a fresh function identity on every render. The "answer stage-control +
-  // activation frames" effect below used to list `log` directly in its
-  // dependency array — any parent re-render (roster changes from a peer
-  // re-cap/heartbeat, which useMeshRoster treats as a snapshot change and
-  // therefore a re-render trigger, fire roughly every republishMs/
-  // heartbeatMs) changed `log`'s identity, so the effect tore down
-  // (cleanup unconditionally calls `disposeWorker()`, which calls
-  // `StageWorkerClient.dispose()` -> `worker.terminate()`) and re-ran —
-  // silently killing a worker mid-`stage.load` with NO ErrorEvent
-  // (`.terminate()` doesn't fire one), which is exactly the casefile's
-  // "silent death, no ErrorEvent, no wasm abort" signature. Captured via a
-  // ref instead so the effect's own identity churn can never be driven by
-  // the CALLER's callback identity — the fix belongs here, not at every
-  // call site, since any consumer passing an inline logger hits the same
-  // bug otherwise.
+  // See DEBUG-CASEFILE.md (apps/demo/e2e) — an inline `log` prop churns
+  // identity on every parent re-render (roster re-caps fire one every
+  // ~republishMs/heartbeatMs); listing `log` in the "answer" effect's
+  // deps used to tear the effect down mid-load and silently
+  // `.terminate()` the worker with no ErrorEvent. Captured via a ref so
+  // the effect's own identity never depends on the CALLER's callback
+  // identity — do not regress this by adding `log` back to that effect's
+  // dependency array.
   const logRef = useRef(log);
   logRef.current = log;
+  const priorityScoreRef = useRef<PriorityScoreFn>(opts.priorityScore ?? (() => 0));
+  priorityScoreRef.current = opts.priorityScore ?? (() => 0);
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -142,9 +291,17 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   );
   const [onBattery, setOnBattery] = useState<boolean | undefined>(undefined);
   const [stageHostCap, setStageHostCap] = useState<NonNullable<MeshPeerCap['stageHost']> | undefined>(undefined);
-  const [session, setSession] = useState<UseStageHostSession | undefined>(undefined);
-  const [tokensDecoded, setTokensDecoded] = useState(0);
+  const [sessions, setSessions] = useState<readonly UseStageHostSession[]>([]);
+  const [queueLength, setQueueLength] = useState(0);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
+
+  // Read by the "publish cap" effect so every heartbeat reflects the
+  // CURRENT session occupancy without that effect needing to depend on
+  // the "answer" effect's internal state.
+  const sessionCapacityRef = useRef<{ maxSessions: number; activeSessions: number }>({
+    maxSessions: driverMaxSessions,
+    activeSessions: 0,
+  });
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
@@ -211,6 +368,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           uptimeMs: Date.now() - mountedAtRef.current,
         },
         cachedFragments,
+        sessionCapacityRef.current,
       );
       setStageHostCap(cap);
       peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
@@ -224,68 +382,95 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
     if (!peer || !enabled) return;
-    // Narrow into a fresh binding — TS control-flow narrowing on the
-    // destructured `peer` doesn't survive into the nested handler
-    // functions below (closures over an outer-scope variable aren't
-    // re-narrowed), so capture the non-null value once here.
     const meshPeer: Peer = peer;
-    // Shadows the destructured `opts.log` for the rest of this effect —
-    // delegates to logRef so this effect's own identity never depends on
-    // the CALLER's log callback (see logRef's doc comment above: an
-    // inline `log` prop churning on every parent re-render used to tear
-    // down this effect mid-load and silently `.terminate()` the worker).
     const log = (line: string) => logRef.current(line);
 
     let workerClient: StageWorkerClient | undefined;
-    let decoder: ActivationWireDecoder | undefined;
-    let sessionId: string | undefined;
-    let driverPeerId: string | undefined;
-    let awaitingHeader = false;
-    let decodedCount = 0;
+    let loadedConfig: LoadedConfig | undefined;
+    // Guards against two near-simultaneous session-open requests each
+    // starting their OWN `.load()` call: two concurrent driver tabs can
+    // both send `stage.load`/`stage.session.open` before either has
+    // finished loading (a real scenario this hook must handle — that's
+    // the whole point of M2). Without this, the second request would see
+    // `workerClient === undefined` too and race a second full model
+    // fetch, each overwriting `workerClient` when it resolves. Every
+    // caller of `ensureWorkerLoaded` while a load is in flight awaits
+    // THIS SAME promise instead of starting its own.
+    let loadInFlight: Promise<void> | undefined;
+    const hostSessions = new Map<string, HostSessionState>();
+    let queue: readonly QueueEntry<PendingOpen>[] = [];
 
-    function resetSession(): void {
-      decoder = undefined;
-      sessionId = undefined;
-      driverPeerId = undefined;
-      awaitingHeader = false;
-      decodedCount = 0;
-      setTokensDecoded(0);
-      setSession(undefined);
+    function syncPublicState(): void {
+      setSessions(
+        Array.from(hostSessions.values()).map((s) => ({
+          sessionId: s.sessionId,
+          driverPeerId: s.driverPeerId,
+          layerStart: s.layerStart,
+          layerEnd: s.layerEnd,
+          totalLayers: s.totalLayers,
+          isFirst: s.isFirst,
+          isFinal: s.isFinal,
+          decodedCount: s.decodedCount,
+          createdAt: s.createdAt,
+          lastFrameAt: s.lastFrameAt,
+        })),
+      );
+      setQueueLength(queue.length);
+      sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: hostSessions.size };
     }
 
     async function disposeWorker(): Promise<void> {
       const w = workerClient;
       workerClient = undefined;
+      loadedConfig = undefined;
       if (w) await w.dispose().catch(() => undefined);
     }
 
-    async function handleLoad(msg: StageControlMessageFor<'stage.load'>, peerId: string): Promise<void> {
-      log(`[stage-host] stage.load from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
-      await disposeWorker();
-      resetSession();
-      sessionId = msg.sessionId;
-      driverPeerId = peerId;
-      awaitingHeader = true;
-      try {
-        workerClient = new StageWorkerClient(
-          createStageWorker(),
-          `stage-host-${msg.payload.layerStart}-${msg.payload.layerEnd}`,
-          log,
+    /** Ensure a worker is loaded and matches `req`'s stage config. Reuses
+     * the existing worker (just adds a session) when the config matches;
+     * reloads when idle and the config differs; throws when busy with a
+     * genuinely different config (a real conflict, not just capacity). */
+    async function ensureWorkerLoaded(req: PendingOpen): Promise<void> {
+      const want: LoadedConfig = {
+        modelId: req.modelId,
+        layerStart: req.layerStart,
+        layerEnd: req.layerEnd,
+        totalLayers: req.totalLayers,
+        ctxSize: req.ctxSize,
+      };
+      if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+
+      if (loadInFlight) {
+        // Someone else is already loading (the common concurrent-open
+        // race) — wait for THAT load, then re-check instead of starting
+        // a second one.
+        await loadInFlight.catch(() => undefined);
+        if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+      }
+
+      if (workerClient && hostSessions.size > 0) {
+        throw new Error(
+          `host is already serving ${hostSessions.size} session(s) on a different stage configuration`,
         );
-        const shardUrls = msg.payload.shardUrls ?? (msg.payload.manifestUrl ? [msg.payload.manifestUrl] : []);
-        // Deadline the load: a worker the browser kills (OOM / GPU-process
-        // death) fires NO ErrorEvent — without a timeout this await hangs
-        // forever, the driver never gets stage.stop, and a dead host looks
-        // identical to a slow one (CHAOS.md layer 1: fail fast, never hang).
+      }
+
+      const doLoad = (async (): Promise<void> => {
+        await disposeWorker();
+        log(`[stage-host] loading stage layers=[${req.layerStart},${req.layerEnd}) maxSessions=${driverMaxSessions + 1} (driver=${driverMaxSessions}+1 fused)`);
+        const client = new StageWorkerClient(createStageWorker(), `stage-host-${req.layerStart}-${req.layerEnd}`, log);
         const loadDeadlineMs = 240_000;
         await Promise.race([
-          workerClient.load({
-            modelId: msg.payload.modelId,
-            layerStart: msg.payload.layerStart,
-            layerEnd: msg.payload.layerEnd,
-            totalLayers: msg.payload.totalLayers,
-            shardUrls,
-            ctxSize: msg.payload.ctxSize,
+          client.load({
+            modelId: req.modelId,
+            layerStart: req.layerStart,
+            layerEnd: req.layerEnd,
+            totalLayers: req.totalLayers,
+            shardUrls: req.shardUrls,
+            ctxSize: req.ctxSize,
+            // +1: legion_stage_open always creates one FUSED session
+            // internally (used here only for the warm-up dispatch below) —
+            // see this file's top doc comment and MULTI-SESSION.md.
+            maxSessions: driverMaxSessions + 1,
           }),
           new Promise<never>((_, reject) =>
             setTimeout(
@@ -294,74 +479,229 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
             ),
           ),
         ]);
-        log('[stage-host] warming up WebGPU shader pipelines before reporting ready…');
-        await warmUpStageWorker(workerClient, log);
-        setSession({
-          sessionId,
-          layerStart: msg.payload.layerStart,
-          layerEnd: msg.payload.layerEnd,
-          totalLayers: msg.payload.totalLayers,
-          isFirst: workerClient.isFirst,
-          isFinal: workerClient.isFinal,
-        });
-        await meshPeer.sendTool(
-          encodeStageControl(
-            makeStageReady(
-              sessionId,
-              { isFirst: workerClient.isFirst, isFinal: workerClient.isFinal, nEmbd: workerClient.nEmbd },
-              msg.callId,
+        log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
+        await warmUpStageWorker(client, log);
+        workerClient = client;
+        loadedConfig = want;
+      })();
+      loadInFlight = doLoad;
+      try {
+        await doLoad;
+      } finally {
+        if (loadInFlight === doLoad) loadInFlight = undefined;
+      }
+    }
+
+    async function failOpen(req: PendingOpen, message: string): Promise<void> {
+      setLastError(message);
+      log(`[stage-host] open FAILED sessionId=${req.sessionId} origin=${req.origin}: ${message}`);
+      await meshPeer.sendTool(encodeStageControl(makeStageStop(req.sessionId, message)), req.peerId).catch(() => undefined);
+    }
+
+    async function openNow(req: PendingOpen): Promise<void> {
+      try {
+        await ensureWorkerLoaded(req);
+        const client = workerClient!;
+        await client.sessionCreate(req.sessionId);
+        let decoder: ActivationWireDecoder | undefined;
+        let awaitingHeader = true;
+        if (req.wireHeaderB64) {
+          decoder = createActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
+          awaitingHeader = false;
+        }
+        const state: HostSessionState = {
+          sessionId: req.sessionId,
+          driverPeerId: req.peerId,
+          origin: req.origin,
+          decoder,
+          awaitingHeader,
+          decodedCount: 0,
+          createdAt: Date.now(),
+          lastFrameAt: Date.now(),
+          isFirst: client.isFirst,
+          isFinal: client.isFinal,
+          layerStart: req.layerStart,
+          layerEnd: req.layerEnd,
+          totalLayers: req.totalLayers,
+        };
+        hostSessions.set(req.sessionId, state);
+        syncPublicState();
+        if (req.origin === 'legacy') {
+          await meshPeer.sendTool(
+            encodeStageControl(makeStageReady(req.sessionId, { isFirst: state.isFirst, isFinal: state.isFinal, nEmbd: client.nEmbd }, req.callId)),
+            req.peerId,
+          );
+        } else {
+          await meshPeer.sendTool(
+            encodeStageControl(
+              makeStageSessionAccept(
+                req.sessionId,
+                { nEmbd: client.nEmbd, isFirst: state.isFirst, isFinal: state.isFinal, activeSessions: hostSessions.size, maxSessions: driverMaxSessions },
+                req.callId,
+              ),
             ),
-          ),
-          peerId,
-        );
+            req.peerId,
+          );
+        }
+        log(`[stage-host] session OPEN sessionId=${req.sessionId} peer=${req.peerId} origin=${req.origin} active=${hostSessions.size}/${driverMaxSessions}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setLastError(message);
-        log(`[stage-host] stage.load FAILED: ${message}`);
-        await meshPeer
-          .sendTool(encodeStageControl(makeStageStop(sessionId ?? 'unknown', `load failed: ${message}`)), peerId)
-          .catch(() => undefined);
+        await failOpen(req, message);
       }
+    }
+
+    /** Try to admit as many queued requests as fit, highest-priority
+     * first. Called after every session free. */
+    async function admitNextQueued(): Promise<void> {
+      for (;;) {
+        if (!canAdmitNow(hostSessions.size, driverMaxSessions)) return;
+        const { queue: rest, next } = popNextByPriority(queue, priorityScoreRef.current);
+        queue = rest;
+        syncPublicState();
+        if (!next) return;
+        await openNow(next.request);
+      }
+    }
+
+    async function admitOrEnqueue(req: PendingOpen): Promise<void> {
+      // Expire stale queue entries before deciding — a request that's
+      // been waiting past the TTL is treated as abandoned, not admitted
+      // stale (the driver almost certainly timed out and moved on).
+      const now = Date.now();
+      const { queue: alive, expired } = expireQueue(queue, now, DEFAULT_QUEUE_TTL_MS);
+      queue = alive;
+      for (const e of expired) {
+        log(`[stage-host] queued session-open for ${e.sessionId} expired (TTL ${DEFAULT_QUEUE_TTL_MS}ms) — dropping`);
+        await failOpen(e.request, `queued session-open request expired after ${DEFAULT_QUEUE_TTL_MS}ms`);
+      }
+
+      if (canAdmitNow(hostSessions.size, driverMaxSessions)) {
+        await openNow(req);
+        return;
+      }
+
+      if (req.origin === 'legacy') {
+        // The legacy `stage.load` driver (stageOrchestrator.ts) has no
+        // busy/retry/queue concept — fail fast rather than leave it
+        // hanging on a reply that will never come in the shape it expects.
+        await failOpen(req, `host at max session capacity (${driverMaxSessions})`);
+        return;
+      }
+
+      const { queue: q2, accepted, queuePosition } = enqueue(
+        queue,
+        { sessionId: req.sessionId, peerId: req.peerId, enqueuedAt: now, request: req },
+        DEFAULT_QUEUE_CAP,
+      );
+      queue = q2;
+      syncPublicState();
+      if (accepted) {
+        log(`[stage-host] session-open QUEUED sessionId=${req.sessionId} position=${queuePosition}`);
+        await meshPeer.sendTool(encodeStageControl(makeStageSessionBusy(req.sessionId, { queuePosition }, req.callId)), req.peerId);
+      } else {
+        log(`[stage-host] session-open REJECTED (queue full) sessionId=${req.sessionId}`);
+        await meshPeer.sendTool(encodeStageControl(makeStageSessionBusy(req.sessionId, {}, req.callId)), req.peerId).catch(() => undefined);
+      }
+    }
+
+    async function freeSession(sessionId: string, reason: string, notifyDriver: boolean): Promise<void> {
+      const state = hostSessions.get(sessionId);
+      if (!state) return;
+      hostSessions.delete(sessionId);
+      syncPublicState();
+      await workerClient?.sessionFree(sessionId).catch(() => undefined);
+      log(`[stage-host] session FREED sessionId=${sessionId} reason=${reason} active=${hostSessions.size}/${driverMaxSessions}`);
+      if (notifyDriver) {
+        await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), state.driverPeerId).catch(() => undefined);
+      }
+      await admitNextQueued();
+    }
+
+    async function handleLegacyLoad(msg: StageControlMessageFor<'stage.load'>, peerId: string): Promise<void> {
+      log(`[stage-host] stage.load from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
+      const shardUrls = msg.payload.shardUrls ?? (msg.payload.manifestUrl ? [msg.payload.manifestUrl] : []);
+      await admitOrEnqueue({
+        origin: 'legacy',
+        sessionId: msg.sessionId,
+        peerId,
+        callId: msg.callId,
+        modelId: msg.payload.modelId,
+        layerStart: msg.payload.layerStart,
+        layerEnd: msg.payload.layerEnd,
+        totalLayers: msg.payload.totalLayers,
+        ctxSize: msg.payload.ctxSize,
+        shardUrls,
+      });
+    }
+
+    async function handleSessionOpen(msg: StageControlMessageFor<'stage.session.open'>, peerId: string): Promise<void> {
+      log(`[stage-host] stage.session.open from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
+      await admitOrEnqueue({
+        origin: 'session',
+        sessionId: msg.sessionId,
+        peerId,
+        callId: msg.callId,
+        modelId: msg.payload.modelId,
+        layerStart: msg.payload.layerStart,
+        layerEnd: msg.payload.layerEnd,
+        totalLayers: msg.payload.totalLayers,
+        ctxSize: msg.payload.ctxSize,
+        shardUrls: [],
+        wireHeaderB64: msg.payload.wireHeader,
+      });
     }
 
     async function handlePing(msg: StageControlMessageFor<'stage.ping'>, peerId: string): Promise<void> {
       await meshPeer.sendTool(encodeStageControl(makeStagePong(msg.sessionId, msg.payload.sentAtMs, msg.callId)), peerId);
     }
 
-    async function handleStop(): Promise<void> {
-      log('[stage-host] stage.stop received — tearing down session');
-      await disposeWorker();
-      resetSession();
+    async function handleStop(msg: StageControlMessageFor<'stage.stop'>, peerId: string): Promise<void> {
+      const state = hostSessions.get(msg.sessionId);
+      if (!state || state.driverPeerId !== peerId) return; // unknown session or spoof attempt — ignore
+      log(`[stage-host] stage.stop from ${peerId} sessionId=${msg.sessionId}: ${msg.payload.reason}`);
+      await freeSession(msg.sessionId, msg.payload.reason, false);
     }
 
     const unsubTool = peer.onTool((frame, peerId) => {
       if (!isStageControlFrame(frame)) return;
       const decoded = decodeStageControl(frame);
       if (!decoded) return;
-      if (decoded.kind === 'stage.load') void handleLoad(decoded, peerId);
+      if (decoded.kind === 'stage.load') void handleLegacyLoad(decoded, peerId);
+      else if (decoded.kind === 'stage.session.open') void handleSessionOpen(decoded, peerId);
       else if (decoded.kind === 'stage.ping') void handlePing(decoded, peerId);
-      else if (decoded.kind === 'stage.stop') void handleStop();
+      else if (decoded.kind === 'stage.stop') void handleStop(decoded, peerId);
     });
 
-    const unsubFrame = peer.onStageFrame((bytes, peerId) => {
-      log(
-        `[stage-host] onStageFrame fired: peerId=${peerId} bytes=${bytes.byteLength} ` +
-          `hasWorker=${!!workerClient} sessionId=${sessionId ?? 'none'} driverPeerId=${driverPeerId ?? 'none'} awaitingHeader=${awaitingHeader}`,
-      );
-      if (!workerClient || !sessionId || peerId !== driverPeerId) {
-        log('[stage-host] onStageFrame DROPPED by guard (see fields above)');
+    const unsubFrame = peer.onStageFrame((raw, peerId) => {
+      const envelope = decodeStageFrameEnvelope(raw);
+      if (!envelope) {
+        log(`[stage-host] onStageFrame DROPPED — malformed envelope from ${peerId} (${raw.byteLength} bytes)`);
         return;
       }
+      const { sessionId, payload: bytes } = envelope;
+      const state = hostSessions.get(sessionId);
+      if (!state) {
+        log(`[stage-host] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${peerId}`);
+        return;
+      }
+      // Spoof guard: only the peer that opened this session may drive it.
+      if (peerId !== state.driverPeerId) {
+        log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} does not own sessionId=${sessionId} (owner=${state.driverPeerId})`);
+        return;
+      }
+      state.lastFrameAt = Date.now();
       void (async () => {
         try {
-          if (awaitingHeader) {
-            decoder = createActivationWireDecoder(bytes);
-            awaitingHeader = false;
-            log(`[stage-host] wire header: modelId=${decoder.modelId} nEmbd=${decoder.nEmbd} dtype=${decoder.dtype}`);
+          const client = workerClient;
+          if (!client) return;
+          if (state.awaitingHeader) {
+            state.decoder = createActivationWireDecoder(bytes);
+            state.awaitingHeader = false;
+            log(`[stage-host] wire header sessionId=${sessionId}: modelId=${state.decoder.modelId} nEmbd=${state.decoder.nEmbd} dtype=${state.decoder.dtype}`);
             return;
           }
-          if (!decoder || !workerClient) return;
-          const frame = decoder.decodeFrameBytes(bytes);
+          if (!state.decoder) return;
+          const frame = state.decoder.decodeFrameBytes(bytes);
           const wireFrame: WireActivationFrame = {
             dtype: 'f32',
             layout: 'token-major',
@@ -375,67 +715,96 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
           const isPrefill = frame.seq === 0;
           const result = isPrefill
-            ? await workerClient.prefill(tokens as number[], positions, wireFrame)
-            : await workerClient.decode((tokens[0] as number) ?? 0, wireFrame);
+            ? await client.prefill(tokens as number[], positions, wireFrame, sessionId)
+            : await client.decode((tokens[0] as number) ?? 0, wireFrame, sessionId);
           if (result.predictedToken === undefined) {
             throw new Error('final-stage host produced no predictedToken');
           }
-          decodedCount += 1;
-          setTokensDecoded(decodedCount);
-          const isEog = await workerClient.tokenIsEog(result.predictedToken);
+          state.decodedCount += 1;
+          syncPublicState();
+          const isEog = await client.tokenIsEog(result.predictedToken);
           await meshPeer.sendTool(
-            encodeStageControl(
-              makeStageToken(sessionId!, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined),
-            ),
+            encodeStageControl(makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined)),
             peerId,
           );
-          if (decodedCount % progressEveryN === 0) {
-            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId!, decodedCount, frame.seq)), peerId);
+          if (state.decodedCount % progressEveryN === 0) {
+            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId, state.decodedCount, frame.seq)), peerId);
+          }
+          if (isEog) {
+            // Generation finished — free the lane proactively instead of
+            // waiting for idle-eviction or an explicit stage.stop.
+            await freeSession(sessionId, 'generation finished (eos)', false);
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setLastError(message);
-          log(`[stage-host] frame handling FAILED: ${message}`);
-          if (sessionId) {
-            await meshPeer
-              .sendTool(encodeStageControl(makeStageStop(sessionId, `host error: ${message}`)), peerId)
-              .catch(() => undefined);
-          }
+          log(`[stage-host] frame handling FAILED sessionId=${sessionId}: ${message}`);
+          await freeSession(sessionId, `host error: ${message}`, true);
         }
       })();
     });
 
-    // Graceful-leave: tell the driver we're going away instead of just
-    // vanishing (CHAOS.md's graceful-leave path — the driver's replan is
-    // instant instead of waiting out a full step timeout).
+    // Idle-eviction sweep — a session whose driver vanished without a
+    // graceful stage.stop or pagehide (network partition, tab kill)
+    // otherwise pins a lane forever.
+    const idleTimer = setInterval(() => {
+      const now = Date.now();
+      for (const sessionId of [...hostSessions.keys()]) {
+        const state = hostSessions.get(sessionId);
+        if (state && isSessionIdle(state.lastFrameAt, now, idleEvictMs)) {
+          void freeSession(sessionId, 'idle-evicted', true);
+        }
+      }
+    }, idleSweepMs);
+
+    // Roster-leave: free any session whose driver peer left the mesh —
+    // the primary cleanup path (faster than waiting out the idle sweep).
+    const unsubRoster = meshPeer.roster.subscribe((snapshot) => {
+      const present = new Set(snapshot.map((e) => e.peerId));
+      for (const [sessionId, state] of hostSessions) {
+        if (!present.has(state.driverPeerId)) {
+          void freeSession(sessionId, 'driver left the mesh', false);
+        }
+      }
+    });
+
+    // Graceful-leave: tell every active driver we're going away instead
+    // of just vanishing (CHAOS.md's graceful-leave path).
     const onPageHide = (): void => {
-      if (sessionId && driverPeerId) {
-        void meshPeer
-          .sendTool(encodeStageControl(makeStageStop(sessionId, 'peer pagehide')), driverPeerId)
-          .catch(() => undefined);
+      for (const state of hostSessions.values()) {
+        void meshPeer.sendTool(encodeStageControl(makeStageStop(state.sessionId, 'peer pagehide')), state.driverPeerId).catch(() => undefined);
       }
     };
     if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide);
 
     return () => {
       if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
+      clearInterval(idleTimer);
+      unsubRoster();
       unsubTool();
       unsubFrame();
       void disposeWorker();
     };
     // `log` deliberately excluded — see logRef above; this effect must not
-    // tear down (and silently terminate an in-flight worker) just because
-    // the caller's log callback identity changed on an unrelated re-render.
+    // tear down (and silently terminate in-flight worker/session state)
+    // just because the caller's log callback identity changed on an
+    // unrelated re-render. `driverMaxSessions`/`idleSweepMs`/`idleEvictMs`
+    // are read once per mount via the outer closure, matching
+    // `progressEveryN`'s existing precedent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, createStageWorker, progressEveryN]);
+  }, [peer, enabled, createStageWorker, progressEveryN, driverMaxSessions, idleSweepMs, idleEvictMs]);
+
+  const tokensDecoded = sessions.reduce((sum, s) => sum + s.decodedCount, 0);
 
   return {
     supported: supportState.ok,
     unsupportedReason: supportState.reason,
     active: enabled && supportState.ok && !!stageHostCap,
     stageHostCap,
-    session,
+    sessions,
     tokensDecoded,
+    maxSessions: driverMaxSessions,
+    queueLength,
     lastError,
   };
 }

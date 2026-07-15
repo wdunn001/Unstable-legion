@@ -17,7 +17,7 @@
  * apps/demo/public/wasm/legion-stage.{js,wasm}, gitignored, copied from
  * legion-stage-runtime's build output).
  */
-import { loadStage, type StageDescriptor, type StageHandle, type ActivationFrame } from '@unstable-legion/stage-runtime';
+import { loadStage, type StageDescriptor, type StageHandle, type StageSessionHandle, type ActivationFrame } from '@unstable-legion/stage-runtime';
 import type {
   StageWorkerRequest,
   StageWorkerResponse,
@@ -25,6 +25,18 @@ import type {
 } from '@unstable-legion/react';
 
 let stage: StageHandle | undefined;
+// M2: sessions opened via StageHandle.createSession() — each an
+// independent KV lane on the SAME loaded `stage` above. Keyed by the
+// mesh-core sessionId (stagesess-*) the host peer assigns, not the
+// native lane index, so `useStageHost.ts` never needs to know how skippy
+// numbers lanes internally.
+const sessions = new Map<string, StageSessionHandle>();
+
+function requireSession(sessionId: string): StageSessionHandle {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`no session ${sessionId} on this worker (never created, or already freed)`);
+  return session;
+}
 
 function toWire(frame: ActivationFrame | undefined): WireActivationFrame | undefined {
   if (!frame) return undefined;
@@ -84,7 +96,13 @@ async function handle(req: StageWorkerRequest): Promise<void> {
       case 'prefill': {
         if (!stage) throw new Error('stage not loaded');
         const input = fromWire(req.input);
-        const result = await stage.prefill(req.tokens, req.positions, input);
+        // M2: sessionId present -> route to that session's own KV lane;
+        // absent -> the legacy fused single-session path (byte-for-byte
+        // unchanged from before M2 — this is what the driver's own local
+        // stage-0 worker and every pre-M2 e2e suite still exercise).
+        const result = req.sessionId
+          ? await requireSession(req.sessionId).prefill(req.tokens, req.positions, input)
+          : await stage.prefill(req.tokens, req.positions, input);
         const activation = toWire(result.activation);
         post(
           {
@@ -101,7 +119,9 @@ async function handle(req: StageWorkerRequest): Promise<void> {
       case 'decode': {
         if (!stage) throw new Error('stage not loaded');
         const input = fromWire(req.input);
-        const result = await stage.decodeStep(req.token, input);
+        const result = req.sessionId
+          ? await requireSession(req.sessionId).decodeStep(req.token, input)
+          : await stage.decodeStep(req.token, input);
         const activation = toWire(result.activation);
         post(
           {
@@ -135,14 +155,31 @@ async function handle(req: StageWorkerRequest): Promise<void> {
       }
       case 'reset': {
         if (!stage) throw new Error('stage not loaded');
-        await stage.reset();
+        if (req.sessionId) await requireSession(req.sessionId).reset();
+        else await stage.reset();
         post({ type: 'result', reqId: req.reqId, kind: 'reset' });
         return;
       }
       case 'dispose': {
+        for (const [, session] of sessions) await session.free().catch(() => undefined);
+        sessions.clear();
         if (stage) await stage.dispose();
         stage = undefined;
         post({ type: 'result', reqId: req.reqId, kind: 'dispose' });
+        return;
+      }
+      case 'sessionCreate': {
+        if (!stage) throw new Error('stage not loaded');
+        const session = await stage.createSession();
+        sessions.set(req.sessionId, session);
+        post({ type: 'result', reqId: req.reqId, kind: 'sessionCreate' });
+        return;
+      }
+      case 'sessionFree': {
+        const session = sessions.get(req.sessionId);
+        sessions.delete(req.sessionId);
+        if (session) await session.free();
+        post({ type: 'result', reqId: req.reqId, kind: 'sessionFree' });
         return;
       }
     }
@@ -155,6 +192,37 @@ async function handle(req: StageWorkerRequest): Promise<void> {
   }
 }
 
+// M2: serialize every native/wasm dispatch through one chain, even though
+// several sessions are logically concurrent from the host's point of
+// view. `self.onmessage` fires per inbound postMessage regardless of
+// whether the PREVIOUS request's `await` chain (prefill/decode etc., each
+// a real async yield point — WebGPU dispatch + readback, not a
+// synchronous stub) has settled yet, so two sessions' requests arriving
+// close together would otherwise start two independently-progressing
+// `handle()` calls with overlapping `await`s into the SAME wasm instance
+// / GPU device. Caught empirically during M2 e2e hardening: two real
+// driver tabs streaming concurrently against one host intermittently hit
+// a wasm-level `RuntimeError: unreachable` under genuine load (not
+// reproduced by legion-stage-runtime's M1 harness gate, which alternates
+// session A/session B one FULLY-AWAITED step at a time rather than
+// letting two steps' async work genuinely overlap). Every session still
+// gets its own independent KV state (that's M1's proven guarantee, and
+// stays true here — this queue only orders WHEN each session's native
+// call executes, not which memory it touches); this just removes
+// wasm-instance-level concurrent-dispatch as a variable, which is a
+// legitimate simplification (the underlying resource is one wasm module
+// + one GPU queue regardless of session count) rather than a workaround
+// for a design flaw.
+let callChain: Promise<unknown> = Promise.resolve();
+function serialize(req: StageWorkerRequest): Promise<void> {
+  const run = callChain.then(
+    () => handle(req),
+    () => handle(req),
+  );
+  callChain = run.catch(() => undefined);
+  return run;
+}
+
 self.onmessage = (ev: MessageEvent<StageWorkerRequest>) => {
-  void handle(ev.data);
+  void serialize(ev.data);
 };

@@ -83,7 +83,14 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
     (window as unknown as { __legionStage?: unknown }).__legionStage = {
       selfId: peer?.selfId,
       roster: roster.map((r) => ({ peerId: r.peerId, hasStageHost: !!r.stageHost, nick: r.nick })),
-      host: { active: host.active, session: host.session, tokensDecoded: host.tokensDecoded, lastError: host.lastError },
+      host: {
+        active: host.active,
+        sessions: host.sessions,
+        tokensDecoded: host.tokensDecoded,
+        maxSessions: host.maxSessions,
+        queueLength: host.queueLength,
+        lastError: host.lastError,
+      },
       pipeline: {
         status: pipeline.status,
         plan: pipeline.plan,
@@ -117,9 +124,10 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
           host stages{host.active ? ' — advertising' : ''}
         </label>
         {!host.supported && <span className="sp-warn">{host.unsupportedReason}</span>}
-        {host.session && (
+        {host.sessions.length > 0 && (
           <span className="sp-badge">
-            hosting [{host.session.layerStart},{host.session.layerEnd}) · {host.tokensDecoded} tok
+            hosting {host.sessions.length}/{host.maxSessions} session(s) [{host.sessions[0]!.layerStart},{host.sessions[0]!.layerEnd}) · {host.tokensDecoded} tok
+            {host.queueLength > 0 ? ` · ${host.queueLength} queued` : ''}
           </span>
         )}
         {host.lastError && <span className="sp-err">{host.lastError}</span>}

@@ -89,6 +89,61 @@ export interface StageTokenPayload {
   finishReason?: string;
 }
 
+/**
+ * M2 — open a new driver session against a stage the host may already
+ * have loaded (multi-session: N sessions over ONE loaded stage, see
+ * legion-stage-runtime's docs/MULTI-SESSION.md). Distinct from the legacy
+ * `stage.load` (which the host answers by loading/reloading its worker
+ * AND creating exactly one implicit session, tearing down any prior one):
+ * `stage.session.open` only ever creates a NEW session — never tears down
+ * an existing one — and carries `wireHeader` up front so the host can
+ * build this session's activation-wire decoder at accept time instead of
+ * relying on "the first `sf` frame after open is the header" (fragile
+ * once multiple sessions interleave `sf` traffic on one host).
+ */
+export interface StageSessionOpenPayload {
+  sessionId: string;
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16';
+  /** Base64 of `ActivationWireEncoder.headerBytes()` — the once-per-stream
+   * activation-wire header this session's `sf` frames will be decoded
+   * against. Sent up front (not as the first `sf` frame) precisely so a
+   * host serving several concurrent sessions never has to guess which
+   * inbound `sf` frame is "the header" for a session it just opened. */
+  wireHeader: string;
+}
+
+export interface StageSessionAcceptPayload {
+  sessionId: string;
+  nEmbd: number;
+  isFirst: boolean;
+  isFinal: boolean;
+  /** Sessions occupying a lane on this stage AFTER this accept, including
+   * this one — lets the driver see how close the host is to its ceiling. */
+  activeSessions: number;
+  /** The lane ceiling this host committed to when it loaded the stage
+   * (fixed at load time — see StageDescriptor.maxSessions upstream). */
+  maxSessions: number;
+}
+
+/**
+ * The host is at `maxSessions` capacity. `queuePosition` present means the
+ * request was queued (bounded, TTL'd — see `stageSessionAdmission.ts`) and
+ * will get a `stage.session.accept` (or a later `stage.session.busy` if it
+ * expires) once a lane frees; absent means the queue itself was full and
+ * this request was rejected outright — the driver should try a different
+ * host, not wait.
+ */
+export interface StageSessionBusyPayload {
+  sessionId: string;
+  queuePosition?: number;
+  estWaitMs?: number;
+}
+
 export type StageControlKind =
   | 'stage.load'
   | 'stage.ready'
@@ -96,16 +151,21 @@ export type StageControlKind =
   | 'stage.ping'
   | 'stage.pong'
   | 'stage.progress'
-  | 'stage.token';
+  | 'stage.token'
+  | 'stage.session.open'
+  | 'stage.session.accept'
+  | 'stage.session.busy';
 
 /** "call"-shaped kinds — the asking side initiates these. */
-const CALL_KINDS: ReadonlySet<StageControlKind> = new Set(['stage.load', 'stage.ping', 'stage.stop']);
+const CALL_KINDS: ReadonlySet<StageControlKind> = new Set(['stage.load', 'stage.ping', 'stage.stop', 'stage.session.open']);
 /** "result"-shaped kinds — a response or unsolicited push from a host. */
 const RESULT_KINDS: ReadonlySet<StageControlKind> = new Set([
   'stage.ready',
   'stage.pong',
   'stage.progress',
   'stage.token',
+  'stage.session.accept',
+  'stage.session.busy',
 ]);
 
 // A genuine discriminated union (one interface per `kind`) so TS narrows
@@ -125,7 +185,10 @@ export type StageControlMessage =
   | StageControlMessageOf<'stage.ping', StagePingPayload>
   | StageControlMessageOf<'stage.pong', StagePongPayload>
   | StageControlMessageOf<'stage.progress', StageProgressPayload>
-  | StageControlMessageOf<'stage.token', StageTokenPayload>;
+  | StageControlMessageOf<'stage.token', StageTokenPayload>
+  | StageControlMessageOf<'stage.session.open', StageSessionOpenPayload>
+  | StageControlMessageOf<'stage.session.accept', StageSessionAcceptPayload>
+  | StageControlMessageOf<'stage.session.busy', StageSessionBusyPayload>;
 
 export type StageControlMessageFor<K extends StageControlKind> = Extract<StageControlMessage, { kind: K }>;
 
@@ -231,6 +294,38 @@ export function isStageTokenPayload(x: unknown): x is StageTokenPayload {
   return true;
 }
 
+export function isStageSessionOpenPayload(x: unknown): x is StageSessionOpenPayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  if (typeof x.modelId !== 'string' || !x.modelId) return false;
+  if (!Number.isInteger(x.layerStart) || (x.layerStart as number) < 0) return false;
+  if (!Number.isInteger(x.layerEnd) || (x.layerEnd as number) <= (x.layerStart as number)) return false;
+  if (!Number.isInteger(x.totalLayers) || (x.totalLayers as number) < (x.layerEnd as number)) return false;
+  if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
+  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
+  if (typeof x.wireHeader !== 'string' || !x.wireHeader) return false;
+  return true;
+}
+
+export function isStageSessionAcceptPayload(x: unknown): x is StageSessionAcceptPayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  if (!Number.isInteger(x.nEmbd) || (x.nEmbd as number) <= 0) return false;
+  if (typeof x.isFirst !== 'boolean') return false;
+  if (typeof x.isFinal !== 'boolean') return false;
+  if (!Number.isInteger(x.activeSessions) || (x.activeSessions as number) < 0) return false;
+  if (!Number.isInteger(x.maxSessions) || (x.maxSessions as number) <= 0) return false;
+  return true;
+}
+
+export function isStageSessionBusyPayload(x: unknown): x is StageSessionBusyPayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  if (x.queuePosition !== undefined && (!Number.isInteger(x.queuePosition) || (x.queuePosition as number) < 0)) return false;
+  if (x.estWaitMs !== undefined && (typeof x.estWaitMs !== 'number' || (x.estWaitMs as number) < 0)) return false;
+  return true;
+}
+
 const PAYLOAD_GUARDS: { [K in StageControlKind]: (x: unknown) => boolean } = {
   'stage.load': isStageLoadPayload,
   'stage.ready': isStageReadyPayload,
@@ -239,6 +334,9 @@ const PAYLOAD_GUARDS: { [K in StageControlKind]: (x: unknown) => boolean } = {
   'stage.pong': isStagePongPayload,
   'stage.progress': isStageProgressPayload,
   'stage.token': isStageTokenPayload,
+  'stage.session.open': isStageSessionOpenPayload,
+  'stage.session.accept': isStageSessionAcceptPayload,
+  'stage.session.busy': isStageSessionBusyPayload,
 };
 
 // ── Encode ───────────────────────────────────────────────────────────────
@@ -342,4 +440,26 @@ export function makeStageToken(
     sessionId,
     payload: { sessionId, token, seq, done, ...(finishReason !== undefined ? { finishReason } : {}) },
   };
+}
+
+export function makeStageSessionOpen(
+  sessionId: string,
+  payload: Omit<StageSessionOpenPayload, 'sessionId'>,
+  callId = newCallId(),
+): StageControlMessageFor<'stage.session.open'> {
+  return { kind: 'stage.session.open', callId, sessionId, payload: { ...payload, sessionId } };
+}
+export function makeStageSessionAccept(
+  sessionId: string,
+  payload: Omit<StageSessionAcceptPayload, 'sessionId'>,
+  callId: string,
+): StageControlMessageFor<'stage.session.accept'> {
+  return { kind: 'stage.session.accept', callId, sessionId, payload: { ...payload, sessionId } };
+}
+export function makeStageSessionBusy(
+  sessionId: string,
+  payload: Omit<StageSessionBusyPayload, 'sessionId'>,
+  callId: string,
+): StageControlMessageFor<'stage.session.busy'> {
+  return { kind: 'stage.session.busy', callId, sessionId, payload: { ...payload, sessionId } };
 }

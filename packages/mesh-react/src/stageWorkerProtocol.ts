@@ -33,13 +33,27 @@ export type StageWorkerRequest =
       tokens: number[];
       positions: number[];
       input?: WireActivationFrame;
+      /** M2: which session to run this on (StageHandle.createSession()'s
+       * lane). Absent = the legacy fused single-session path (the
+       * pre-M1 `stage.prefill`/`stage.decodeStep` byte-for-byte behavior)
+       * — keeps every caller that never heard of sessions (the driver's
+       * own local stage-0 worker, the pipeline-split/chaos/compat/
+       * discovery e2e suites) on the exact same code path as before M2. */
+      sessionId?: string;
     }
-  | { type: 'decode'; reqId: number; token: number; input?: WireActivationFrame }
+  | { type: 'decode'; reqId: number; token: number; input?: WireActivationFrame; sessionId?: string }
   | { type: 'tokenize'; reqId: number; text: string; addSpecial: boolean }
   | { type: 'detokenize'; reqId: number; tokens: number[] }
   | { type: 'tokenIsEog'; reqId: number; token: number }
-  | { type: 'reset'; reqId: number }
-  | { type: 'dispose'; reqId: number };
+  | { type: 'reset'; reqId: number; sessionId?: string }
+  | { type: 'dispose'; reqId: number }
+  /** M2: open/close one lane (StageSessionHandle) on the already-loaded
+   * stage. `sessionCreate` fails if the stage isn't loaded yet or the
+   * model's lane_count (StageDescriptor.maxSessions) is exhausted — the
+   * worker surfaces that as a normal `{type:'error'}` response, same as
+   * any other native-call failure. */
+  | { type: 'sessionCreate'; reqId: number; sessionId: string }
+  | { type: 'sessionFree'; reqId: number; sessionId: string };
 
 export type StageWorkerResponse =
   | { type: 'ready'; reqId: number; isFirst: boolean; isFinal: boolean; nEmbd: number }
@@ -55,4 +69,6 @@ export type StageWorkerResponse =
   | { type: 'result'; reqId: number; kind: 'tokenIsEog'; isEog: boolean }
   | { type: 'result'; reqId: number; kind: 'reset' }
   | { type: 'result'; reqId: number; kind: 'dispose' }
+  | { type: 'result'; reqId: number; kind: 'sessionCreate' }
+  | { type: 'result'; reqId: number; kind: 'sessionFree' }
   | { type: 'error'; reqId: number; message: string };

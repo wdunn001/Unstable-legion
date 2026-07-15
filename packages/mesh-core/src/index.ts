@@ -77,6 +77,12 @@ export {
   makeStagePong,
   makeStageProgress,
   makeStageToken,
+  makeStageSessionOpen,
+  makeStageSessionAccept,
+  makeStageSessionBusy,
+  isStageSessionOpenPayload,
+  isStageSessionAcceptPayload,
+  isStageSessionBusyPayload,
   type StageControlKind,
   type StageControlMessage,
   type StageControlMessageFor,
@@ -87,7 +93,17 @@ export {
   type StagePongPayload,
   type StageProgressPayload,
   type StageTokenPayload,
+  type StageSessionOpenPayload,
+  type StageSessionAcceptPayload,
+  type StageSessionBusyPayload,
 } from './stageControl.js';
+
+// ── M2: sessionId envelope for the `sf` activation-frame channel ────
+export {
+  encodeStageFrameEnvelope,
+  decodeStageFrameEnvelope,
+  type DecodedStageFrameEnvelope,
+} from './stageFrameEnvelope.js';
 
 // ── Phase C: pipeline-split planner ──────────────────────────────────
 export {

@@ -91,17 +91,28 @@ export function sanitizeWasmHeapBudget(maxStorageBufferBindingSize: number): num
   return Math.min(maxStorageBufferBindingSize, WASM_HEAP_CEILING_BYTES);
 }
 
+/** M2: session-capacity fields to layer onto `buildStageHostCap`'s
+ * output — separate from `StageHostStabilityInputs` because they're only
+ * known once a stage is actually loaded (a host that hasn't loaded
+ * anything yet has no `maxSessions` committed and no `activeSessions`). */
+export interface StageHostSessionCapacity {
+  maxSessions: number;
+  activeSessions: number;
+}
+
 /** Build the `MeshPeerCap.stageHost` block this peer should advertise. */
 export function buildStageHostCap(
   limits: StageHostLimits,
   stability: StageHostStabilityInputs,
   cachedFragments?: readonly string[],
+  sessionCapacity?: StageHostSessionCapacity,
 ): NonNullable<MeshPeerCap['stageHost']> {
   return {
     ...(limits.vramBytes !== undefined ? { vramBytes: limits.vramBytes } : {}),
     maxStorageBufferBytes: limits.maxStorageBufferBindingSize,
     wasmHeapBudget: sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize),
     ...(cachedFragments && cachedFragments.length > 0 ? { cachedFragments } : {}),
+    ...(sessionCapacity ? { maxSessions: sessionCapacity.maxSessions, activeSessions: sessionCapacity.activeSessions } : {}),
     stability: {
       keepalive: stability.keepalive,
       visible: stability.visible,
@@ -110,6 +121,38 @@ export function buildStageHostCap(
       ...(stability.onBattery !== undefined ? { onBattery: stability.onBattery } : {}),
     },
   };
+}
+
+// ── M2: max concurrent sessions, chosen once at load time ──────────────
+//
+// A host commits its session capacity when it LOADS the stage, not
+// elastically per-request — legion-stage-runtime's docs/MULTI-SESSION.md:
+// skippy sessions are lanes (llama seq_ids) into ONE shared per-model
+// llama_context, and `lane_count` is fixed at `legion_stage_open` time.
+// `chooseMaxSessions` is the one place that decides the number passed to
+// `StageDescriptor.maxSessions` — deliberately NOT derived from
+// `perSessionKvBytes`/KV-budget math: M1 measured the WebGPU KV buffer as
+// IDENTICAL at max_sessions=1 vs 4 in the reference build, so that
+// formula is a conservative planning upper bound for VRAM headroom, not a
+// real per-session cost, and using it to size the lane ceiling would
+// under-provision concurrency for no real memory savings.
+
+/** Default session capacity a host commits to when it hasn't been told
+ * otherwise — generous enough for a small multi-tab demo, well under the
+ * hard cap. */
+export const DEFAULT_MAX_SESSIONS = 4;
+
+/** Hard ceiling on session capacity regardless of `desired` — a sanity
+ * bound (skippy's lane bitmap + KV cache are real resources even though
+ * M1 showed their cost doesn't scale linearly with observed usage; this
+ * isn't a measured limit, just "don't let a host promise the world"). */
+export const MAX_SESSIONS_HARD_CAP = 8;
+
+/** Clamp a desired session ceiling into `[1, MAX_SESSIONS_HARD_CAP]`,
+ * defaulting to `DEFAULT_MAX_SESSIONS` when `desired` is absent/non-finite. */
+export function chooseMaxSessions(desired?: number): number {
+  if (desired === undefined || !Number.isFinite(desired)) return DEFAULT_MAX_SESSIONS;
+  return Math.min(MAX_SESSIONS_HARD_CAP, Math.max(1, Math.round(desired)));
 }
 
 /** Minimal `StageHostCap` for capacity math only (no stability block —

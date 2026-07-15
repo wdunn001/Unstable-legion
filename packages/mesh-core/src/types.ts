@@ -129,6 +129,18 @@ export interface MeshPeerCap {
       /** Milliseconds since this peer joined the mesh (tab/session age). */
       uptimeMs: number;
     };
+    /**
+     * M2 — maximum concurrent driver sessions this peer commits to when it
+     * loads a stage (chosen once at load time, not elastic per-request —
+     * see legion-stage-runtime's docs/MULTI-SESSION.md: skippy sessions are
+     * lanes into ONE shared llama_context, and lane_count is fixed at
+     * legion_stage_open time). Absent = this peer hasn't loaded a stage
+     * yet, or predates M2 (treat as maxSessions=1 for planning purposes).
+     */
+    maxSessions?: number;
+    /** Sessions currently occupying a lane, for roster-level "how full is
+     * this host" display. Absent = no session ever opened yet. */
+    activeSessions?: number;
   };
 }
 

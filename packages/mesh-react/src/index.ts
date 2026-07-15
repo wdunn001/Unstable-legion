@@ -135,11 +135,30 @@ export {
   buildLocalCapacityCap,
   planPipelineForDriver,
   sanitizeWasmHeapBudget,
+  chooseMaxSessions,
   WASM_HEAP_CEILING_BYTES,
+  DEFAULT_MAX_SESSIONS,
+  MAX_SESSIONS_HARD_CAP,
   type StageHostLimits,
   type StageHostStabilityInputs,
+  type StageHostSessionCapacity,
   type PlanPipelineForDriverOptions,
 } from './stagePipelinePlanning.js';
+export {
+  canAdmitNow,
+  enqueue,
+  expireQueue,
+  popNextByPriority,
+  isSessionIdle,
+  DEFAULT_QUEUE_CAP,
+  DEFAULT_QUEUE_TTL_MS,
+  DEFAULT_IDLE_EVICT_MS,
+  type QueueEntry,
+  type PriorityScoreFn,
+  type EnqueueResult,
+  type ExpireResult,
+  type PopResult,
+} from './stageSessionAdmission.js';
 export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
 export {
   STAGE_MODEL_ID,
