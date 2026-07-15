@@ -95,13 +95,20 @@ jobs:
           ln -s "/mnt/h/dev/Project Codec/Codec" /mnt/h/dev/codec-local
 
           # Sibling 2: legion-stage-runtime (private, same Forgejo instance)
-          # via the dedicated read-only deploy key.
+          # via the dedicated read-only deploy key. mesh-core, mesh-react,
+          # AND legion-stage-runtime's own packages/stage-runtime all
+          # depend on this sibling's file: dist output, same as the CI in
+          # legion-stage-runtime itself — build it here too, not just clone
+          # it. Its own `@codecai/web` file: dependency resolves straight
+          # off the Codec sibling we already cloned+built above (both sit
+          # under /mnt/h/dev, matching the dev machine's layout exactly).
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p 2222 -H 192.168.1.88 >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -p 2222 -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
             git clone -q "git@192.168.1.88:wdunn001/legion-stage-runtime.git" /mnt/h/dev/legion-stage-runtime
+          ( cd /mnt/h/dev/legion-stage-runtime && npm ci --no-audit --no-fund -w packages/stage-runtime && npm run build -w packages/stage-runtime )
 
           cd /mnt/h/dev/unstable-legion
           export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
