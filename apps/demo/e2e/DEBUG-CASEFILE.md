@@ -158,6 +158,38 @@ host page 60s (idle, no load) before the driver ever starts, isolating
 whether elapsed wall-clock idle time alone (independent of the demo's
 mesh/React overhead) reproduces the death.
 
+## Test 3 (2026-07-15)
+
+Added `legion-stage-runtime/harness/e2e/p2p-aged-host.spec.ts`: navigate
+the harness's proven-green `p2p-host.html`, wait for `__hostReady`, THEN
+idle 60s doing NOTHING (no adapter probe, no extra activity — the
+harness host doesn't touch WebGPU at all before its own worker's
+`stage.load`), THEN start the driver exactly as `p2p.spec` does.
+
+Run 1: **PASSED.** Host streamed the full 610 MB clean past the 320 MB
+mark with zero incident, `stage.ready`, full 32-token decode,
+`passed=true`. Ran in 1.4 minutes total.
+
+**Pure wall-clock idle time is RULED OUT** as sufficient on its own —
+a genuinely idle host (nothing touching the GPU, no mesh capability
+publishing, no React) survives being aged 60s with no problem at all.
+
+This narrows things further: the demo's real host does exactly ONE
+thing during its idle window that this harness host doesn't —
+`useStageHost` calls `detectWebGpuLimits()`
+(`packages/mesh-react/src/webgpuLimits.ts`) on mount, which does
+`navigator.gpu.requestAdapter()` on the PAGE's main thread, well before
+the worker ever requests its OWN adapter+device. (Chat/llmWorker was
+already ruled out earlier via `?nochat=1`, which every helper here
+already passes, so it's controlled for.) Next: hypothesis 4 (not one of
+the original 3, but the natural next candidate from combining test
+1+2+3 evidence) — does merely requesting a `GPUAdapter` from the main
+thread, before a worker in the SAME renderer requests its own
+adapter+device, corrupt or destabilize the worker's later WebGPU state?
+Testing directly in the harness (add the exact `requestAdapter()` call
+demo's host makes, nothing else, to the otherwise-untouched harness
+host) to isolate this one variable cleanly.
+
 ## Environment notes
 
 - Windows 11, RTX 2080 Ti, bundled Playwright chromium, headed, WebGPU via
