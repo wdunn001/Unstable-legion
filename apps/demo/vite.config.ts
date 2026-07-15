@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { fileURLToPath } from 'node:url';
 
 // Vite config for the Unstable Legion demo.
 //
@@ -36,6 +37,16 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
+    rollupOptions: {
+      // Multi-page build: the default single-entry `vite build` only
+      // emits index.html's graph. debug-two-workers.html (casefile
+      // decisive test 1 — two stage workers, one page, PRODUCTION build)
+      // needs its own entry point built too, or `vite preview` 404s on it.
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        debugTwoWorkers: fileURLToPath(new URL('./debug-two-workers.html', import.meta.url)),
+      },
+    },
   },
   optimizeDeps: {
     include: [

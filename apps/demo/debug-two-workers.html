@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DEBUG: two stage workers, one page</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <!--
+      Casefile decisive test 1 (bundle vs environment): spin up TWO stage
+      workers directly in ONE page of the DEMO's own production build
+      (`vite build` + `vite preview`, apps/demo/playwright.config.ts) —
+      the harness's proven-green parity page (legion-stage-runtime's
+      index.html, 3 stage instances in one renderer) only ever runs
+      against `vite --port ...` (the DEV server); it never exercises the
+      minified/bundled worker chunk. This page mirrors that shape
+      (multiple stage instances, one renderer) but inside the demo's
+      bundle, isolating bundle-vs-environment.
+    -->
+    <pre id="log" style="white-space: pre-wrap; font-family: monospace"></pre>
+    <script type="module" src="/src/debugTwoWorkersMain.ts"></script>
+  </body>
+</html>

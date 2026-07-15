@@ -52,6 +52,57 @@ succeeds first every time.
    60 s before stage.load — if it then dies, something ages badly
    (device/GC state) in that window.
 
+## Test 1 in progress (2026-07-15)
+
+Built `apps/demo/debug-two-workers.html` + `src/debugTwoWorkersMain.ts`:
+two `workers/stageWorker.ts` DedicatedWorkers, ONE page, constructed via
+the exact same `new Worker(new URL(...), { type: 'module' })` call site
+as `StagePipelinePanel.tsx`, run under the demo's own `vite build` +
+`vite preview` (production bundle) — the variable NEVER exercised by any
+legion-stage-runtime harness spec (harness/playwright.config.ts runs
+`npx vite --port 4173`, the DEV server, for every single spec including
+the "proven green" `p2p.spec` control and the 3-instance parity page).
+This asymmetry (control = dev server, mainline = prod build) was not
+previously called out as ruled out and is a real gap in the control.
+
+Run 1 (`Promise.all` — both workers load CONCURRENTLY): worker1 threw an
+explicit `TypeError: network error` almost immediately (right at the "0
+MB" stream checkpoint, never reached 64 MB); worker2 streamed the full
+610 MB and reached `ready` cleanly. **This is a different failure mode
+than the mainline defect** — mainline dies silently at ~320 MB with NO
+ErrorEvent; this died near-instantly WITH an explicit ErrorEvent. Real
+bug (`vite preview`'s static file server can't reliably serve two
+simultaneous 610 MB same-origin fetches) but not (by itself) proof of
+the casefile's silent-death mechanism. Ruling out "just re-run the
+mainline spec's exact shape concurrently" as the decisive test —
+switched to SEQUENTIAL loads (worker1 fully completes, `await`s, THEN
+worker2 starts) to match the real driver-then-remote order
+(`useStagePipeline.start()` awaits the local stage-0 `.load()` to
+completion before `runDriverStageSession` ever sends `stage.load` to a
+remote — the two full.gguf fetches never overlap in the real app).
+
+Run 2 + 3 (sequential, `?mode=sequential` default, 2 confirming runs):
+BOTH workers reach `ready` cleanly every time — worker1 (610 MB) fully
+loads, warms up, THEN worker2 (610 MB) fully loads, same page, same
+renderer, same production bundle. No death, no error, no stall.
+
+**Test 1 verdict: bundle/minification RULED OUT** as the cause (2/2
+confirming runs). Two full 610 MB monolith loads through the exact
+production-built `stageWorker.ts` chunk, sequential, one page, succeed
+every time. The `Promise.all` concurrent-mode side-finding (worker
+dying near-instantly with an explicit `network error`, see above) is a
+REAL but SEPARATE bug in `vite preview`'s handling of simultaneous
+same-origin large-file fetches — parked, not the mainline defect (mainline
+dies silently ~320 MB in, with no ErrorEvent at all, and the real driver
++ remote loads are sequential, not concurrent, per
+`useStagePipeline.start()`).
+
+Moving to casefile test 2 (multi-page/context dimension) per the ranked
+order — the multi-CONTEXT (3 separate renderer processes) shape is now
+the prime remaining difference between the red mainline spec and every
+green control (harness's p2p.spec: 2 pages, ONE shared context/renderer;
+this test 1: 2 workers, ONE page).
+
 ## Environment notes
 
 - Windows 11, RTX 2080 Ti, bundled Playwright chromium, headed, WebGPU via
