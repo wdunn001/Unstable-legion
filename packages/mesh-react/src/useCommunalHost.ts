@@ -663,6 +663,24 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     peer,
     baseCap: opts.baseCap,
     createStageWorker,
+    // Resolve shards for a SERVED session from THIS host's own manifest — the
+    // driver's `stage.session.open` carries no shardUrls, so without this a
+    // served stage loads zero shards and `legion_stage_open` fails. Same
+    // resolver + manifest the proactive-preload path uses.
+    resolveSessionShards: async ({ layerStart, layerEnd, totalLayers: total }) => {
+      const { plan, manifestCache } = await resolveCommunalShardPlan(
+        { layerStart, layerEnd, includeOutput: layerEnd === total },
+        {
+          manifestUrl,
+          fallbackShardUrls,
+          opfsQuotaBytes: opfsQuotaBytesRef.current,
+          manifestCache: manifestCacheRef.current,
+          includeEmbeddings: layerStart === 0,
+        },
+      );
+      manifestCacheRef.current = manifestCache;
+      return plan.shardUrls;
+    },
     keepaliveEnabled: opts.keepaliveEnabled,
     desiredMaxSessions: opts.desiredMaxSessions,
     priorityScore,

@@ -118,6 +118,22 @@ export interface UseStageHostOptions {
    * site, which can't live in a shared library). Must be stable
    * (useCallback) or this hook will restart its answer loop every render. */
   createStageWorker: () => Worker;
+  /**
+   * Resolve the shard URLs for a stage this host is asked to SERVE (a
+   * `stage.session.open` the driver doesn't carry explicit `shardUrls`/
+   * `manifestUrl` for). Without this, a served session loads with zero shards
+   * and `legion_stage_open` fails ("paths, path_count, and out_model are
+   * required"). The host resolves from its OWN manifest (it decides where to
+   * fetch), same as its proactive preload path. `useCommunalHost` wires this to
+   * `resolveCommunalShardPlan`. Omitted => served sessions fall back to whatever
+   * `shardUrls`/`manifestUrl` the open message carried (may be empty).
+   */
+  resolveSessionShards?: (req: {
+    modelId: string;
+    layerStart: number;
+    layerEnd: number;
+    totalLayers: number;
+  }) => Promise<readonly string[]>;
   /** Mirrors `useAudioKeepalive().enabled` — feeds `stability.keepalive`. */
   keepaliveEnabled?: boolean;
   /** Fragment ids already resident in this peer's cache (future OPFS
@@ -422,6 +438,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // `priorityScoreRef`/`baseCapRef`).
   const standingLedgerRef = useRef<StandingLedger | undefined>(opts.standingLedger);
   standingLedgerRef.current = opts.standingLedger;
+  // Resolve shards for a SERVED session (same ref discipline) — read fresh
+  // inside the answer loop without making that effect depend on the callback's
+  // identity.
+  const resolveSessionShardsRef = useRef<UseStageHostOptions['resolveSessionShards']>(opts.resolveSessionShards);
+  resolveSessionShardsRef.current = opts.resolveSessionShards;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -949,6 +970,25 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
     async function handleSessionOpen(msg: StageControlMessageFor<'stage.session.open'>, peerId: string): Promise<void> {
       log(`[stage-host] stage.session.open from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
+      // The `stage.session.open` payload carries NO shard info by design — the
+      // host resolves shards for the requested range from its OWN manifest.
+      // Without this a served session loads zero shards and `legion_stage_open`
+      // fails ("paths, path_count, and out_model are required").
+      let shardUrls: readonly string[] = [];
+      if (resolveSessionShardsRef.current) {
+        try {
+          shardUrls = await resolveSessionShardsRef.current({
+            modelId: msg.payload.modelId,
+            layerStart: msg.payload.layerStart,
+            layerEnd: msg.payload.layerEnd,
+            totalLayers: msg.payload.totalLayers,
+          });
+        } catch (err) {
+          log(
+            `[stage-host] shard resolution failed for [${msg.payload.layerStart},${msg.payload.layerEnd}): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       await admitOrEnqueue({
         origin: 'session',
         sessionId: msg.sessionId,
@@ -960,7 +1000,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         totalLayers: msg.payload.totalLayers,
         ctxSize: msg.payload.ctxSize,
         wireDtype: msg.payload.wireDtype,
-        shardUrls: [],
+        shardUrls,
         wireHeaderB64: msg.payload.wireHeader,
       });
     }
