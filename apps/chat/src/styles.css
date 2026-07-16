@@ -894,6 +894,16 @@ code {
   cursor: pointer;
 }
 
+/* Live model-layer download bar (hosting panel). */
+.host-download {
+  margin: 6px 0 2px;
+}
+.host-download-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
 /* ── Tool contributions (TOOL-NODES) ─────────────────────────────── */
 .tool-contrib-sub {
   margin: 0 0 8px;

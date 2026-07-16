@@ -55,6 +55,30 @@ export interface HostingConsentBannerProps {
   /** The "Contribute more" expander — undefined hides it entirely (e.g.
    * capacity math isn't ready yet). */
   contribution?: ContributionPanelProps;
+  /** Live shard download/load progress for the stage this host is
+   * currently loading — the SAME numbers `[stage-host] load progress`
+   * logs to the console, rendered as a bar. Undefined outside a load. */
+  downloadProgress?: { shardsFetched: number; totalShards: number; bytesFetched: number; totalBytes?: number };
+}
+
+/** "Downloading model layers: 17/36 · 1.8 / 4.4 GB" + a live bar. */
+function DownloadProgressBar(props: { progress: NonNullable<HostingConsentBannerProps['downloadProgress']> }) {
+  const { shardsFetched, totalShards, bytesFetched, totalBytes } = props.progress;
+  const gb = (n: number) => (n / 1_000_000_000).toFixed(1);
+  const pct = totalBytes
+    ? Math.min(100, Math.round((bytesFetched / totalBytes) * 100))
+    : Math.min(100, Math.round((shardsFetched / Math.max(1, totalShards)) * 100));
+  return (
+    <div className="host-download" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+      <div className="host-download-label">
+        Downloading model layers: {shardsFetched}/{totalShards}
+        {totalBytes ? ` · ${gb(bytesFetched)} / ${gb(totalBytes)} GB` : ''}
+      </div>
+      <div className="capacity-bar-track">
+        <div className="capacity-bar-fill capacity-bar-fill-ready" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }
 
 /** The host-failure card — rendered inside the hosting panel whenever the
@@ -121,6 +145,7 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
         </label>
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
         <span className="consent-capacity-summary">{props.capacitySummaryLabel}</span>
+        {props.hostingEnabled && props.downloadProgress && <DownloadProgressBar progress={props.downloadProgress} />}
         {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
         {props.capable && props.contribution && <ContributionPanel {...props.contribution} />}
       </div>

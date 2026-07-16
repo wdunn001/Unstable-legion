@@ -662,6 +662,7 @@ function Dashboard(props: {
             layerRangeLabel: `${modelConfig.driverLayers}–${modelConfig.totalLayers}`,
             errorMessage: communal.errorMessage,
             retrying: communal.retrying,
+            downloadProgress: communal.downloadProgress,
             capacitySummaryLabel,
             contribution: {
               detectedGpuName: gpuDetection.limits?.gpuName,
