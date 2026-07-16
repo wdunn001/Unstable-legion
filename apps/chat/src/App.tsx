@@ -26,6 +26,7 @@ import {
   useMeshContext,
   useMeshRoster,
   usePersona,
+  useUserChat,
   type MeshPeerCap,
   type MeshProviderProps,
 } from '@unstable-legion/react';
@@ -33,6 +34,7 @@ import { buildCommunalTopology } from '@unstable-legion/core';
 import { JoinScreen } from './components/JoinScreen.js';
 import { ConversationList } from './components/ConversationList.js';
 import { ChatPane } from './components/ChatPane.js';
+import { RoomChatPanel } from './components/RoomChatPanel.js';
 import { MeshSidebar } from './components/MeshSidebar.js';
 import { TrustBadge } from './components/TrustBadge.js';
 import { TrustInterstitial } from './components/TrustInterstitial.js';
@@ -216,6 +218,18 @@ function Dashboard(props: {
 
   const threads = useThreads();
 
+  // ── User-to-user room chat — a DISTINCT surface from the AI assistant
+  // above. Standing-gated rate limiting reuses the SAME contribution
+  // ledger the mesh economy runs on (priorityScore), so contributors get
+  // more chat headroom and newcomers less — never a hard block. ────────
+  const roomChat = useUserChat({ nick: props.nick, standingOf: priorityScore });
+  const [chatTab, setChatTab] = useState<'assistant' | 'room'>('assistant');
+  const [roomSeenCount, setRoomSeenCount] = useState(0);
+  const roomUnread = chatTab === 'room' ? 0 : Math.max(0, roomChat.messages.length - roomSeenCount);
+  useEffect(() => {
+    if (chatTab === 'room') setRoomSeenCount(roomChat.messages.length);
+  }, [chatTab, roomChat.messages.length]);
+
   // ── Mesh sidebar view-models ──────────────────────────────────────
   const topology = useMemo(
     () =>
@@ -320,7 +334,22 @@ function Dashboard(props: {
       hostingConsent: hostingConsent.consent,
       hostingActive: communal.active,
     };
-  }, [peer, capacity, chat.status, chat.text, chat.restartCount, threads.threads, threads.activeThreadId, trustModal, hostingConsent.consent, communal.active]);
+    // Separate snapshot for the user-to-user room chat e2e — kept distinct
+    // from __legionChat (the AI path) exactly as the two surfaces are.
+    (window as unknown as { __legionRoomChat?: unknown }).__legionRoomChat = {
+      tab: chatTab,
+      selfId: peer?.selfId,
+      messageCount: roomChat.messages.length,
+      texts: roomChat.messages.map((m) => m.text),
+      lastFrom: roomChat.messages.length > 0 ? roomChat.messages[roomChat.messages.length - 1]?.nick : undefined,
+      stats: roomChat.stats,
+    };
+    // Test-only affordance: lets the e2e flood the room from a single peer
+    // faster than the composer allows, to prove the outbound rate limiter
+    // throttles a flood. Returns the send-result kind.
+    (window as unknown as { __legionRoomChatSend?: (t: string) => Promise<string> }).__legionRoomChatSend = async (t: string) =>
+      (await roomChat.send(t)).kind;
+  }, [peer, capacity, chat.status, chat.text, chat.restartCount, threads.threads, threads.activeThreadId, trustModal, hostingConsent.consent, communal.active, chatTab, roomChat.messages, roomChat.stats, roomChat.send]);
 
   return (
     <div className="app-shell">
@@ -355,14 +384,47 @@ function Dashboard(props: {
             onDelete={(id) => void threads.deleteThread(id)}
           />
         </aside>
-        <ChatPane
-          messages={threads.activeThread?.messages ?? []}
-          streamingMessageId={streamingMessageId}
-          busy={busy}
-          capacity={capacity}
-          onSend={handleSend}
-          onStop={() => chat.abort('user stopped')}
-        />
+        <div className="center-col">
+          <div className="chat-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              className={`chat-tab ${chatTab === 'assistant' ? 'chat-tab-active' : ''}`}
+              aria-selected={chatTab === 'assistant'}
+              onClick={() => setChatTab('assistant')}
+            >
+              Assistant
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`chat-tab ${chatTab === 'room' ? 'chat-tab-active' : ''}`}
+              aria-selected={chatTab === 'room'}
+              onClick={() => setChatTab('room')}
+            >
+              Room
+              {roomUnread > 0 && <span className="chat-tab-badge">{roomUnread}</span>}
+            </button>
+          </div>
+          {chatTab === 'assistant' ? (
+            <ChatPane
+              messages={threads.activeThread?.messages ?? []}
+              streamingMessageId={streamingMessageId}
+              busy={busy}
+              capacity={capacity}
+              onSend={handleSend}
+              onStop={() => chat.abort('user stopped')}
+            />
+          ) : (
+            <RoomChatPanel
+              messages={roomChat.messages}
+              stats={roomChat.stats}
+              roster={roster}
+              selfId={peer?.selfId ?? ''}
+              onSend={(t) => roomChat.send(t)}
+            />
+          )}
+        </div>
         <MeshSidebar
           capacity={capacity}
           segments={segments}
