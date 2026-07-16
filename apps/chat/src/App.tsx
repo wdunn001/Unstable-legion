@@ -18,6 +18,7 @@ import {
   MeshProvider,
   StandingLedger,
   bindPriorityScore,
+  defaultTurnConfig,
   mergeRelayUrls,
   sanitizeWeightBudget,
   useAudioKeepalive,
@@ -81,10 +82,12 @@ const RELAY_URLS = mergeRelayUrls({
   blockedHosts: ['test.mosquitto.org', 'broker-cn.emqx.io'],
   max: 6,
 });
-// Build-time TURN config — see apps/chat/Dockerfile.
+// Build-time TURN config — see apps/chat/Dockerfile. STUN-only by
+// default; mirrors apps/demo's VITE_TURN_* convention exactly.
 const TURN_URLS_RAW = import.meta.env.VITE_TURN_URLS ?? '';
 const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME || undefined;
 const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL || undefined;
+const TURN_USE_DEFAULT = import.meta.env.VITE_TURN_USE_DEFAULT === '1';
 const TURN_EXTRAS = TURN_URLS_RAW
   ? TURN_URLS_RAW.split(/[\s,]+/)
       .filter(Boolean)
@@ -94,26 +97,12 @@ const TURN_EXTRAS = TURN_URLS_RAW
         ...(TURN_CREDENTIAL ? { credential: TURN_CREDENTIAL } : {}),
       }))
   : [];
-
-// SELF-HOSTED-ONLY ICE (2026-07-16). Trystero appends `turnConfig` to its
-// built-in public STUN list (Google + Cloudflare). On a LAN that intercepts
-// port 53 (this deploy's network), every one of those 5 STUN hostnames
-// fails its WebRTC DNS lookup during candidate gathering — a wall of `701
-// STUN host lookup received error`. Passing `rtcConfig.iceServers`
-// REPLACES that list entirely (trystero spreads rtcConfig last), so we
-// gather against exactly one STUN + one TURN — both our own coturn. ~80%
-// fewer DNS lookups (far less spam, less load on the flaky resolver) and
-// zero third-party servers. Derive the STUN url from each `turn:` url
-// (same host/port, coturn answers STUN there too).
-const SELF_STUN_URLS = [
-  ...new Set(TURN_EXTRAS.map((e) => e.urls).filter((u) => u.startsWith('turn:')).map((u) => `stun:${u.slice(5).split('?')[0]}`)),
-];
-const ICE_SERVERS = [...SELF_STUN_URLS.map((urls) => ({ urls })), ...TURN_EXTRAS];
+const TURN_CONFIG = defaultTurnConfig({ extras: TURN_EXTRAS, useDefault: TURN_USE_DEFAULT });
 
 const TRYSTERO_CONFIG: MeshProviderProps['trysteroConfig'] = {
   appId: 'unstable-legion-chat-v1',
   relayConfig: { urls: RELAY_URLS },
-  rtcConfig: { iceServers: ICE_SERVERS },
+  turnConfig: TURN_CONFIG,
 };
 
 const PERSONA_STORAGE_KEY = 'unstable-legion-chat-persona-v1';
