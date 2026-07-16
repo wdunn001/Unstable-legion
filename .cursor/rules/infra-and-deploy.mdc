@@ -1,0 +1,59 @@
+---
+description: Self-hosted mesh infrastructure (signaling + TURN) and the deploy pipeline. Read before touching relay/ICE config, the Dockerfile, or deploying.
+globs: apps/chat/Dockerfile,apps/chat/nginx.conf,docker-compose.yml,scripts/**,.env.example
+---
+
+# Infrastructure + deploy
+
+## Self-hosted mesh infra (off-ISP VPS) — do NOT reintroduce public deps
+
+Both live on the OVH VPS (`51.81.33.184`, alongside coturn + Postfix), because
+public infrastructure proved unreliable and the home router won't hairpin:
+
+- **Signaling** (peer discovery / SDP): self-hosted **mosquitto** MQTT-over-WSS
+  at `wss://signal.quasarke.net/mqtt` (mosquitto on localhost:8084 behind nginx
+  TLS on :443 — mosquitto can't bind privileged ports, and the OVH firewall only
+  passes a few TCP ports). Public MQTT brokers stalled SDP exchange → peers never
+  connected. Env: `VITE_RELAY_URLS`. IaC: homelab `mail-stack/vps-relay/signaling`.
+- **STUN/TURN**: self-hosted **coturn** at `turn:51.81.33.184:3478` (UDP). Client
+  points at it **by IP** (no DNS at gather time). Env: `VITE_TURN_*`.
+  IaC: homelab `mail-stack/vps-relay/coturn`.
+- **NO third-party STUN/brokers** (no Google/Cloudflare/AWS) — this was an
+  explicit product decision. Don't add them back "for reliability."
+
+### DNS gotcha (split-horizon)
+`*.quasarke.net` resolves to the internal `.88` Caddy on the LAN and to public
+IPs externally. A VPS-hosted service therefore needs a name pinned to the VPS
+from **both** horizons (public A record + a specific AdGuard rewrite overriding
+the wildcard). `signal.quasarke.net → 51.81.33.184` is set up this way. WebSocket
+also requires HTTP/1.1 through nginx (h2/ALPN breaks the Upgrade).
+
+## Deploy (manual — no CD credential on the shared edge)
+
+`legion.codecai.net` serves `apps/chat` at `/`, `apps/demo` at `/classic/`, from
+ONE `legion-chat` container on `.198` (nginx-proxy + acme-companion; routes by
+hostname not path, so both apps ship in one image, demo built `--base=/classic/`).
+
+1. `scripts/prepare-deploy-context.sh` — materialize `codec-local/` +
+   `.deploy-context/legion-stage-runtime/` as REAL files. On Windows checkouts the
+   sibling-repo symlinks materialize as text stubs — **don't rsync them over a
+   host that already has good copies.**
+2. Ensure `.198:/storage/unstable-legion/.env` has real `VITE_TURN_*` +
+   `VITE_RELAY_URLS`. **A missing `.env` silently builds a STUN-only / public-broker
+   bundle — no error.**
+3. `docker compose build legion-chat` → `scripts/verify-turn-baked.sh`
+   (fails loud if TURN isn't baked) → `docker compose up -d legion-chat`.
+4. Verify live: the running bundle greps for `turn:51.81.33.184` and
+   `signal.quasarke.net`; a fresh peer reaches `checking→connected`.
+
+Model weights are NOT in the image (host `webllm-mirror` volume, served `/webllm/`).
+
+## Source-of-truth + persistence rules
+
+- **Forgejo is a read-only mirror.** Commit to **GitHub `main`**
+  (`git@github.com:wdunn001/Unstable-legion.git`).
+- **Persist every host-side infra change to homelab IaC** (`homelab-compose`) in
+  the same task — host edits drift and get wiped otherwise.
+- **Secrets** (TURN credential, etc.) never enter chat/context/commits — read
+  them server-side from the `.env`/conf in-shell; the leaked coturn cred is
+  pending rotation.

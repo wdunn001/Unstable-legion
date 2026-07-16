@@ -1,0 +1,35 @@
+---
+description: Code, testing, and commit conventions for Unstable Legion.
+alwaysApply: true
+---
+
+# Conventions
+
+## Code
+- `mesh-core` is **framework-free TypeScript** — no React, no DOM assumptions
+  beyond guarded `typeof window`/`document` checks. React lives only in
+  `mesh-react` and the apps.
+- Pure, deterministic core: planners/topology are pure functions over a roster
+  snapshot; inject clocks (`now`) and use deterministic hashes for tie-breaks so
+  concurrent peers resolve routes identically and tests don't flake.
+- Runtime-validate everything off the wire in `guards.ts` (see the mesh-protocol
+  rule — additive idiom).
+- Match surrounding style; comments state constraints/rationale, not narration.
+
+## Tests
+- `node:test` under `packages/*/test`. Run `npm run test -w @unstable-legion/core`
+  (and `-w @unstable-legion/react`). Add a regression test with every wire/guard
+  or planner change. `apps/*` e2e is Playwright (GPU-gated, dispatch-only in CI).
+- After editing `mesh-core/src`, rebuild its `dist` before the apps consume it.
+
+## Commits + source of truth
+- **Commit to GitHub `main`** — the Forgejo repo is a read-only mirror.
+- **No AI/Claude attribution** in commit messages or trailers; author as the user.
+- Nothing is "done" until committed, merged, AND (for app/infra changes)
+  deployed + verified live.
+- Persist host/infra changes to `homelab-compose` IaC in the same task.
+
+## Product decisions that are NOT up for casual reversal
+- No third-party STUN / signaling brokers (self-hosted only — see infra rule).
+- Guards stay additive/lenient (a version-skewed peer must not be dropped).
+- The map/read-only subsystems and the mesh engine stay separated where noted.
