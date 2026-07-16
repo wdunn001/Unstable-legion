@@ -323,12 +323,19 @@ code {
   min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 320px;
+  /* Cap the single implicit row at the body's own height — without this
+   * the row auto-sizes to its tallest column (a long conversation), the
+   * shell overflows the viewport, and the WHOLE page scrolls instead of
+   * each column scrolling independently (.chat-scroll / the sidebars all
+   * already carry their own overflow-y). */
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 @media (max-width: 900px) {
   .app-body {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
   }
   .conversation-sidebar,
   .mesh-sidebar {
@@ -410,6 +417,11 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Grid items default to min-height:auto — without an explicit 0 the
+   * pane refuses to shrink below its content and defeats the row cap
+   * above (same trick .app-body's own min-height:0 plays for the shell
+   * flexbox). */
+  min-height: 0;
 }
 .chat-scroll {
   flex: 1;
