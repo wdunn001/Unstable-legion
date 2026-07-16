@@ -78,12 +78,14 @@ function summarize(connections: IceConnectionRecord[]): IceDiagSummary {
 
 async function captureSelectedPair(pc: RTCPeerConnection, rec: IceConnectionRecord): Promise<void> {
   try {
-    const stats = await pc.getStats();
+    // RTCStatsReport IS a maplike at runtime, but older lib.dom typings
+    // (the container's tsc) don't declare `.get` — go through a Map view.
+    const stats = (await pc.getStats()) as unknown as Map<string, Record<string, unknown>>;
     stats.forEach((report) => {
       if (report.type === 'candidate-pair' && (report as { nominated?: boolean }).nominated) {
         const r = report as { localCandidateId?: string; remoteCandidateId?: string };
-        const local = r.localCandidateId ? (stats.get(r.localCandidateId) as Record<string, unknown> | undefined) : undefined;
-        const remote = r.remoteCandidateId ? (stats.get(r.remoteCandidateId) as Record<string, unknown> | undefined) : undefined;
+        const local = r.localCandidateId ? stats.get(r.localCandidateId) : undefined;
+        const remote = r.remoteCandidateId ? stats.get(r.remoteCandidateId) : undefined;
         rec.selectedPair = {
           local: local?.candidateType as string | undefined,
           remote: remote?.candidateType as string | undefined,
