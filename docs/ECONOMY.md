@@ -151,39 +151,92 @@ ledger.myStanding(selfId, now);      // single-peer status panel read
 const priorityScore = bindPriorityScore(ledger, () => Date.now());
 ```
 
-## Injection story
+## Injection story (now wired — read this section, not the historical note below)
 
-`standing.ts` exports everything from `packages/mesh-core/src/index.ts`.
-Two consumption points exist today, both **hooks that default to
-`() => 0`** (pure FCFS) until something wires a live ledger in:
+`standing.ts` exports everything from `packages/mesh-core/src/index.ts`
+(and is re-exported again from `packages/mesh-react/src/index.ts` for
+convenience). As of this pass, ONE `StandingLedger` instance lives per
+peer — created once in the demo's `Dashboard` component
+(`apps/demo/src/App.tsx`) and threaded down to every panel that has a
+host or driver role:
 
-- **M2 admission** — `packages/mesh-react/src/stageSessionAdmission.ts`'s
-  `popNextByPriority(queue, priorityScore?)` already takes exactly the
-  `(peerId: string) => number` shape `bindPriorityScore` produces. This
-  pass deliberately does **not** change that file's default: M3 is
-  concurrently landing `communalTopology.ts`/`communalAssembly.ts`/
-  `useCommunalHost.ts` in this same working tree, and `stageSessionAdmission
-  .ts` is close enough to that surface that editing its default here risked
-  a collision for no real gain — the default stays `() => 0`, documented
-  here instead. A future pass (M5, or a follow-up on this milestone) wires
-  it: `popNextByPriority(queue, bindPriorityScore(ledger, () => Date.now()))`.
-- **M3 route/replan spread** — not built by this pass (owned by the
-  concurrent M3 agent); `bindPriorityScore` produces the same
-  `(peerId: string) => number` shape for whatever hook M3's
-  `communalTopology`/`communalAssembly` exposes.
+```ts
+const standingLedgerRef = useRef<StandingLedger | null>(null);
+if (standingLedgerRef.current === null) standingLedgerRef.current = new StandingLedger();
+const standingLedger = standingLedgerRef.current;
+```
 
-**Where the telemetry comes from (honest state):** `standing.ts` has no
-opinion on *how* a driver learns `layersServed`/`framesServed`/`servingMs`
-/`sessionCompleted` — that's `stageOrchestrator.ts`'s job (it already
-tracks per-hop timing and completion for replan/timeout purposes; see
-`runDriverStageSession`'s `StageOrchestratorEvent` stream). As of this
-pass, `stageOrchestrator.ts` does **not** yet call `recordService`/
-`recordConsumption` — the ledger is ready to be fed, and the natural place
-to feed it is a listener on the same event stream `docs/M2-MULTI-SESSION-
-HOST.md` describes (`stage.stop` on both abort and clean finish already
-gives a driver an unambiguous "this session is over, here's whether it
-completed" signal). Wiring that listener is M5/product-integration work,
-not part of this milestone.
+**Priority consumption points, both now live:**
+
+- **M2 admission** — `stageSessionAdmission.ts`'s
+  `popNextByPriority(queue, priorityScore?)` is fed
+  `bindPriorityScore(standingLedger, () => Date.now())` via
+  `useStageHost`'s new `standingLedger` option (`StagePipelinePanel`'s
+  "host stages" role AND `CommunalHostPanel`'s communal-host role both go
+  through `useStageHost`, so both get this for free).
+- **M3 route/replan spread** — `planCommunalRoute`/`communalAttachOrder`'s
+  ranking and `runCommunalDriverSession`'s `computeReplanJitterMs` both
+  take the same bound `priorityScore` fn, threaded through
+  `useCommunalChat`'s `priorityScore` option (`CommunalChatPanel` computes
+  it once via `useMemo(() => bindPriorityScore(standingLedger, () =>
+  Date.now()), [standingLedger])`).
+- **M3 claim/yield tie-break** — `communalHostClaim`'s essential-claim/
+  wasteful-overlap tie-break also takes the same fn, via
+  `useCommunalHost`'s existing `priorityScore` option (already threaded
+  pre-M4; `CommunalHostPanel` now supplies the real bound fn instead of
+  the `() => 0` default).
+
+**Telemetry — who calls `recordService`/`recordConsumption`, and why that
+split (host debits consumers, driver credits hosts):**
+
+- **`useStageHost.ts`'s `freeSession`** (every session end — natural
+  finish, abort, idle-evict, or the new forced disconnect, see
+  `docs/COMMUNAL.md`) calls `standingLedger.recordConsumption(
+  {consumerPeerId: driverPeerId, layersConsumed: layerEnd-layerStart,
+  framesConsumed: decodedCount, consumingMs: now-createdAt}, now)` when a
+  `standingLedger` option was supplied. This is the "host directly
+  witnessed a driver's resource consumption" half — matches
+  `recordConsumption`'s own contract (never gated on completion; a peer
+  that aborted mid-stream still occupied the lane).
+- **`useCommunalChat.ts`'s `recordSegmentTelemetry`** (on the mesh-core
+  orchestrator's `'finished'`/`'aborted'`/`'replan'` events) calls
+  `standingLedger.recordService({hostPeerId, layersServed, framesServed,
+  servingMs, sessionCompleted}, now)` for the remote host(s) THIS run
+  actually attached to, per ATTACHED SEGMENT (a replan resets the
+  telemetry window — the earlier host's own outcome is recorded against
+  its own serving time before the new segment's window starts, not folded
+  together). `sessionCompleted` is `true` only on `'finished'`; both
+  `'aborted'` and a superseding `'replan'` record `false` — the "driver
+  directly witnessed host service" half, gated on completion per
+  `recordService`'s own contract (closes the frame-farming/partial-work
+  gaming gap this doc's Mechanics section already documented).
+
+This split is deliberate, not arbitrary: a HOST is the one positioned to
+witness how long/how much a DRIVER occupied its lane (so it debits the
+driver in its own local ledger, informing its own future admission
+ordering); a DRIVER is the one positioned to witness whether a HOST
+actually delivered a complete session (so it credits the host in its own
+local ledger, informing its own future route/replan ranking). Neither
+peer needs the other's ledger — this is exactly the "local-only, never
+gossiped" design this doc's Sybil-residual section already commits to.
+
+Unit-tested end to end (telemetry -> ledger -> priority, exercising the
+EXACT math both call sites above compute) in
+`packages/mesh-react/test/economyWiring.test.ts` — 4 tests: a heavy
+consumer is deprioritized behind a light one in the host admission queue;
+an unseen driver still outranks a debt-carrying one; a driver-credited
+host outranks an unseen candidate for the same route segment; a host
+whose only recorded session aborted gets no credit. See `docs/COMMUNAL.md`
+for the real-browser `communal.spec.ts` proof that the whole wire/worker
+path this feeds off of (session completion/abort detection) actually
+fires in a live mesh, not just in the pure ledger math.
+
+### Historical note (pre-this-pass state, kept for context)
+
+Before this pass, both injection points above defaulted to `() => 0`
+(pure FCFS) and `stageOrchestrator.ts` called neither `recordService` nor
+`recordConsumption` — `standing.ts` was a fully-built, 35-test-covered
+ledger with nothing feeding it. That gap is what this pass closes.
 
 ## Test matrix (`packages/mesh-core/test/standing.test.ts`, 35 tests)
 

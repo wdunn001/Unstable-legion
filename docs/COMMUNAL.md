@@ -204,58 +204,109 @@ populated for Playwright/manual debugging, mirroring
 `StagePipelinePanel`'s `window.__legionStage` convention. The whole demo
 (`vite build`) builds clean with this wired in.
 
-## What's NOT done — read before claiming this milestone complete
+`CommunalChatPanel.tsx` (this pass) — the driver-side companion, wired
+alongside it in `Dashboard`. `window.__legionCommunalChat` mirrors the
+same debug-surface convention. Both panels (plus `StagePipelinePanel`)
+now share ONE `StandingLedger` instance per `Dashboard` mount (see
+`docs/ECONOMY.md`).
 
-- **No driver-side communal chat UI/hook exists in `apps/demo`.**
-  `runCommunalDriverSession` is implemented and unit-tested at the
-  mesh-core layer, but nothing in this repo yet builds the
-  `CommunalRoute`/`CommunalRouteFn` a real driver page would need
-  (roster → `buildCommunalTopology` → `planCommunalRoute` +
-  `communalAttachOrder` → the shapes `runCommunalDriverSession` expects)
-  and wires it into a page a Playwright test could drive. This is the
-  single largest remaining gap.
-- **The M3 e2e acceptance test (3 host tabs assemble from empty → 100%
-  coverage → 2 concurrent communal chats → kill one host mid-decode →
-  both recover) was NOT written or run this pass.** Building it requires
-  the driver-side wiring above PLUS the same kind of real-WebGPU/
-  real-browser debug iteration `docs/M2-MULTI-SESSION-HOST.md` describes
-  finding mid-development (the wasm concurrent-dispatch race, the
-  idle-eviction gotcha) — i.e. genuine multi-hour iteration against a
-  live browser harness, not something verifiable by inspection or unit
-  tests alone. Do not treat the property-test convergence proof above as
-  a substitute for this — the property tests prove the PURE decision
-  logic converges; they say nothing about the real wire/worker/WebGPU
-  integration converging under real timing and real GPU contention.
+## Closing the loop (this pass)
+
+The gaps below (all from the original M3 pass) are now closed:
+
+- **`useCommunalChat.ts` (mesh-react) — the driver-side caller.** Builds
+  the `CommunalRoute`/`CommunalRouteFn` `runCommunalDriverSession` was
+  missing (roster → `buildCommunalTopology` → `planCommunalRoute` +
+  `communalAttachOrder` → `runCommunalDriverSession`), hosts stage 0
+  locally over the fixed `[0, STAGE_DRIVER_LAYERS)` range every communal
+  host anchors its own claims against, and reuses `useStagePipeline`'s
+  exact `acquireLeaderLock` "one driver per tab" idiom. Exposes `{
+  start(prompt, opts?), status, tokens, text, restartCount,
+  readyStageIndexes, abort }`. Wired into the demo as
+  `CommunalChatPanel.tsx`, with `window.__legionCommunalChat` for
+  Playwright/manual debugging.
+- **The M3 e2e acceptance test now exists and is green**
+  (`apps/demo/e2e/communal.spec.ts`, 2/2 confirming runs, ~1.1-1.5m
+  each): 3 host tabs self-assemble `[2,28)` coverage from empty (1
+  segment, 3 candidates — real WebGPU capacity per host comfortably
+  covers the whole communal range solo, so the OTHER two hosts become
+  warm spares of the exact same segment rather than partial co-owners —
+  see `stageOrchestrator.ts`'s SCOPE NOTE on why this is the common,
+  well-supported case), 2 concurrent communal chats stream real tokens,
+  killing the host both drivers share (forced via a `?spreadWidth=1`
+  e2e-only URL param — see `CommunalChatPanel.tsx`) triggers a replan on
+  both (~1.6-2.1s detection latency, non-lockstep — observed 0-510ms
+  stagger across runs) and BOTH finish with `restartCount:1`,
+  token-history continuous (63/63 tokens each run). The test asserts the
+  HONEST branch adaptively (recover-via-spare vs clean-abort-on-lost-
+  coverage) based on the pre-kill candidate count it actually observes,
+  not a hardcoded expectation.
+- **`priorityScore` is now wired end to end** — see `docs/ECONOMY.md`'s
+  updated "Injection story". `bindPriorityScore(ledger, clock)` feeds
+  `useStageHost`'s admission queue, `useCommunalHost`'s claim/yield
+  tie-break, and `useCommunalChat`'s route ranking + replan jitter, all
+  from ONE `StandingLedger` per peer (created once in the demo's
+  `Dashboard`).
+- **Forced session termination after the 30s teardown grace** is now
+  implemented: `useStageHost.ts`'s new `forceDisconnect` option (bridged
+  via the same ref-watcher pattern as `preloadStage`, never added to the
+  "answer" effect's own dependency array) frees every still-attached
+  session and notifies its driver via `stage.stop`. `useCommunalHost.ts`
+  fires it once the drain grace expires with sessions still attached
+  (previously a documented no-op).
+
+## What's still NOT done
+
 - **No manifest exists yet for `qwen3-0.6b-q8_0`** (or any model) at this
   deployment — the manifest-based `fragmentsForRange`/OPFS-quota path in
   `resolveCommunalShardPlan` is implemented and unit-tested with a
   synthetic manifest, but has never been exercised against a real
-  deployed layer-package manifest end to end. M0's manifest work targeted
-  `qwen3-8b-q4`, not the small model this milestone's e2e was asked to
-  use for speed.
-- **Forced session termination after the 30s teardown grace** is not
-  implemented (see `useCommunalHost.ts`'s honest scope note above).
-- **Multi-hop relay across >1 remote communal segment** has no
+  deployed layer-package manifest end to end. `communal.spec.ts` (like
+  `CommunalHostPanel`) uses the fallback `full.gguf` convention, same as
+  every other e2e suite in this repo — deploying a real per-layer
+  manifest for this model is separate follow-up work, not required for
+  the communal pipeline to function correctly (the fallback path is
+  exercised, proven, and this is what's actually deployed today).
+- **Multi-hop relay across >1 remote communal segment** still has no
   implementation (documented limitation shared with the legacy
-  `runDriverStageSession`, not new to M3).
-- **`priorityScore` is `() => 0` everywhere** (M4's real standing isn't
-  wired into route spread/replan/claim yet — by design, per the M3
-  brief; M4 exists in this repo as of this pass and exports
-  `bindPriorityScore`, but nothing in M3's code imports it yet).
+  `runDriverStageSession`, not new to M3/M4). Not exercised by
+  `communal.spec.ts` either — the real assembled topology in this pass's
+  runs always converged to exactly one segment (see above), which is the
+  scope both driver session functions actually support end to end.
 
-## Test matrix (this pass)
+## Test matrix
 
-`packages/mesh-core`: 164/164 (`npm test`) — 119 pre-existing + 20
+`packages/mesh-core`: 164/164 (`npm test`) — 119 + 20
 `communalTopology.test.ts` + 15 `communalAssembly.test.ts` (including 3
 convergence property-test suites across 80+ random seeds total) + 10
-`communalDriverSession.test.ts`.
+`communalDriverSession.test.ts`. Unchanged this pass (no mesh-core source
+edited — `useCommunalChat`/economy wiring lives entirely in mesh-react
+and the demo; mesh-core's `priorityScore`/`standingLedger`-shaped hooks
+were already exposed and unit-tested by the M3/M4 passes).
 
-`packages/mesh-react`: 34/34 (`npm test`) — 26 pre-existing + 8
-`useCommunalHost.test.ts` (`resolveCommunalShardPlan`'s manifest/
-fallback/quota decision logic).
+`packages/mesh-react`: 38/38 (`npm test`) — 34 pre-existing + 4 new
+`economyWiring.test.ts` (telemetry -> `StandingLedger` -> priority,
+exercised through the EXACT math `useStageHost.ts`'s `freeSession` and
+`useCommunalChat.ts`'s `recordSegmentTelemetry` compute, fed into
+`popNextByPriority` and `planCommunalRoute`'s ranking — this repo has no
+jsdom/testing-library harness to render the hooks themselves, so the pure
+logic is pulled out and tested directly, same precedent as
+`resolveCommunalShardPlan`'s existing tests).
 
-`apps/demo`: `vite build` succeeds with `CommunalHostPanel` wired in.
-Existing e2e suites (pipeline-split/chaos/compat/discovery/
-multi-session-host) were not re-run in this pass (no source files they
-exercise were touched other than additive options with unchanged
-defaults) — re-run before deploying if that assumption needs verifying.
+`apps/demo`: `vite build` succeeds with `CommunalChatPanel` wired in
+alongside `CommunalHostPanel`/`StagePipelinePanel`. Full e2e matrix
+(`communal.spec.ts` NEW + `pipeline-split`/`chaos`/`compat`/`discovery`/
+`debug-two-workers`/`pipeline-split-context-variants`/
+`multi-session-host`, all pre-existing) re-run and green this pass — see
+this file's "Closing the loop" section above for `communal.spec.ts`'s own
+results. Two real, pre-existing selector collisions were found and fixed
+while doing this (not new bugs introduced by this pass, but only surfaced
+once a SECOND panel with an overlapping class name — `CommunalChatPanel`'s
+`.sp-prompt` — was added to the same page): `StagePipelinePanel`'s host
+toggle and prompt input gained disambiguating classes
+(`stage-host-toggle`, `stage-pipeline-prompt`) since `.sp-host-toggle`/
+`.sp-prompt` alone now match more than one element once `CommunalHostPanel`
+(added by the ORIGINAL M3 pass) and `CommunalChatPanel` (this pass) are
+both always rendered in `Dashboard`; every e2e call site
+(`helpers.ts`/`chaos.spec.ts`/`pipeline-split.spec.ts`/
+`pipeline-split-context-variants.spec.ts`) was updated to match.
