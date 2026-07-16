@@ -30,6 +30,16 @@ apps/demo/public/webllm-stages/
 apps/demo/test-results/
 apps/demo/playwright-report/
 
+# Same convention for apps/chat (see scripts/fetch-stage-assets.sh and
+# apps/chat/chatModelSource.ts's e2e/local-dev test-model escape hatch —
+# the `?testModel=1` run needs the same already-fetched qwen3-0.6b-q8_0
+# asset apps/demo uses; production serves Qwen3-8B from the webllm-mirror
+# volume instead — see apps/chat/nginx.conf).
+apps/chat/public/wasm/
+apps/chat/public/webllm/
+apps/chat/test-results/
+apps/chat/playwright-report/
+
 # scripts/prepare-deploy-context.sh output — real copies of sibling-repo
 # file: deps, materialized fresh before each `docker compose build`.
 .deploy-context/

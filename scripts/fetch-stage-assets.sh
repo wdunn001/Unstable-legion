@@ -11,16 +11,21 @@
 # dependency siblings this repo already leans on.
 #
 # Usage:
-#   scripts/fetch-stage-assets.sh [path-to-legion-stage-runtime]
+#   scripts/fetch-stage-assets.sh [path-to-legion-stage-runtime] [dest-dir]
 # Defaults to ../legion-stage-runtime (the sibling checkout convention used
-# everywhere else in this repo — see packages/*/package.json file: deps).
+# everywhere else in this repo — see packages/*/package.json file: deps)
+# and apps/demo/public/wasm (back-compat default). apps/chat needs the
+# SAME wasm glue/binary (its own public/wasm/, gitignored the same way —
+# see apps/chat/chatModelSource.ts's doc comment) — pass a second arg to
+# fetch there instead, e.g.:
+#   scripts/fetch-stage-assets.sh '' apps/chat/public/wasm
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_REPO="${1:-$ROOT/../legion-stage-runtime}"
 WASM_SRC="$SRC_REPO/packages/stage-runtime/wasm"
-WASM_DST="$ROOT/apps/demo/public/wasm"
+WASM_DST="${2:-$ROOT/apps/demo/public/wasm}"
 
 if [[ ! -f "$WASM_SRC/legion-stage.js" || ! -f "$WASM_SRC/legion-stage.wasm" ]]; then
   echo "missing legion-stage.{js,wasm} under $WASM_SRC" >&2

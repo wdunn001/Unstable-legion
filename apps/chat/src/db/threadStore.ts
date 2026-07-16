@@ -1,0 +1,144 @@
+/**
+ * threadStore — small typed IndexedDB wrapper for conversation
+ * persistence. No IndexedDB layer existed anywhere in this repo before
+ * this app; everything here is hand-rolled (no `idb` dependency) since
+ * the surface needed is tiny: one object store, keyed by thread id,
+ * indexed by `updatedAt` for recency ordering.
+ *
+ * Every function is a plain Promise-returning function over a shared
+ * lazily-opened `IDBDatabase` — no React here, so it's testable with
+ * `fake-indexeddb` under plain `node:test` (see test/threadStore.test.ts)
+ * and reusable outside a component if this app ever needs it (a service
+ * worker, an export/import feature, etc).
+ */
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+  /** True when this assistant message's generation lived through a
+   * mid-stream host death that the communal pipeline recovered from
+   * (continue-from-history) — surfaced as a "reconnected" indicator,
+   * not an error (see `useCommunalChat`'s `restartCount`). */
+  reconnected?: boolean;
+}
+
+export interface ChatThread {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+const DB_NAME = 'unstable-legion-chat';
+const DB_VERSION = 1;
+const STORE = 'threads';
+
+let dbPromise: Promise<IDBDatabase> | null = null;
+/** Mirrors the resolved value of `dbPromise` so `_resetDbHandleForTests`
+ * can `.close()` it before deleting — an open connection otherwise makes
+ * `indexedDB.deleteDatabase` hang waiting on a `blocked` resolution that
+ * never fires deterministically in every implementation. */
+let dbInstance: IDBDatabase | null = null;
+
+function openDb(): Promise<IDBDatabase> {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        const store = db.createObjectStore(STORE, { keyPath: 'id' });
+        store.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
+    };
+    req.onsuccess = () => {
+      dbInstance = req.result;
+      resolve(req.result);
+    };
+    req.onerror = () => reject(req.error ?? new Error('failed to open IndexedDB'));
+  });
+  return dbPromise;
+}
+
+function promisifyRequest<T>(req: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed'));
+  });
+}
+
+/** All threads, most-recently-updated first. */
+export async function listThreads(): Promise<ChatThread[]> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readonly');
+  const index = tx.objectStore(STORE).index('updatedAt');
+  const threads = await promisifyRequest(index.getAll());
+  return threads.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function getThread(id: string): Promise<ChatThread | undefined> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readonly');
+  return promisifyRequest(tx.objectStore(STORE).get(id));
+}
+
+export async function putThread(thread: ChatThread): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readwrite');
+  tx.objectStore(STORE).put(thread);
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('failed to save thread'));
+    tx.onabort = () => reject(tx.error ?? new Error('save thread transaction aborted'));
+  });
+}
+
+export async function deleteThread(id: string): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readwrite');
+  tx.objectStore(STORE).delete(id);
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('failed to delete thread'));
+    tx.onabort = () => reject(tx.error ?? new Error('delete thread transaction aborted'));
+  });
+}
+
+/** Test-only escape hatch: drops the whole database and forces the next
+ * call to any of the above to re-open a fresh one. `fake-indexeddb`
+ * (like real IndexedDB) persists data across `open()` calls for the same
+ * DB name within one process/tab — just clearing the cached `dbPromise`
+ * re-opens the SAME populated database, so tests need an actual delete,
+ * not just a handle reset. Production code never calls this. */
+export function _resetDbHandleForTests(): Promise<void> {
+  dbPromise = null;
+  dbInstance?.close();
+  dbInstance = null;
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error ?? new Error('failed to delete test database'));
+    req.onblocked = () => resolve();
+  });
+}
+
+/** First ~48 chars of the first user message, single-lined — the
+ * auto-title convention. Falls back to "New chat" for an empty thread. */
+export function autoTitle(firstUserMessage: string | undefined): string {
+  if (!firstUserMessage) return 'New chat';
+  const oneLine = firstUserMessage.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return 'New chat';
+  return oneLine.length > 48 ? `${oneLine.slice(0, 48)}…` : oneLine;
+}
+
+let idCounter = 0;
+/** Sortable-enough unique id: timestamp + counter + a little randomness.
+ * Not a UUID — this app has no cross-device sync story, so collision
+ * resistance only needs to hold within one browser's IndexedDB. */
+export function newId(prefix: string): string {
+  idCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}-${idCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}

@@ -78,7 +78,11 @@ unstable-legion/
 │   ├── mesh-react/   @unstable-legion/react   React hooks + providers
 │   └── mesh-mf/      @unstable-legion/mf      Module Federation remote
 └── apps/
-    └── demo/         @unstable-legion/demo      Vite + React demo
+    ├── demo/         @unstable-legion/demo      Vite + React workstream showcase/debug surface
+    └── chat/         @unstable-legion/chat      Vite + React — the flagship product: an
+                                                  Open-WebUI-style chat app where opening it
+                                                  makes you part of the communal mesh serving
+                                                  Qwen3-8B (docs/COMMUNAL.md, docs/TRUST.md)
 ```
 
 ## Quick start (npm)
