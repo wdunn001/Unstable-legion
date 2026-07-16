@@ -16,6 +16,7 @@
  * device) 'accepted' states.
  */
 import type { CommunalHostPhase } from '@unstable-legion/react';
+import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
 
 export type HostingConsent = 'unset' | 'accepted' | 'declined';
 
@@ -39,6 +40,13 @@ export interface HostingConsentBannerProps {
   /** True while a bounded retry is scheduled (transient) — styles the card
    * as "retrying" rather than a hard "failing" state. */
   retrying?: boolean;
+  /** "Hosting up to N layers (~X GB)" — always visible in the 'accepted'
+   * state, computed by the caller from the CURRENT weight budget
+   * (default or the "Contribute more" override). */
+  capacitySummaryLabel: string;
+  /** The "Contribute more" expander — undefined hides it entirely (e.g.
+   * capacity math isn't ready yet). */
+  contribution?: ContributionPanelProps;
 }
 
 /** The host-failure card — rendered inside the hosting panel whenever the
@@ -101,7 +109,9 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
           </span>
         </label>
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
+        <span className="consent-capacity-summary">{props.capacitySummaryLabel}</span>
         {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
+        {props.capable && props.contribution && <ContributionPanel {...props.contribution} />}
       </div>
     );
   }

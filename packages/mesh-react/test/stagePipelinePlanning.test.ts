@@ -9,7 +9,10 @@ import {
   buildStageHostCap,
   planPipelineForDriver,
   sanitizeWasmHeapBudget,
+  sanitizeWeightBudget,
+  chooseMaxSessions,
   WASM_HEAP_CEILING_BYTES,
+  CONTRIBUTION_BUDGET_CEILING_BYTES,
 } from '../src/stagePipelinePlanning.ts';
 import type { MeshRosterEntry } from '@unstable-legion/core';
 
@@ -53,6 +56,73 @@ test('sanitizeWasmHeapBudget: caps at WASM_HEAP_CEILING_BYTES, falls back on bad
   assert.equal(sanitizeWasmHeapBudget(0), WASM_HEAP_CEILING_BYTES);
   assert.equal(sanitizeWasmHeapBudget(Number.NaN), WASM_HEAP_CEILING_BYTES);
   assert.equal(sanitizeWasmHeapBudget(-5), WASM_HEAP_CEILING_BYTES);
+});
+
+// ── sanitizeWeightBudget (contribute-more: weight budget decoupled from wasmHeapBudget) ──
+
+test('sanitizeWeightBudget: no contributionBudgetBytes override -> EXACT same figure as sanitizeWasmHeapBudget (default unchanged, ~11 layers for Qwen3-8B)', () => {
+  const limits = { maxStorageBufferBindingSize: 8_000_000_000 };
+  const CHAT_AVG_LAYER_BYTES = 140_000_000;
+  const weight = sanitizeWeightBudget(limits, { minBytes: CHAT_AVG_LAYER_BYTES });
+  assert.equal(weight, sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize));
+  assert.equal(weight, WASM_HEAP_CEILING_BYTES);
+  assert.equal(Math.floor(weight / CHAT_AVG_LAYER_BYTES), 11);
+});
+
+test('sanitizeWeightBudget: an override raises the budget past the wasm-heap ceiling — claim capacity actually grows', () => {
+  const limits = { maxStorageBufferBindingSize: 24_000_000_000, contributionBudgetBytes: 12_000_000_000 };
+  const CHAT_AVG_LAYER_BYTES = 140_000_000;
+  const weight = sanitizeWeightBudget(limits, { minBytes: CHAT_AVG_LAYER_BYTES });
+  assert.equal(weight, 12_000_000_000);
+  assert.ok(weight > WASM_HEAP_CEILING_BYTES);
+  const layers = Math.floor(weight / CHAT_AVG_LAYER_BYTES);
+  assert.ok(layers > 11, `expected >11 layers with a raised budget, got ${layers}`);
+});
+
+test('sanitizeWeightBudget: an override is clamped to CONTRIBUTION_BUDGET_CEILING_BYTES (~32GB), never unbounded', () => {
+  const limits = { maxStorageBufferBindingSize: 100_000_000_000, contributionBudgetBytes: 999_000_000_000 };
+  assert.equal(sanitizeWeightBudget(limits), CONTRIBUTION_BUDGET_CEILING_BYTES);
+});
+
+test('sanitizeWeightBudget: an override below minBytes is clamped UP to minBytes (never affords zero layers)', () => {
+  const limits = { maxStorageBufferBindingSize: 8_000_000_000, contributionBudgetBytes: 1000 }; // absurdly small
+  const minBytes = 140_000_000;
+  assert.equal(sanitizeWeightBudget(limits, { minBytes }), minBytes);
+});
+
+test('sanitizeWeightBudget: a bad override (0, negative, NaN) falls back to the safe default, never throws', () => {
+  const base = { maxStorageBufferBindingSize: 2_000_000_000 };
+  const fallback = sanitizeWasmHeapBudget(base.maxStorageBufferBindingSize);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: 0 }), fallback);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: -5 }), fallback);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: Number.NaN }), fallback);
+});
+
+test('sanitizeWeightBudget: does NOT affect wasmHeapBudget/chooseMaxSessions — a big weight budget never inflates session sizing', () => {
+  const limits = { maxStorageBufferBindingSize: 24_000_000_000, contributionBudgetBytes: 24_000_000_000 };
+  // wasmHeapBudget is computed straight from maxStorageBufferBindingSize,
+  // completely independent of contributionBudgetBytes.
+  assert.equal(sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize), WASM_HEAP_CEILING_BYTES);
+  // chooseMaxSessions has no contribution-budget parameter at all — a big
+  // weight budget structurally cannot reach it.
+  assert.equal(chooseMaxSessions(undefined), 4);
+  assert.equal(chooseMaxSessions(4), 4);
+});
+
+test('buildStageHostCap: contributionBudgetBytes populates the cap\'s vramBytes when the real detected vramBytes is absent (WebGPU never exposes it)', () => {
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000, contributionBudgetBytes: 12_000_000_000 },
+    { keepalive: false, visible: true, uptimeMs: 0 },
+  );
+  assert.equal(cap.vramBytes, 12_000_000_000);
+});
+
+test('buildStageHostCap: a REAL detected vramBytes always wins over contributionBudgetBytes', () => {
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000, vramBytes: 4_000_000_000, contributionBudgetBytes: 12_000_000_000 },
+    { keepalive: false, visible: true, uptimeMs: 0 },
+  );
+  assert.equal(cap.vramBytes, 4_000_000_000);
 });
 
 test('buildLocalCapacityCap: min(limit, ceiling), no stability/vram fields', () => {

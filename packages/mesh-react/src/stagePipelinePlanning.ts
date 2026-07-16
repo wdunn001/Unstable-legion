@@ -64,6 +64,33 @@ export interface StageHostLimits {
   maxStorageBufferBindingSize: number;
   /** Best-effort VRAM estimate, when available. */
   vramBytes?: number;
+  /**
+   * Operator opt-in: how many bytes of GPU storage-buffer/VRAM this peer
+   * is willing to dedicate to hosted WEIGHTS specifically — separate from
+   * `wasmHeapBudget` (KV cache/activations/scratch, still governed by
+   * `WASM_HEAP_CEILING_BYTES` regardless of this field — see
+   * `sanitizeWeightBudget`'s doc comment for why conflating the two was
+   * the root cause of every host being capped at ~11 layers). Absent =
+   * unchanged pre-existing behavior (weight budget defaults to the same
+   * `min(maxStorageBufferBindingSize, WASM_HEAP_CEILING_BYTES)` figure
+   * wasmHeapBudget itself uses). Populated from apps/chat's "Contribute
+   * more" panel (manual GB entry, catalog pick, or the auto-probe) —
+   * see `gpuProbe.ts`/`gpuCatalog.ts`.
+   */
+  contributionBudgetBytes?: number;
+  /**
+   * Best-effort GPU renderer name (see `detectWebGpuLimits`'s doc comment
+   * for how it's obtained) — used to pre-select a
+   * `apps/chat/src/data/gpuCatalog.json` entry in the "Contribute more"
+   * UI. NEVER used to infer `vramBytes`: a renderer string is not a
+   * reliable byte-accurate VRAM source (see `webgpuLimits.ts`). Undefined
+   * when detection is unsupported/fails — never fabricated.
+   */
+  gpuName?: string;
+  /** Raw WebGPU `GPUAdapterInfo` fields, when the adapter exposes one —
+   * a diagnostic superset of `gpuName` (which is derived from these same
+   * fields, or the WebGL fallback, whichever succeeded). */
+  adapterInfo?: { vendor?: string; architecture?: string; device?: string; description?: string };
 }
 
 export interface StageHostStabilityInputs {
@@ -92,6 +119,46 @@ export function sanitizeWasmHeapBudget(maxStorageBufferBindingSize: number): num
   return Math.min(maxStorageBufferBindingSize, WASM_HEAP_CEILING_BYTES);
 }
 
+/**
+ * A strong GPU commonly has 12-24GB+ of VRAM, but `WASM_HEAP_CEILING_BYTES`
+ * (1.6GB) is a WASM-LINEAR-MEMORY ceiling — right for the KV cache/
+ * activation scratch a stage-runtime worker keeps in its wasm heap, wrong
+ * as the budget for hosted WEIGHTS, which live in GPU storage buffers
+ * (WebGPU device memory), not wasm linear memory at all. Root cause of
+ * "every host caps out around 11 layers" (Qwen3-8B q4:
+ * 1.6GB / CHAT_AVG_LAYER_BYTES(140MB) ≈ 11): the stage-host layer-claim
+ * budget was `min(maxStorageBufferBindingSize, WASM_HEAP_CEILING_BYTES)`
+ * — the SAME figure used for the wasm heap, so a peer with 24GB of VRAM
+ * and a `maxStorageBufferBindingSize` far above 1.6GB was still clamped
+ * to the wasm ceiling for claim-sizing purposes.
+ *
+ * Absent an operator override (`limits.contributionBudgetBytes`), this
+ * returns EXACTLY what `sanitizeWasmHeapBudget` returns — the safe
+ * default is unchanged, byte for byte, for every existing caller that
+ * never opts in. `wasmHeapBudget` (KV/session/`chooseMaxSessions` math)
+ * MUST keep using `sanitizeWasmHeapBudget` directly — a big weight budget
+ * must never inflate session/KV sizing, which is a real per-wasm-instance
+ * memory cost independent of how many weight-bytes a host claims.
+ */
+export const CONTRIBUTION_BUDGET_CEILING_BYTES = 32_000_000_000;
+
+/** Weight budget used ONLY for layer-claim/coverage sizing — see this
+ * constant's/the module's doc comments above for why it's a distinct
+ * figure from `wasmHeapBudget`. `opts.minBytes` (typically the caller's
+ * own `avgLayerBytes`) guarantees the clamped result never rounds down to
+ * "afford zero layers" from a well-intentioned but too-small override. */
+export function sanitizeWeightBudget(limits: StageHostLimits, opts: { minBytes?: number } = {}): number {
+  if (limits.contributionBudgetBytes === undefined) return sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize);
+  if (!Number.isFinite(limits.contributionBudgetBytes) || limits.contributionBudgetBytes <= 0) {
+    // A bad override never throws or shrinks capacity below the safe
+    // default — it's simply ignored, same "garbage in -> safe fallback"
+    // discipline as sanitizeWasmHeapBudget's own bad-input handling.
+    return sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize);
+  }
+  const minBytes = Math.max(1, opts.minBytes ?? 1);
+  return Math.min(Math.max(limits.contributionBudgetBytes, minBytes), CONTRIBUTION_BUDGET_CEILING_BYTES);
+}
+
 /** M2: session-capacity fields to layer onto `buildStageHostCap`'s
  * output — separate from `StageHostStabilityInputs` because they're only
  * known once a stage is actually loaded (a host that hasn't loaded
@@ -114,8 +181,15 @@ export function buildStageHostCap(
   loadedStages?: readonly MeshLoadedStage[],
   failureDomainId?: string,
 ): NonNullable<MeshPeerCap['stageHost']> {
+  // WebGPU never exposes total VRAM (see webgpuLimits.ts) — when the real
+  // detected `vramBytes` is absent, an operator-supplied
+  // `contributionBudgetBytes` is the best available stand-in (the
+  // operator's own assertion of how much GPU memory they're dedicating),
+  // populating the cap's previously-always-empty `vramBytes` field for
+  // roster/UI display purposes.
+  const vramBytes = limits.vramBytes ?? limits.contributionBudgetBytes;
   return {
-    ...(limits.vramBytes !== undefined ? { vramBytes: limits.vramBytes } : {}),
+    ...(vramBytes !== undefined ? { vramBytes } : {}),
     ...(failureDomainId !== undefined ? { failureDomainId } : {}),
     maxStorageBufferBytes: limits.maxStorageBufferBindingSize,
     wasmHeapBudget: sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize),

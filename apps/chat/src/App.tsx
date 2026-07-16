@@ -20,6 +20,7 @@ import {
   bindPriorityScore,
   defaultTurnConfig,
   mergeRelayUrls,
+  sanitizeWeightBudget,
   useAudioKeepalive,
   useCommunalChat,
   useCommunalHost,
@@ -39,8 +40,10 @@ import { TrustInterstitial } from './components/TrustInterstitial.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { useThreads } from './hooks/useThreads.js';
 import { useHostingConsent } from './hooks/useHostingConsent.js';
+import { useGpuDetection } from './hooks/useGpuDetection.js';
 import { useTheme, type UseThemeHandle } from './hooks/useTheme.js';
 import { resolveChatModelConfig } from './chatModelSource.js';
+import { formatVramLabel } from './gpuCatalog.js';
 import { buildPrompt } from './chatPrompt.js';
 import {
   deriveCapacityView,
@@ -191,6 +194,13 @@ function Dashboard(props: {
     setHostingEnabled(hostingConsent.consent === 'accepted');
   }, [hostingConsent.consent]);
 
+  // Independent local probe for the "Contribute more" panel's detected-GPU
+  // pre-selection + live capacity math — deliberately NOT the same probe
+  // `useCommunalHost` runs internally (that one only starts once hosting
+  // is actually enabled; this one needs to be available before that, and
+  // apps/chat wants the GPU NAME, which `useCommunalHost` never surfaces).
+  const gpuDetection = useGpuDetection();
+
   const communal = useCommunalHost({
     enabled: hostingEnabled,
     peer,
@@ -208,8 +218,32 @@ function Dashboard(props: {
     priorityScore,
     standingLedger,
     telemetry: trackEvent,
+    contributionBudgetBytes: hostingConsent.contributionBudgetBytes,
     log,
   });
+
+  // ── "Contribute more" live capacity math ────────────────────────────
+  // Same formula `useCommunalHost` itself uses for claim-sizing
+  // (`sanitizeWeightBudget`), so the UI never promises a number the host
+  // loop wouldn't actually claim. Falls back to the safe default
+  // (`maxStorageBufferBindingSize: 0` -> `sanitizeWeightBudget` treats
+  // that as "unknown", same fallback path as a bad/zero adapter limit)
+  // before `gpuDetection` resolves, so the panel shows a sane number
+  // (~11 layers) immediately instead of a blank/zero flash.
+  const weightBudgetBytes = useMemo(
+    () =>
+      sanitizeWeightBudget(
+        {
+          maxStorageBufferBindingSize: gpuDetection.limits?.maxStorageBufferBindingSize ?? 0,
+          contributionBudgetBytes: hostingConsent.contributionBudgetBytes,
+        },
+        { minBytes: modelConfig.avgLayerBytes },
+      ),
+    [gpuDetection.limits?.maxStorageBufferBindingSize, hostingConsent.contributionBudgetBytes, modelConfig.avgLayerBytes],
+  );
+  const communalLayerCount = Math.max(0, modelConfig.totalLayers - modelConfig.driverLayers);
+  const layersHosted = Math.max(0, Math.min(communalLayerCount, Math.floor(weightBudgetBytes / modelConfig.avgLayerBytes)));
+  const capacitySummaryLabel = `Hosting up to ${layersHosted} of ${communalLayerCount} layers (~${formatVramLabel(weightBudgetBytes)})`;
 
   const chat = useCommunalChat({
     peer,
@@ -442,6 +476,15 @@ function Dashboard(props: {
             layerRangeLabel: `${modelConfig.driverLayers}–${modelConfig.totalLayers}`,
             errorMessage: communal.errorMessage,
             retrying: communal.retrying,
+            capacitySummaryLabel,
+            contribution: {
+              detectedGpuName: gpuDetection.limits?.gpuName,
+              contributionBudgetBytes: hostingConsent.contributionBudgetBytes,
+              onChangeBudget: hostingConsent.setContributionBudgetBytes,
+              layersHosted,
+              totalLayers: communalLayerCount,
+              approxGbLabel: formatVramLabel(weightBudgetBytes),
+            },
           }}
           audioKeepalive={audioKeepalive}
           showAudioKeepalive={hostingConsent.consent === 'accepted'}
