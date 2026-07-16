@@ -265,6 +265,18 @@ wired in, but true cross-NAT reachability from a genuinely external
 network is still unverified; this lab has no vantage point outside its
 own NAT to test it from, and M6 did not change that).
 
+**Analytics (OpenPanel):** `apps/chat` reports pageview/RUM plus custom
+failure/lifecycle events (`host_load_failed`, `chat_failed`, `chat_replan`,
+`communal_coverage`, …) to OpenPanel — the project's only analytics stack
+(ingest `telemetry.quasarke.net`, dashboard `analytics.quasarke.net` behind
+Authentik). No PII (counts/states/reasons only). Build-time
+`VITE_OPENPANEL_CLIENT_ID` toggles it; absent/placeholder → a hard no-op, so
+the app never depends on analytics being up. **USER: to enable, create a
+"Legion Chat" project at `analytics.quasarke.net`, add
+`https://legion.codecai.net` to its CORS allow-list, and set
+`VITE_OPENPANEL_CLIENT_ID`.** Full wiring, event list, and privacy stance:
+`docs/TELEMETRY.md`.
+
 ## Status
 
 **M6 shipped (2026-07-15): the chat pivot is complete.** `apps/chat` —

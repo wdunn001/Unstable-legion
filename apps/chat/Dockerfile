@@ -45,10 +45,21 @@ ARG VITE_TURN_URLS=
 ARG VITE_TURN_USERNAME=
 ARG VITE_TURN_CREDENTIAL=
 ARG VITE_TURN_USE_DEFAULT=
+# OpenPanel analytics (apps/chat only — telemetry.quasarke.net). Build-time
+# only (Vite inlines import.meta.env.VITE_*). Absent → tracking is a no-op
+# (the app never depends on analytics being reachable). CLIENT_ID comes from
+# the "Legion Chat" OpenPanel project (created in the dashboard behind
+# Authentik) — see apps/chat README / docs/TELEMETRY.md.
+ARG VITE_OPENPANEL_CLIENT_ID=
+ARG VITE_OPENPANEL_API_URL=
+ARG VITE_OPENPANEL_SCRIPT_URL=
 ENV VITE_TURN_URLS=$VITE_TURN_URLS \
     VITE_TURN_USERNAME=$VITE_TURN_USERNAME \
     VITE_TURN_CREDENTIAL=$VITE_TURN_CREDENTIAL \
-    VITE_TURN_USE_DEFAULT=$VITE_TURN_USE_DEFAULT
+    VITE_TURN_USE_DEFAULT=$VITE_TURN_USE_DEFAULT \
+    VITE_OPENPANEL_CLIENT_ID=$VITE_OPENPANEL_CLIENT_ID \
+    VITE_OPENPANEL_API_URL=$VITE_OPENPANEL_API_URL \
+    VITE_OPENPANEL_SCRIPT_URL=$VITE_OPENPANEL_SCRIPT_URL
 
 RUN npm run build -w @unstable-legion/core \
  && npm run build -w @unstable-legion/react \

@@ -36,6 +36,12 @@ services:
         VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-}
         VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-}
         VITE_TURN_USE_DEFAULT: ${VITE_TURN_USE_DEFAULT:-}
+        # OpenPanel analytics (telemetry.quasarke.net). Leave CLIENT_ID
+        # blank to ship WITHOUT tracking (a no-op). Set it (from the
+        # "Legion Chat" OpenPanel project) to enable RUM + failure events.
+        VITE_OPENPANEL_CLIENT_ID: ${VITE_OPENPANEL_CLIENT_ID:-}
+        VITE_OPENPANEL_API_URL: ${VITE_OPENPANEL_API_URL:-}
+        VITE_OPENPANEL_SCRIPT_URL: ${VITE_OPENPANEL_SCRIPT_URL:-}
     container_name: unstable-legion-chat
     restart: unless-stopped
     expose:
