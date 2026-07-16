@@ -96,14 +96,15 @@ export function chatShardUrls(baseUrl?: string): readonly string[] {
  *      the origin on both the 302 and the CDN hop), LFS oids match the
  *      manifest's sha256s. Its manifest carries RELATIVE paths, so the
  *      weights come from HF too.
- *   2. GitHub (same-name repo) via jsDelivr — manifest-only fallback; its
- *      manifest carries ABSOLUTE HF `resolve` URLs (jsDelivr's /gh/ caps
- *      files at 20MB, and GitHub's release-asset host sends no CORS —
- *      weights can never live on GitHub itself; see that repo's README).
- *   3. cdn.codecai.net (/webllm/ mirror, .198) — last resort, and the only
- *      source fully independent of HF: manifest AND weights same-origin.
+ *   2. cdn.codecai.net (/webllm/ mirror, .198) — fallback, fully
+ *      independent of HF: manifest AND weights same-origin.
  *
- * All three describe byte-identical, content-addressed artifacts (same
+ * (GitHub itself can't serve the weights to browsers: jsDelivr's /gh/
+ * caps files at 20MB and the release-asset host sends no CORS — see the
+ * legion-model-qwen3-8b repo's README, which now only hosts the manifest
+ * for reference.)
+ *
+ * Both sources describe byte-identical, content-addressed artifacts (same
  * sha256s), so OPFS-cached fragments hit regardless of which source a
  * given session resolved through. */
 export function chatManifestUrls(): readonly string[] {
@@ -113,11 +114,7 @@ export function chatManifestUrls(): readonly string[] {
   // "Invalid base URL" on a site-relative base (hotfix/manifest-abs-url).
   const local =
     typeof location !== 'undefined' && location.origin ? new URL(localPath, location.origin).toString() : localPath;
-  return [
-    'https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/model-package.json',
-    'https://cdn.jsdelivr.net/gh/wdunn001/legion-model-qwen3-8b@main/model-package.json',
-    local,
-  ];
+  return ['https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/model-package.json', local];
 }
 
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI

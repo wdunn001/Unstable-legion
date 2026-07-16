@@ -35,10 +35,9 @@ test('chatManifestUrls: ordered HF -> jsDelivr(GitHub) -> local mirror, every en
       configurable: true,
     });
     const urls = chatManifestUrls();
-    assert.equal(urls.length, 3);
+    assert.equal(urls.length, 2);
     assert.match(urls[0]!, /^https:\/\/huggingface\.co\//, 'primary = Hugging Face');
-    assert.match(urls[1]!, /^https:\/\/cdn\.jsdelivr\.net\/gh\//, 'fallback = GitHub via jsDelivr');
-    assert.match(urls[2]!, /^https:\/\/legion\.codecai\.net\/webllm\//, 'last resort = local mirror');
+    assert.match(urls[1]!, /^https:\/\/legion\.codecai\.net\/webllm\//, 'fallback = local mirror');
     for (const url of urls) {
       assert.ok(/^https?:\/\//.test(url), `expected absolute url, got ${url}`);
       assert.doesNotThrow(() => new URL('layers/layer-002.gguf', url));
