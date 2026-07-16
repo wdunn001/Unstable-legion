@@ -87,6 +87,7 @@ import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './sta
 import type { WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import { extractHttpStatus, type StageHostLifecycleEvent } from './meshResilience.js';
 import {
   canAdmitNow,
   enqueue,
@@ -208,6 +209,17 @@ export interface UseStageHostOptions {
    * teardown only ever waited out natural drain).
    */
   forceDisconnect?: { reason: string; nonce: number } | null;
+  /**
+   * Resilience/observability bridge — called on the stage-load lifecycle
+   * points `useCommunalHost.ts` needs to drive its backoff state machine
+   * and telemetry: a proactive `preloadStage` load FAILED (so the host
+   * loop can back off instead of re-issuing the same doomed load every
+   * roster tick), a load SUCCEEDED (reset the backoff), or the worker
+   * itself CRASHED. Read via a ref internally (never a dependency of the
+   * "answer" effect — same `logRef` discipline) so passing a fresh inline
+   * callback each render never tears down live sessions.
+   */
+  onLifecycle?: (event: StageHostLifecycleEvent) => void;
   log?: StageWorkerLog;
 }
 
@@ -241,6 +253,11 @@ export interface UseStageHostHandle {
   /** Requests currently waiting for a lane to free. */
   queueLength: number;
   lastError?: string;
+  /** The most recent PROACTIVE-preload failure (a `preloadStage` load that
+   * couldn't fetch/load its shards), structured for the host loop's
+   * backoff + the UI's error card. Distinct from `lastError` (which also
+   * catches per-session frame errors). Undefined once a load succeeds. */
+  preloadError?: { modelId: string; layerStart: number; layerEnd: number; reason: string; httpStatus?: number };
 }
 
 const DEFAULT_REPUBLISH_MS = 15_000;
@@ -358,6 +375,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // dependency array.
   const logRef = useRef(log);
   logRef.current = log;
+  // Same ref discipline as `logRef` — the lifecycle bridge must never be a
+  // dependency of the "answer" effect (a fresh inline callback each render
+  // would tear down live sessions/worker on every parent re-render).
+  const onLifecycleRef = useRef<UseStageHostOptions['onLifecycle']>(opts.onLifecycle);
+  onLifecycleRef.current = opts.onLifecycle;
   const priorityScoreRef = useRef<PriorityScoreFn>(opts.priorityScore ?? (() => 0));
   priorityScoreRef.current = opts.priorityScore ?? (() => 0);
   // M4 — read fresh inside `freeSession` without making the "answer"
@@ -376,6 +398,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   const [sessions, setSessions] = useState<readonly UseStageHostSession[]>([]);
   const [queueLength, setQueueLength] = useState(0);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
+  const [preloadError, setPreloadError] = useState<UseStageHostHandle['preloadError']>(undefined);
 
   // Read by the "publish cap" effect so every heartbeat reflects the
   // CURRENT session occupancy without that effect needing to depend on
@@ -595,7 +618,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       const doLoad = (async (): Promise<void> => {
         await disposeWorker();
         log(`[stage-host] loading stage layers=[${req.layerStart},${req.layerEnd}) maxSessions=${driverMaxSessions + 1} (driver=${driverMaxSessions}+1 fused)`);
-        const client = new StageWorkerClient(createStageWorker(), `stage-host-${req.layerStart}-${req.layerEnd}`, log);
+        const client = new StageWorkerClient(
+          createStageWorker(),
+          `stage-host-${req.layerStart}-${req.layerEnd}`,
+          log,
+          (message) => onLifecycleRef.current?.({ type: 'worker-crashed', reason: message }),
+        );
         const loadDeadlineMs = 240_000;
         await Promise.race([
           client.load(
@@ -668,10 +696,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       try {
         await ensureWorkerLoaded(pending);
         syncPublicState();
+        setPreloadError(undefined);
+        onLifecycleRef.current?.({ type: 'load-succeeded', modelId: req.modelId, layerStart: req.layerStart, layerEnd: req.layerEnd });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const httpStatus = extractHttpStatus(message);
         setLastError(message);
+        setPreloadError({ modelId: req.modelId, layerStart: req.layerStart, layerEnd: req.layerEnd, reason: message, httpStatus });
         log(`[stage-host] preload FAILED layers=[${req.layerStart},${req.layerEnd}): ${message}`);
+        onLifecycleRef.current?.({ type: 'preload-failed', modelId: req.modelId, layerStart: req.layerStart, layerEnd: req.layerEnd, reason: message, httpStatus });
       }
     }
     preloadRequestRef.current = applyPreload;
@@ -1062,5 +1095,6 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     maxSessions: driverMaxSessions,
     queueLength,
     lastError,
+    preloadError,
   };
 }

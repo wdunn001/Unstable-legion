@@ -36,12 +36,24 @@ export class StageWorkerClient {
     private readonly worker: Worker,
     private readonly label: string,
     private readonly log: StageWorkerLog = () => undefined,
+    /** Called when the worker itself fires an `error` event — a genuine
+     * worker-process crash (uncaught exception, OOM), distinct from a
+     * normal `{type:'error'}` response message (e.g. a 404 shard fetch,
+     * which resolves the request-reply and is NOT a crash). Lets
+     * `useStageHost` surface a `stage_worker_crashed` signal without this
+     * client needing to know about telemetry. */
+    private readonly onWorkerError?: (message: string) => void,
   ) {
     this.worker.addEventListener('message', (ev: MessageEvent<StageWorkerResponse>) => this.onMessage(ev.data));
     this.worker.addEventListener('error', (ev: ErrorEvent) => {
       this.log(`[${label}] worker error: ${ev.message}`);
       for (const [, p] of this.pending) p.reject(new Error(`[${label}] worker error: ${ev.message}`));
       this.pending.clear();
+      try {
+        this.onWorkerError?.(ev.message || 'worker crashed');
+      } catch {
+        // best-effort — a throwing crash-reporter must not mask the crash
+      }
     });
   }
 

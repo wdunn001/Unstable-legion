@@ -170,6 +170,25 @@ export {
   type UseCommunalHostHandle,
   type CommunalHostPhase,
 } from './useCommunalHost.js';
+// ── Resilience + telemetry (backoff, error copy, event shapes) ───────
+export {
+  computeBackoffMs,
+  extractHttpStatus,
+  describeHostError,
+  cleanReason,
+  retryCountdownSec,
+  claimKey,
+  claimsEqual,
+  emitTelemetry,
+  type BackoffOptions,
+  type HostErrorInput,
+  type ClaimLike,
+  type MeshTelemetryEvent,
+  type MeshTelemetryEventName,
+  type MeshTelemetrySink,
+  type StageHostLifecycleEvent,
+} from './meshResilience.js';
+
 // ── M3/M4 close-out: the driver-side communal chat caller ────────────
 export {
   useCommunalChat,

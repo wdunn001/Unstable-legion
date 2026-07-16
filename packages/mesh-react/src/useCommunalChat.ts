@@ -64,6 +64,7 @@ import {
   type StandingLedger,
 } from '@unstable-legion/core';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
+import { emitTelemetry, type MeshTelemetrySink } from './meshResilience.js';
 import { acquireLeaderLock } from './useStagePipeline.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import {
@@ -110,6 +111,9 @@ export interface UseCommunalChatOptions {
   timeouts?: StageOrchestratorTimeouts;
   queueWaitMs?: number;
   replanJitterMs?: number;
+  /** Vendor-neutral telemetry sink — emits `chat_started` / `chat_failed`
+   * / `chat_replan` at the driver-side lifecycle points. Omit to disable. */
+  telemetry?: MeshTelemetrySink;
   log?: StageWorkerLog;
 }
 
@@ -161,6 +165,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     timeouts,
     queueWaitMs,
     replanJitterMs,
+    telemetry,
     log = () => undefined,
   } = opts;
 
@@ -208,6 +213,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
         return;
       }
       lockRef.current = lock;
+      emitTelemetry(telemetry, { name: 'chat_started', props: { modelId } });
 
       const t0 = Date.now();
       const elapsed = () => `+${Date.now() - t0}ms`;
@@ -355,6 +361,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               // funnels through 'finished' below the way a normal run
               // does, never re-entering 'replan').
               recordSegmentTelemetry(false);
+              emitTelemetry(telemetry, { name: 'chat_replan', props: { restartCount: ev.restartCount } });
               setPlan(ev.plan);
               setRestartCount(ev.restartCount);
               setReadyStageIndexes([]);
@@ -381,6 +388,11 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'aborted': {
               recordSegmentTelemetry(false);
+              // An involuntary abort (host lost / preflight gave up) is a
+              // failure worth reporting; an explicit user stop is not.
+              if (!/\buser\b/i.test(ev.reason)) {
+                emitTelemetry(telemetry, { name: 'chat_failed', props: { reason: ev.reason } });
+              }
               setStatus({ phase: 'aborted', reason: ev.reason });
               break;
             }
@@ -396,7 +408,9 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
 
         await handle.result();
       } catch (err) {
-        setStatus({ phase: 'error', error: err instanceof Error ? err.message : String(err) });
+        const reason = err instanceof Error ? err.message : String(err);
+        emitTelemetry(telemetry, { name: 'chat_failed', props: { reason } });
+        setStatus({ phase: 'error', error: reason });
       } finally {
         await teardownLocalWorker();
         sessionRef.current = null;
@@ -422,6 +436,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       timeouts,
       queueWaitMs,
       replanJitterMs,
+      telemetry,
       log,
       teardownLocalWorker,
     ],

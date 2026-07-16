@@ -46,7 +46,7 @@
  * `useStageHost` has no such imperative exposed today; adding one is
  * flagged as follow-up in `docs/COMMUNAL.md`.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   communalHostClaim,
   hostStabilityScore,
@@ -63,6 +63,18 @@ import { sanitizeWasmHeapBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits }
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import type { StageWorkerLog } from './stageWorkerClient.js';
 import type { PriorityScoreFn } from './stageSessionAdmission.js';
+import {
+  claimKey,
+  claimsEqual,
+  computeBackoffMs,
+  describeHostError,
+  emitTelemetry,
+  extractHttpStatus,
+  retryCountdownSec,
+  type BackoffOptions,
+  type MeshTelemetrySink,
+  type StageHostLifecycleEvent,
+} from './meshResilience.js';
 
 /**
  * Browsers report `navigator.storage.estimate().quota` inconsistently
@@ -113,10 +125,25 @@ export interface UseCommunalHostOptions {
    * probe `navigator.storage.estimate()`, fall back to
    * `OPFS_QUOTA_CEILING_BYTES`. */
   opfsQuotaBytesOverride?: number;
+  /** Exponential-backoff tuning for a FAILED preload/load — a failed claim
+   * is NOT re-attempted every roster heartbeat, it waits out a jittered
+   * backoff (2s→4s→…→cap ~60s). Mainly for tests (inject a fixed RNG).
+   * Default: `{ baseMs: 2000, capMs: 60000, factor: 2, jitter: 0.25 }`. */
+  backoff?: BackoffOptions;
+  /** Injectable RNG for backoff jitter — tests pin it. Default Math.random. */
+  backoffRandom?: () => number;
+  /** Attempt count at which the phase label flips from 'retrying'
+   * (transient) to 'error' (persistent — still retrying at the cap, but
+   * the UI stops promising a fast recovery). Default 4. */
+  giveUpLabelAfterAttempts?: number;
+  /** Vendor-neutral telemetry sink — the host loop emits `host_load_failed`
+   * / `host_load_succeeded` / `stage_worker_crashed` at the same points it
+   * surfaces an error. Omit to disable telemetry entirely. */
+  telemetry?: MeshTelemetrySink;
   log?: StageWorkerLog;
 }
 
-export type CommunalHostPhase = 'idle' | 'loading' | 'active' | 'draining';
+export type CommunalHostPhase = 'idle' | 'loading' | 'active' | 'draining' | 'retrying' | 'error';
 
 export interface UseCommunalHostHandle {
   supported: boolean;
@@ -132,10 +159,23 @@ export interface UseCommunalHostHandle {
   maxSessions: number;
   queueLength: number;
   lastError?: string;
+  /** Human, model-named error copy for the host panel + capacity meter —
+   * present whenever `phase` is 'retrying' or 'error'. NEVER a silent
+   * spinner: a failing host always has a message here. */
+  errorMessage?: string;
+  /** True while a bounded retry is scheduled (transient) — the UI shows a
+   * countdown; false while healthy OR once we've dropped to the slow
+   * cap-interval "still failing" heartbeat. */
+  retrying: boolean;
+  /** Epoch-ms of the next scheduled retry (for a countdown), when retrying. */
+  nextRetryAtMs?: number;
+  /** How many load attempts have failed for the current claim. 0 = healthy. */
+  retryAttempt: number;
 }
 
 const DEFAULT_REASSEMBLY_MS = 5000;
 const DEFAULT_GRACE_MS = 30_000;
+const DEFAULT_GIVE_UP_LABEL_AFTER = 4;
 
 async function probeOpfsQuotaBytes(override?: number): Promise<number> {
   if (override !== undefined) return override;
@@ -245,9 +285,23 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const [suppressAdvertise, setSuppressAdvertise] = useState(false);
   const [forceDisconnect, setForceDisconnect] = useState<{ reason: string; nonce: number } | null>(null);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
+  /** Raw parts of the current failure — the displayed message (with its
+   * live retry countdown) is derived on every render so the countdown
+   * ticks down instead of freezing at schedule-time. */
+  const [errorState, setErrorState] = useState<
+    | { reason: string; layerStart: number; layerEnd: number; httpStatus?: number; retrying: boolean; nextAttemptAtMs?: number; attempt: number }
+    | undefined
+  >(undefined);
 
   const claimRef = useRef<CommunalClaimRange | undefined>(undefined);
   claimRef.current = claim;
+  // `phase`/`hostSessionCount` are read INSIDE the assembly loop but must
+  // NOT be effect dependencies: a `setPhase('loading')` from within a tick
+  // would otherwise tear the effect down mid-`await` (cancelling the very
+  // retry that set it) and, more broadly, restart the loop on every phase/
+  // session change. Read fresh via refs → current values, zero restarts.
+  const phaseRef = useRef<CommunalHostPhase>(phase);
+  phaseRef.current = phase;
   const drainStartedAtRef = useRef<number | undefined>(undefined);
   const manifestCacheRef = useRef<{ url: string; manifest: LayerPackageManifest } | null>(null);
   const opfsQuotaBytesRef = useRef<number>(OPFS_QUOTA_CEILING_BYTES);
@@ -255,7 +309,86 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
 
+  // ── Backoff + dedup state (kill the tight retry loop + log storm) ─────
+  const backoffOptsRef = useRef<BackoffOptions | undefined>(opts.backoff);
+  backoffOptsRef.current = opts.backoff;
+  const backoffRandomRef = useRef<() => number>(opts.backoffRandom ?? Math.random);
+  backoffRandomRef.current = opts.backoffRandom ?? Math.random;
+  const giveUpAfterRef = useRef<number>(opts.giveUpLabelAfterAttempts ?? DEFAULT_GIVE_UP_LABEL_AFTER);
+  giveUpAfterRef.current = opts.giveUpLabelAfterAttempts ?? DEFAULT_GIVE_UP_LABEL_AFTER;
+  const telemetryRef = useRef<MeshTelemetrySink | undefined>(opts.telemetry);
+  telemetryRef.current = opts.telemetry;
+  /** Per-claim retry bookkeeping — `attempt` is the NEXT attempt's index,
+   * `nextAttemptAt` gates the tick loop's re-issue, `inFlight` blocks a
+   * re-issue while a retry load is actually running. Null = healthy. */
+  const retryRef = useRef<{ key: string; attempt: number; nextAttemptAt: number; inFlight: boolean } | null>(null);
+  /** Last logged assembly decision — the loop logs/acts only on CHANGE
+   * (idempotent-quiet when nothing changed), killing the per-tick storm. */
+  const lastDecisionKeyRef = useRef<string>('');
+
   const createStageWorker = useMemo(() => opts.createStageWorker, [opts.createStageWorker]);
+
+  // ── Backoff scheduler — a failed load waits out a jittered exponential
+  // backoff instead of being re-attempted every roster heartbeat. Stable
+  // identity (refs + setState only) so the assembly effect can call it
+  // through its own closure without staleness. ─────────────────────────
+  const scheduleRetry = useCallback(
+    (failure: { modelId: string; layerStart: number; layerEnd: number; reason: string; httpStatus?: number }): void => {
+      // Key on the layer RANGE only (not `includeOutput`) — the failing
+      // claim is identified by its range; `includeOutput` is derived from
+      // it being the final stage and must not split a retry from its claim.
+      const key = `${failure.layerStart}:${failure.layerEnd}`;
+      const prevAttempt = retryRef.current && retryRef.current.key === key ? retryRef.current.attempt : 0;
+      const delayMs = computeBackoffMs(prevAttempt, backoffOptsRef.current, backoffRandomRef.current);
+      const nextAttemptAt = Date.now() + delayMs;
+      retryRef.current = { key, attempt: prevAttempt + 1, nextAttemptAt, inFlight: false };
+      const giveUp = prevAttempt + 1 >= giveUpAfterRef.current;
+      setErrorState({
+        reason: failure.reason,
+        layerStart: failure.layerStart,
+        layerEnd: failure.layerEnd,
+        httpStatus: failure.httpStatus,
+        retrying: !giveUp,
+        nextAttemptAtMs: nextAttemptAt,
+        attempt: prevAttempt + 1,
+      });
+      setPhase(giveUp ? 'error' : 'retrying');
+    },
+    [],
+  );
+
+  // ── Stage-host lifecycle bridge → telemetry + backoff ─────────────────
+  const handleLifecycle = useCallback(
+    (event: StageHostLifecycleEvent): void => {
+      if (event.type === 'load-succeeded') {
+        retryRef.current = null;
+        setErrorState(undefined);
+        // Let the promotion effect move 'loading' → 'active' once the cap
+        // reflects the loaded stage.
+        setPhase((p) => (p === 'retrying' || p === 'error' ? 'loading' : p));
+        emitTelemetry(telemetryRef.current, {
+          name: 'host_load_succeeded',
+          props: { modelId: event.modelId, layerRange: `${event.layerStart}-${event.layerEnd}` },
+        });
+        return;
+      }
+      if (event.type === 'worker-crashed') {
+        // Telemetry only — the accompanying `preload-failed` (if this crash
+        // happened during a load) drives the backoff, so we don't
+        // double-schedule; a crash outside a load is re-attempted by the
+        // next assembly tick anyway.
+        emitTelemetry(telemetryRef.current, { name: 'stage_worker_crashed', props: { where: 'stage-host', reason: event.reason } });
+        return;
+      }
+      // preload-failed
+      emitTelemetry(telemetryRef.current, {
+        name: 'host_load_failed',
+        props: { modelId: event.modelId, layerRange: `${event.layerStart}-${event.layerEnd}`, reason: event.reason, httpStatus: event.httpStatus },
+      });
+      scheduleRetry(event);
+    },
+    [scheduleRetry],
+  );
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
@@ -287,9 +420,12 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     preloadStage,
     suppressAdvertise,
     forceDisconnect,
+    onLifecycle: handleLifecycle,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;
+  const hostSessionCountRef = useRef(hostSessionCount);
+  hostSessionCountRef.current = hostSessionCount;
 
   // ── Assembly loop ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -323,16 +459,24 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           }),
           priorityScore: priorityScoreRef.current,
         });
-        log(`[communal-host] claim decision: ${decision.reason} (jitterMs=${decision.jitterMs})`);
+        // Log the decision ONLY when it actually changed — the assembly
+        // loop re-runs every roster heartbeat and a stable mesh re-decides
+        // identically ("sole coverer — keeping as-is") every time; logging
+        // that every tick is the observed console storm. Idempotent-quiet.
+        const decisionKey = `${decision.reason}|${claimKey(decision.claim)}|${decision.yieldCurrent ? 'yield' : 'keep'}`;
+        if (decisionKey !== lastDecisionKeyRef.current) {
+          log(`[communal-host] claim decision: ${decision.reason} (jitterMs=${decision.jitterMs})`);
+          lastDecisionKeyRef.current = decisionKey;
+        }
 
         if (decision.yieldCurrent) {
-          if (phase !== 'draining') {
+          if (phaseRef.current !== 'draining') {
             log('[communal-host] yielding wasteful duplicate — stop advertising, draining');
             setSuppressAdvertise(true);
             setPhase('draining');
             drainStartedAtRef.current = Date.now();
           }
-          const drained = hostSessionCount === 0;
+          const drained = hostSessionCountRef.current === 0;
           const graceElapsed = Date.now() - (drainStartedAtRef.current ?? Date.now()) > DEFAULT_GRACE_MS;
           // NOTE: deliberately an if/else-if, not `drained || graceElapsed`
           // combined into one branch — firing `setForceDisconnect(...)` AND
@@ -365,23 +509,40 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
             // Idempotent to repeat every tick until `hostSessionCount`
             // catches up and `drained` goes true above (`useStageHost`'s
             // `forceDisconnectAll` no-ops on an already-empty session map).
-            log(`[communal-host] drain grace (${DEFAULT_GRACE_MS}ms) expired with ${hostSessionCount} session(s) still attached — forcing disconnect`);
+            log(`[communal-host] drain grace (${DEFAULT_GRACE_MS}ms) expired with ${hostSessionCountRef.current} session(s) still attached — forcing disconnect`);
             setForceDisconnect({ reason: 'communal teardown: drain grace expired', nonce: Date.now() });
           }
           return;
         }
 
         if (!decision.claim) {
-          if (phase !== 'idle') setPhase('idle');
+          if (phaseRef.current !== 'idle') setPhase('idle');
           return;
         }
 
-        const changed =
-          !claimRef.current ||
-          claimRef.current.layerStart !== decision.claim.layerStart ||
-          claimRef.current.layerEnd !== decision.claim.layerEnd ||
-          claimRef.current.includeOutput !== decision.claim.includeOutput;
-        if (!changed) return;
+        // Range-only key (see scheduleRetry) for matching a scheduled retry.
+        const rangeKey = `${decision.claim.layerStart}:${decision.claim.layerEnd}`;
+        const changed = !claimsEqual(claimRef.current, decision.claim);
+
+        if (!changed) {
+          // Same claim we already hold. If a load for it FAILED, honor the
+          // backoff window: re-issue the preload ONLY once the scheduled
+          // retry time arrives (never every tick), and never while a retry
+          // load is already in flight. Otherwise stay quiet — this is the
+          // idempotent no-op that replaces the old tight retry loop.
+          const retry = retryRef.current;
+          if (retry && retry.key === rangeKey && !retry.inFlight && Date.now() >= retry.nextAttemptAt) {
+            retry.inFlight = true;
+            log(`[communal-host] retry attempt ${retry.attempt} for [${decision.claim.layerStart},${decision.claim.layerEnd})`);
+            await issuePreload(decision.claim);
+          }
+          return;
+        }
+
+        // A genuinely NEW claim — clear any prior failure/backoff, jitter,
+        // re-check the roster, then issue the load fresh (attempt 0).
+        retryRef.current = null;
+        setErrorState(undefined);
 
         await new Promise((resolve) => setTimeout(resolve, decision.jitterMs));
         if (cancelled) return;
@@ -400,37 +561,52 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         });
         if (!recheck.claim || cancelled) return;
 
-        setPhase('loading');
         setClaim(recheck.claim);
-        try {
-          const { plan, manifestCache } = await resolveCommunalShardPlan(recheck.claim, {
-            manifestUrl,
-            fallbackShardUrls,
-            opfsQuotaBytes: opfsQuotaBytesRef.current,
-            manifestCache: manifestCacheRef.current,
-          });
-          manifestCacheRef.current = manifestCache;
-          if (cancelled) return;
-          setPreloadStage({
-            modelId,
-            layerStart: recheck.claim.layerStart,
-            layerEnd: recheck.claim.layerEnd,
-            totalLayers,
-            ctxSize,
-            wireDtype,
-            shardUrls: plan.shardUrls,
-            shardHashes: plan.shardHashes,
-            shardBytes: plan.shardBytes,
-            useMemoryShardStore: plan.useMemoryShardStore,
-          });
-          setSuppressAdvertise(false);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          setLastError(message);
-          log(`[communal-host] failed to resolve shard plan for [${recheck.claim.layerStart},${recheck.claim.layerEnd}): ${message}`);
-        }
+        await issuePreload(recheck.claim);
       } finally {
         tickInFlightRef.current = false;
+      }
+    }
+
+    /** Resolve the shard plan for `target` and hand it to `useStageHost`
+     * via a fresh `preloadStage` identity (which triggers a load attempt).
+     * A shard-plan RESOLUTION failure (e.g. a 404 manifest fetch) is caught
+     * here and scheduled for backoff; a WORKER-LOAD failure comes back
+     * asynchronously via `handleLifecycle('preload-failed')`. Either way the
+     * failing claim backs off instead of hammering. */
+    async function issuePreload(target: CommunalClaimRange): Promise<void> {
+      setPhase('loading');
+      try {
+        const { plan, manifestCache } = await resolveCommunalShardPlan(target, {
+          manifestUrl,
+          fallbackShardUrls,
+          opfsQuotaBytes: opfsQuotaBytesRef.current,
+          manifestCache: manifestCacheRef.current,
+        });
+        manifestCacheRef.current = manifestCache;
+        if (cancelled) return;
+        setPreloadStage({
+          modelId,
+          layerStart: target.layerStart,
+          layerEnd: target.layerEnd,
+          totalLayers,
+          ctxSize,
+          wireDtype,
+          shardUrls: plan.shardUrls,
+          shardHashes: plan.shardHashes,
+          shardBytes: plan.shardBytes,
+          useMemoryShardStore: plan.useMemoryShardStore,
+        });
+        setSuppressAdvertise(false);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setLastError(message);
+        log(`[communal-host] failed to resolve shard plan for [${target.layerStart},${target.layerEnd}): ${message}`);
+        emitTelemetry(telemetryRef.current, {
+          name: 'host_load_failed',
+          props: { modelId, layerRange: `${target.layerStart}-${target.layerEnd}`, reason: message, httpStatus: extractHttpStatus(message) },
+        });
+        scheduleRetry({ modelId, layerStart: target.layerStart, layerEnd: target.layerEnd, reason: message, httpStatus: extractHttpStatus(message) });
       }
     }
 
@@ -441,16 +617,15 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       clearInterval(timer);
       if (jitterTimer) clearTimeout(jitterTimer);
     };
-    // `phase`/`hostSessionCount` deliberately included — the drain-vs-idle
-    // branch above needs their CURRENT values every tick (read fresh via
-    // closure), and they change rarely enough (session count changes are
-    // debounced by the loop's own `reassemblyIntervalMs` cadence) that
-    // restarting this effect on their change is cheap and correct, unlike
-    // `useStageHost`'s "answer" effect which must never restart on
-    // session churn (this effect holds no session/worker state itself —
-    // it only decides intent, `useStageHost` owns the actual resources).
+    // `phase`/`hostSessionCount` are deliberately NOT deps — they're read
+    // fresh via `phaseRef`/`hostSessionCountRef` inside the tick. Including
+    // them would restart this effect (and immediately re-tick) on every
+    // phase/session change, and — critically — a `setPhase('loading')` from
+    // within `issuePreload` would tear the effect down mid-`await`,
+    // cancelling the retry it was issuing. The interval alone drives the
+    // cadence; the loop only decides intent (useStageHost owns resources).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, phase, hostSessionCount]);
+  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
 
   useEffect(() => {
     if (!enabled) {
@@ -459,12 +634,29 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       setSuppressAdvertise(false);
       setForceDisconnect(null);
       setPhase('idle');
+      setErrorState(undefined);
+      retryRef.current = null;
+      lastDecisionKeyRef.current = '';
     }
   }, [enabled]);
 
   useEffect(() => {
     if (phase === 'loading' && host.active && host.stageHostCap?.loadedStages?.length) setPhase('active');
   }, [phase, host.active, host.stageHostCap]);
+
+  // Derive the DISPLAYED error message on every render so its retry
+  // countdown ticks down live (App re-renders on a short cadence) instead
+  // of freezing at schedule time.
+  const errorMessage = errorState
+    ? describeHostError({
+        reason: errorState.reason,
+        layerStart: errorState.layerStart,
+        layerEnd: errorState.layerEnd,
+        httpStatus: errorState.httpStatus,
+        retrying: errorState.retrying,
+        nextAttemptInSec: retryCountdownSec(errorState.nextAttemptAtMs, Date.now()),
+      })
+    : undefined;
 
   return {
     supported: supportState.ok,
@@ -477,5 +669,9 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     maxSessions: host.maxSessions,
     queueLength: host.queueLength,
     lastError: lastError ?? host.lastError,
+    errorMessage,
+    retrying: !!errorState?.retrying,
+    nextRetryAtMs: errorState?.nextAttemptAtMs,
+    retryAttempt: errorState?.attempt ?? 0,
   };
 }
