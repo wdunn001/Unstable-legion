@@ -1,5 +1,9 @@
 import type { CapacityView } from '../viewmodels/meshViewModels.js';
 
+/** The COVERAGE meter — "is the model assembled / does it need hosts."
+ * Deliberately its own card, visually separate from `OccupancyMeter`
+ * (see meshViewModels.ts's module doc comment) — this one IS the "needs
+ * more hosts" signal; occupancy never is. */
 export function CapacityMeter(props: { capacity: CapacityView }) {
   const { capacity } = props;
   return (

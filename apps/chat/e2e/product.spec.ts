@@ -57,6 +57,21 @@ test('product: capacity gate, trust interstitial, streamed markdown reply, reloa
   await expect(driver.locator('.capacity-status-line')).toContainText('Qwen3-0.6B');
   await expect(driver.locator('.trust-badge')).toBeVisible();
   await expect(driver.locator('.consent-banner')).toBeVisible();
+
+  // ── Theme toggle: flips + persists the Legion light/dark identity ──
+  const themeBefore = await driver.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  await driver.locator('.theme-toggle').click();
+  const themeAfter = await driver.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  expect(themeAfter).not.toBe(themeBefore);
+  await driver.reload();
+  await driver.locator('.join-nick-input').waitFor({ state: 'visible', timeout: 15_000 });
+  const themeAfterReload = await driver.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  expect(themeAfterReload).toBe(themeAfter);
+  console.log(`[test] theme toggled ${themeBefore} -> ${themeAfter}, persisted across reload`);
+  await driver.locator('.join-nick-input').fill('driver');
+  await driver.locator('.join-submit').click();
+  await driver.locator('.app-shell').waitFor({ state: 'visible', timeout: 30_000 });
+
   await declineHosting(driver); // driver doesn't need to contribute compute to prove the product flow
   await expect(driver.locator('.composer-input')).toBeDisabled();
   const gapSnapBefore = await readChatDebug(driver);
@@ -82,6 +97,16 @@ test('product: capacity gate, trust interstitial, streamed markdown reply, reloa
   await expect(driver.locator('.composer-input')).toBeEnabled();
   const readySnap = await readChatDebug(driver);
   console.log(`[test] driver capacity ready: ${readySnap.capacityPercent}%`);
+
+  // ── Occupancy meter appears as its OWN card, distinct from coverage,
+  // once assembled — an occupancy fraction, never a bare free count, and
+  // never worded as a hosting request (that's the coverage meter's job,
+  // asserted above via .composer-input being gated pre-100%).
+  const occupancyMeter = driver.locator('.occupancy-meter');
+  await expect(occupancyMeter).toBeVisible({ timeout: 15_000 });
+  const occupancyLabel = await driver.locator('.occupancy-label').innerText();
+  console.log(`[test] occupancy: ${occupancyLabel}`);
+  expect(occupancyLabel).toMatch(/of \d+ chat slots? open|Room busy/);
 
   // ── First message: trust interstitial must gate it ────────────────
   await driver.locator('.composer-input').fill('Name three colors.');

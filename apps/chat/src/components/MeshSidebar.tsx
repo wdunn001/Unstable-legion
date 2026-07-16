@@ -1,5 +1,6 @@
 import type { AudioKeepaliveHandle } from '@unstable-legion/react';
 import { CapacityMeter } from './CapacityMeter.js';
+import { OccupancyMeter } from './OccupancyMeter.js';
 import { TopologyMap } from './TopologyMap.js';
 import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
@@ -28,6 +29,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
         </label>
       )}
       <CapacityMeter capacity={props.capacity} />
+      {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
       <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />

@@ -11,11 +11,33 @@ import type { CommunalTopology, MeshRosterEntry } from '@unstable-legion/core';
 import {
   deriveCapacityView,
   deriveLeaderboard,
+  deriveOccupancy,
   deriveStandingView,
   deriveTopologySegments,
   nickLookup,
   shortPeerId,
 } from '../src/viewmodels/meshViewModels.ts';
+
+type Candidate = CommunalTopology['segments'][number]['candidates'][number];
+
+function candidate(overrides: Partial<Candidate> = {}): Candidate {
+  return {
+    peerId: 'peer-a',
+    modelId: 'qwen3-8b-q4',
+    layerStart: 2,
+    layerEnd: 36,
+    includeEmbeddings: false,
+    includeOutput: true,
+    ctxSize: 4096,
+    wireDtype: 'f32',
+    maxSessions: 4,
+    activeSessions: 1,
+    epoch: 1,
+    headroom: 3,
+    stabilityScore: 1,
+    ...overrides,
+  };
+}
 
 function topology(overrides: Partial<CommunalTopology> = {}): CommunalTopology {
   return {
@@ -26,7 +48,7 @@ function topology(overrides: Partial<CommunalTopology> = {}): CommunalTopology {
     coveredLayers: [],
     gaps: [],
     outputCovered: true,
-    seats: 4,
+    seats: 0,
     coverageFraction: 1,
     ...overrides,
   };
@@ -34,28 +56,29 @@ function topology(overrides: Partial<CommunalTopology> = {}): CommunalTopology {
 
 const MODEL_LABEL = 'Qwen3-8B · Q4_K_M';
 
-test('deriveCapacityView: full coverage is ready, no gap message, model-named status line', () => {
-  const view = deriveCapacityView(topology(), MODEL_LABEL);
+test('deriveCapacityView: full coverage is ready, no gap message, model-named status line (no seat count folded in)', () => {
+  const topo = topology({ segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate()] }], seats: 3 });
+  const view = deriveCapacityView(topo, MODEL_LABEL);
   assert.equal(view.ready, true);
   assert.equal(view.coveragePercent, 100);
-  assert.equal(view.seatsFree, 4);
   assert.equal(view.gapMessage, '');
   assert.equal(view.modelLabel, MODEL_LABEL);
-  assert.equal(view.statusLine, 'Qwen3-8B · Q4_K_M ready — 4 seats free');
+  // Deliberately does NOT mention seats — that's the separate occupancy
+  // meter's job (product feedback: don't blend the two signals).
+  assert.equal(view.statusLine, 'Qwen3-8B · Q4_K_M ready');
 });
 
-test('deriveCapacityView: partial coverage produces the exact CTA framing from the brief, model-named', () => {
+test('deriveCapacityView: partial coverage produces the exact CTA framing from the brief, model-named; no occupancy while not ready', () => {
   const view = deriveCapacityView(
     topology({
       coverageFraction: 0.6,
       gaps: [{ layerStart: 14, layerEnd: 27 }],
-      seats: 0,
     }),
     MODEL_LABEL,
   );
   assert.equal(view.ready, false);
   assert.equal(view.coveragePercent, 60);
-  assert.equal(view.seatsFree, undefined);
+  assert.equal(view.occupancy, undefined);
   assert.equal(
     view.gapMessage,
     'Qwen3-8B · Q4_K_M 60% assembled — layers 14–27 need a host. Contribute your GPU to unlock chat.',
@@ -63,15 +86,74 @@ test('deriveCapacityView: partial coverage produces the exact CTA framing from t
   assert.equal(view.statusLine, 'Assembling Qwen3-8B · Q4_K_M — 60% ready');
 });
 
-test('deriveCapacityView: a single free seat is singular ("1 seat free", not "1 seats free")', () => {
-  const view = deriveCapacityView(topology({ seats: 1 }), MODEL_LABEL);
-  assert.equal(view.statusLine, 'Qwen3-8B · Q4_K_M ready — 1 seat free');
+// ── Occupancy meter — room-wide spare CONSUMER capacity, deliberately a
+// SEPARATE signal from coverage (see meshViewModels.ts's module doc). ──
+
+test('deriveOccupancy: no communal layers at all (empty segments) -> undefined, nothing to report', () => {
+  assert.equal(deriveOccupancy(topology({ segments: [] })), undefined);
 });
 
-test('deriveCapacityView: unbounded seats (no communal layers needed) reports seatsFree undefined', () => {
-  const view = deriveCapacityView(topology({ seats: Number.POSITIVE_INFINITY }), MODEL_LABEL);
-  assert.equal(view.ready, true);
-  assert.equal(view.seatsFree, undefined);
+test('deriveOccupancy: gaps present -> undefined (coverage meter owns the not-ready story)', () => {
+  const topo = topology({
+    gaps: [{ layerStart: 20, layerEnd: 36 }],
+    segments: [{ layerStart: 2, layerEnd: 20, candidates: [candidate({ layerEnd: 20 })] }],
+  });
+  assert.equal(deriveOccupancy(topo), undefined);
+});
+
+test('deriveOccupancy: reports occupancy as a fraction, never a bare free count', () => {
+  const topo = topology({ segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate({ maxSessions: 4, activeSessions: 1 })] }] });
+  const occ = deriveOccupancy(topo)!;
+  assert.equal(occ.total, 4);
+  assert.equal(occ.active, 1);
+  assert.equal(occ.free, 3);
+  assert.equal(occ.atCapacity, false);
+  assert.equal(occ.label, '3 of 4 chat slots open · 1 active now');
+});
+
+test('deriveOccupancy: singular "slot" wording for a single-seat bottleneck', () => {
+  const topo = topology({ segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate({ maxSessions: 1, activeSessions: 0 })] }] });
+  const occ = deriveOccupancy(topo)!;
+  assert.equal(occ.label, '1 of 1 chat slot open · 0 active now');
+});
+
+test('deriveOccupancy: zero headroom is framed as a soft queue, never "full"/"blocked"', () => {
+  const topo = topology({ segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate({ maxSessions: 2, activeSessions: 2 })] }] });
+  const occ = deriveOccupancy(topo)!;
+  assert.equal(occ.free, 0);
+  assert.equal(occ.atCapacity, true);
+  assert.doesNotMatch(occ.label.toLowerCase(), /\bfull\b|block/);
+  assert.match(occ.label, /queue/i);
+});
+
+test('deriveOccupancy: multi-segment topology reports the BOTTLENECK segment, matching topology.seats exactly', () => {
+  const topo = topology({
+    seats: 2, // min(headroom) across segments below, computed the same way buildCommunalTopology does
+    segments: [
+      { layerStart: 2, layerEnd: 20, candidates: [candidate({ layerEnd: 20, maxSessions: 5, activeSessions: 3 })] }, // headroom 2 (bottleneck)
+      { layerStart: 20, layerEnd: 36, candidates: [candidate({ layerStart: 20, layerEnd: 36, maxSessions: 4, activeSessions: 0 })] }, // headroom 4
+    ],
+  });
+  const occ = deriveOccupancy(topo)!;
+  assert.equal(occ.free, topo.seats);
+  assert.equal(occ.total, 5);
+  assert.equal(occ.active, 3);
+});
+
+test('deriveOccupancy: sums multiple candidates (warm spares) within the same segment', () => {
+  const topo = topology({
+    segments: [
+      {
+        layerStart: 2,
+        layerEnd: 36,
+        candidates: [candidate({ peerId: 'a', maxSessions: 2, activeSessions: 1 }), candidate({ peerId: 'b', maxSessions: 3, activeSessions: 0 })],
+      },
+    ],
+  });
+  const occ = deriveOccupancy(topo)!;
+  assert.equal(occ.total, 5);
+  assert.equal(occ.active, 1);
+  assert.equal(occ.free, 4);
 });
 
 test('deriveTopologySegments: local + covered + gap segments in layer order', () => {

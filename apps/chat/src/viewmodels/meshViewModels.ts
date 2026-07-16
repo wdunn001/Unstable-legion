@@ -10,46 +10,99 @@
 import type { CommunalGap, CommunalTopology, MeshRosterEntry, StandingLedger, StandingSnapshot } from '@unstable-legion/core';
 
 // ── Capacity meter ──────────────────────────────────────────────────────
+//
+// Two DELIBERATELY SEPARATE meters, per product feedback that a bare
+// "N seats free" reads as ambiguous (a plea for more hosts? spare
+// slots?) when folded into the same number as assembly progress:
+//
+//   1. COVERAGE — "is the model assembled at all / does it need hosts."
+//      `coveragePercent`/`ready`/`gaps`/`gapMessage`. Meaningful (and
+//      shown) until `ready` — this IS the "needs more hosts" signal.
+//   2. OCCUPANCY — "now that it's up, how much room-wide chat headroom
+//      is there." `occupancy`, only populated once `ready`. NEVER a
+//      call for more hosts — it's whole-room spare CONSUMER capacity
+//      (concurrent chat sessions the assembled pipeline can currently
+//      admit), expressed as an occupancy fraction ("12 of 15 chat slots
+//      open"), never a bare free count that could be misread as a
+//      headcount request.
+
+export interface OccupancyView {
+  /** Concurrent chat sessions currently occupying a lane, at the
+   * room-wide bottleneck segment (see `deriveOccupancy`'s doc comment). */
+  active: number;
+  /** Total concurrent-session capacity at that same bottleneck segment. */
+  total: number;
+  /** `total - active`, clamped >= 0 — matches `topology.seats` exactly
+   * when a bottleneck segment exists (cross-checked in
+   * test/meshViewModels.test.ts). */
+  free: number;
+  /** True when `free === 0` — the soft-queue case. Never "full/blocked". */
+  atCapacity: boolean;
+  /** Human copy: an occupancy fraction ("12 of 15 chat slots open · 3
+   * active now") when there's headroom, or the soft-queue framing
+   * ("Room busy — new chats queue by contribution, you won't be turned
+   * away.") at `atCapacity`. Whole-room, never per-person. */
+  label: string;
+}
+
+/** Room-wide spare CONSUMER capacity, from the SAME bottleneck segment
+ * `buildCommunalTopology`'s own `seats` field is the min over (headroom
+ * summed per segment) — recomputed here (not just reading `.seats`)
+ * because the occupancy label needs the bottleneck segment's total/active
+ * breakdown too, not just its free count. `undefined` when there's no
+ * communal layer space at all (`topology.segments` empty — the whole
+ * model fits in the driver's own local layers, so there's no room-wide
+ * bottleneck to report). */
+export function deriveOccupancy(topology: CommunalTopology): OccupancyView | undefined {
+  if (topology.gaps.length > 0 || topology.segments.length === 0) return undefined;
+
+  let best: { active: number; total: number; free: number } | undefined;
+  for (const segment of topology.segments) {
+    const total = segment.candidates.reduce((sum, c) => sum + c.maxSessions, 0);
+    const active = segment.candidates.reduce((sum, c) => sum + c.activeSessions, 0);
+    const free = segment.candidates.reduce((sum, c) => sum + Math.max(0, c.maxSessions - c.activeSessions), 0);
+    if (!best || free < best.free) best = { active, total, free };
+  }
+  if (!best) return undefined;
+
+  const atCapacity = best.free <= 0;
+  const label = atCapacity
+    ? 'Room busy — new chats queue by contribution, you won’t be turned away.'
+    : `${best.free} of ${best.total} chat slot${best.total === 1 ? '' : 's'} open · ${best.active} active now`;
+
+  return { ...best, atCapacity, label };
+}
 
 export interface CapacityView {
   /** 0-100, rounded — `topology.coverageFraction * 100`. */
   coveragePercent: number;
   /** True iff the mesh can currently route an end-to-end chat (no gaps). */
   ready: boolean;
-  /** Concurrent chat slots free across the whole assembled pipeline.
-   * `undefined` when `ready` is false (nothing is routable, "seats" is
-   * meaningless) or when capacity is effectively unbounded (no communal
-   * layers needed at all). */
-  seatsFree?: number;
   gaps: readonly CommunalGap[];
   /** "Qwen3-8B · Q4_K_M" — passed straight through from
    * `chatModelSource.ts`'s `ChatModelConfig.modelLabel`, so every string
    * this view-model produces below names the model, not a bare number. */
   modelLabel: string;
-  /** Prominent, model-named one-liner for the mesh sidebar's header —
+  /** Prominent, model-named one-liner for the COVERAGE meter —
    * "Assembling Qwen3-8B · Q4_K_M — 60% ready" while incomplete,
-   * "Qwen3-8B · Q4_K_M ready — N seats free" once assembled. Product
-   * requirement: the mesh's model identity is never buried behind a bare
-   * percentage. */
+   * "Qwen3-8B · Q4_K_M ready" once assembled. Deliberately says nothing
+   * about seats/occupancy — that's `occupancy`'s own, visually separate
+   * meter. Product requirement: the mesh's model identity is never
+   * buried behind a bare percentage. */
   statusLine: string;
   /** Plain-language CTA for the not-ready case — the brief's exact
    * framing, model-named ("Qwen3-8B · Q4_K_M 60% assembled — layers
    * 14–27 need a host."). Empty when `ready` is true. */
   gapMessage: string;
+  /** Room-wide chat headroom, only once `ready` — see module doc comment. */
+  occupancy?: OccupancyView;
 }
 
 export function deriveCapacityView(topology: CommunalTopology, modelLabel: string): CapacityView {
   const coveragePercent = Math.round(topology.coverageFraction * 100);
   const ready = topology.gaps.length === 0;
-  const seatsFree = ready
-    ? Number.isFinite(topology.seats)
-      ? topology.seats
-      : undefined
-    : undefined;
 
-  const statusLine = ready
-    ? `${modelLabel} ready${seatsFree === undefined ? '' : ` — ${seatsFree} seat${seatsFree === 1 ? '' : 's'} free`}`
-    : `Assembling ${modelLabel} — ${coveragePercent}% ready`;
+  const statusLine = ready ? `${modelLabel} ready` : `Assembling ${modelLabel} — ${coveragePercent}% ready`;
 
   const gapMessage = ready
     ? ''
@@ -57,7 +110,15 @@ export function deriveCapacityView(topology: CommunalTopology, modelLabel: strin
         .map((g) => `${g.layerStart}–${g.layerEnd}`)
         .join(', ')} need a host. Contribute your GPU to unlock chat.`;
 
-  return { coveragePercent, ready, seatsFree, gaps: topology.gaps, modelLabel, statusLine, gapMessage };
+  return {
+    coveragePercent,
+    ready,
+    gaps: topology.gaps,
+    modelLabel,
+    statusLine,
+    gapMessage,
+    occupancy: deriveOccupancy(topology),
+  };
 }
 
 // ── Topology map ─────────────────────────────────────────────────────────

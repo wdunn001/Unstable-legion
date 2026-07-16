@@ -36,8 +36,10 @@ import { ChatPane } from './components/ChatPane.js';
 import { MeshSidebar } from './components/MeshSidebar.js';
 import { TrustBadge } from './components/TrustBadge.js';
 import { TrustInterstitial } from './components/TrustInterstitial.js';
+import { ThemeToggle } from './components/ThemeToggle.js';
 import { useThreads } from './hooks/useThreads.js';
 import { useHostingConsent } from './hooks/useHostingConsent.js';
+import { useTheme, type UseThemeHandle } from './hooks/useTheme.js';
 import { resolveChatModelConfig } from './chatModelSource.js';
 import { buildPrompt } from './chatPrompt.js';
 import {
@@ -95,6 +97,9 @@ export function App() {
   const { persona, update: updatePersona } = usePersona(PERSONA_STORAGE_KEY);
   const [joined, setJoined] = useState(false);
   const modelConfig = useMemo(() => resolveChatModelConfig(), []);
+  // Applies to every screen (join or joined) — the theme toggle needs to
+  // work before a nick is even chosen, not just once inside the Dashboard.
+  const theme = useTheme();
 
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
@@ -111,19 +116,24 @@ export function App() {
 
   if (!joined || !cap) {
     return (
-      <JoinScreen
-        initialNick={persona.nick}
-        onJoin={(nick) => {
-          updatePersona({ nick });
-          setJoined(true);
-        }}
-      />
+      <>
+        <div className="theme-toggle-standalone">
+          <ThemeToggle theme={theme.theme} onToggle={theme.toggle} />
+        </div>
+        <JoinScreen
+          initialNick={persona.nick}
+          onJoin={(nick) => {
+            updatePersona({ nick });
+            setJoined(true);
+          }}
+        />
+      </>
     );
   }
 
   return (
     <MeshProvider joinRoom={joinRoom} selfId={selfId} trysteroConfig={TRYSTERO_CONFIG} roomId={ROOM_ID} cap={cap}>
-      <Dashboard nick={persona.nick} onChangeNick={() => setJoined(false)} baseCap={cap} modelConfig={modelConfig} />
+      <Dashboard nick={persona.nick} onChangeNick={() => setJoined(false)} baseCap={cap} modelConfig={modelConfig} theme={theme} />
     </MeshProvider>
   );
 }
@@ -133,6 +143,7 @@ function Dashboard(props: {
   onChangeNick: () => void;
   baseCap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
   modelConfig: ReturnType<typeof resolveChatModelConfig>;
+  theme: UseThemeHandle;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
@@ -329,6 +340,7 @@ function Dashboard(props: {
         <span className={`app-mesh-pill ${remoteCount > 0 ? 'app-mesh-ok' : 'app-mesh-cold'}`}>mesh: {remoteCount} remote</span>
         <span className="app-header-spacer" />
         <TrustBadge />
+        <ThemeToggle theme={props.theme.theme} onToggle={props.theme.toggle} />
         <button type="button" className="btn-link app-change-nick" onClick={props.onChangeNick}>
           change nick
         </button>
