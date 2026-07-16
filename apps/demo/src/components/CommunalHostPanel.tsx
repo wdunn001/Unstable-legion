@@ -11,16 +11,19 @@
  * `window.__legionCommunal` is populated for Playwright/manual debugging,
  * mirroring `StagePipelinePanel`'s `window.__legionStage` convention.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   useCommunalHost,
   useMeshContext,
   useMeshRoster,
+  bindPriorityScore,
   type MeshPeerCap,
+  type StandingLedger,
 } from '@unstable-legion/react';
 import {
   STAGE_MODEL_ID,
   STAGE_TOTAL_LAYERS,
+  STAGE_DRIVER_LAYERS,
   STAGE_CTX_SIZE,
   STAGE_AVG_LAYER_BYTES,
   stageShardUrls,
@@ -29,12 +32,12 @@ import {
 export interface CommunalHostPanelProps {
   baseCap: Omit<MeshPeerCap, 'stageHost' | 'ts'> & { ts?: number };
   keepaliveEnabled: boolean;
+  /** M4 — this peer's shared contribution-economy ledger (one instance per
+   * `MeshProvider`, created once in `App.tsx`'s `Dashboard`). Feeds
+   * `useStageHost`'s admission-queue priority (via `bindPriorityScore`)
+   * and consumption telemetry on every session free. */
+  standingLedger: StandingLedger;
 }
-
-/** Layers the driver always hosts locally — see the plan doc's "Stage 0 =
- * every consumer hosts it locally" decision. Matches
- * `stageOrchestrator.ts`'s communal scope assumption. */
-const DRIVER_LAYERS = 2;
 
 function shortId(id: string): string {
   return id.length > 10 ? `${id.slice(0, 10)}…` : id;
@@ -51,6 +54,7 @@ export function CommunalHostPanel(props: CommunalHostPanelProps) {
   );
   const fallbackShardUrls = useCallback(() => stageShardUrls(), []);
   const log = useCallback((line: string) => console.info('[communal-host]', line), []);
+  const priorityScore = useMemo(() => bindPriorityScore(props.standingLedger, () => Date.now()), [props.standingLedger]);
 
   const communal = useCommunalHost({
     enabled,
@@ -59,7 +63,7 @@ export function CommunalHostPanel(props: CommunalHostPanelProps) {
     createStageWorker,
     modelId: STAGE_MODEL_ID,
     totalLayers: STAGE_TOTAL_LAYERS,
-    driverLayers: DRIVER_LAYERS,
+    driverLayers: STAGE_DRIVER_LAYERS,
     ctxSize: STAGE_CTX_SIZE,
     wireDtype: 'f32',
     // No manifestUrl -- this demo deployment ships full.gguf (Phase A/B
@@ -71,6 +75,10 @@ export function CommunalHostPanel(props: CommunalHostPanelProps) {
     fallbackShardUrls,
     avgLayerBytes: STAGE_AVG_LAYER_BYTES,
     keepaliveEnabled: props.keepaliveEnabled,
+    // M4 — admission-queue priority + consumption telemetry (see
+    // docs/ECONOMY.md's "Injection story").
+    priorityScore,
+    standingLedger: props.standingLedger,
     log,
   });
 

@@ -23,7 +23,9 @@ import {
   useMeshRoster,
   useStageHost,
   useStagePipeline,
+  bindPriorityScore,
   type MeshPeerCap,
+  type StandingLedger,
 } from '@unstable-legion/react';
 
 export interface StagePipelinePanelProps {
@@ -31,6 +33,10 @@ export interface StagePipelinePanelProps {
    * `MeshProvider`, so `useStageHost` can layer `stageHost` on top of it. */
   baseCap: Omit<MeshPeerCap, 'stageHost' | 'ts'> & { ts?: number };
   keepaliveEnabled: boolean;
+  /** M4 — shared contribution-economy ledger (see `CommunalHostPanel`'s
+   * identical prop doc comment). Feeds this panel's "host stages" role's
+   * admission-queue priority + consumption telemetry. */
+  standingLedger: StandingLedger;
 }
 
 const DEFAULT_PROMPT = 'Tell me a short story about a lighthouse keeper who talks to ships.';
@@ -61,6 +67,7 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
   // to avoid.
   const logStageHost = useCallback((line: string) => console.info('[stage-host]', line), []);
   const logStagePipeline = useCallback((line: string) => console.info('[stage-pipeline]', line), []);
+  const priorityScore = useMemo(() => bindPriorityScore(props.standingLedger, () => Date.now()), [props.standingLedger]);
 
   const host = useStageHost({
     enabled: hostingEnabled,
@@ -68,6 +75,10 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
     baseCap: props.baseCap,
     createStageWorker,
     keepaliveEnabled: props.keepaliveEnabled,
+    // M4 — admission-queue priority + consumption telemetry (see
+    // docs/ECONOMY.md's "Injection story").
+    priorityScore,
+    standingLedger: props.standingLedger,
     log: logStageHost,
   });
 
@@ -114,7 +125,7 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
       </h3>
 
       <div className="sp-host-row">
-        <label className="sp-host-toggle">
+        <label className="sp-host-toggle stage-host-toggle">
           <input
             type="checkbox"
             checked={hostingEnabled}
@@ -136,7 +147,7 @@ export function StagePipelinePanel(props: StagePipelinePanelProps) {
 
       <div className="sp-run-row">
         <input
-          className="sp-prompt"
+          className="sp-prompt stage-pipeline-prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="prompt for the split pipeline…"

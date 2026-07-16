@@ -27,6 +27,7 @@ import {
   MeshProvider,
   MeshRosterPanel,
   PersonaForm,
+  StandingLedger,
   ToolRegistry,
   defaultTurnConfig,
   detectMobileLikelyNeedsFp32,
@@ -50,6 +51,7 @@ import {
 } from '@unstable-legion/react';
 import { StagePipelinePanel } from './components/StagePipelinePanel.js';
 import { CommunalHostPanel } from './components/CommunalHostPanel.js';
+import { CommunalChatPanel } from './components/CommunalChatPanel.js';
 
 // `?room=` override lets e2e runs (and anyone testing against a live
 // deploy) use an isolated room instead of the shared public one —
@@ -352,6 +354,14 @@ function Dashboard(props: {
   // tab-throttling so this peer keeps responding when the user
   // backgrounds the tab. See useAudioKeepalive for details.
   const audioKeepalive = useAudioKeepalive();
+  // M4 — ONE contribution-economy ledger per peer (per Dashboard mount,
+  // i.e. per `MeshProvider` subtree — see docs/ECONOMY.md's "Injection
+  // story"). Shared across the pipeline-split host role, the communal
+  // host role, and the communal chat driver role below so standing earned
+  // observing one role's traffic informs every other role's priority.
+  const standingLedgerRef = useRef<StandingLedger | null>(null);
+  if (standingLedgerRef.current === null) standingLedgerRef.current = new StandingLedger();
+  const standingLedger = standingLedgerRef.current;
   // DedicatedWorker hosting the WebGPU engine. Built once per Dashboard
   // mount; lives for the dashboard's lifetime. The url+import.meta.import
   // pattern lets Vite bundle the worker as a separate chunk and emit a
@@ -483,8 +493,9 @@ function Dashboard(props: {
         emptyMessage="no MCP endpoints attached. add via the persona form (change nick → MCP list)."
       />
       <AudioKeepaliveToggle handle={audioKeepalive} />
-      <StagePipelinePanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} />
-      <CommunalHostPanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} />
+      <StagePipelinePanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} standingLedger={standingLedger} />
+      <CommunalHostPanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} standingLedger={standingLedger} />
+      <CommunalChatPanel standingLedger={standingLedger} />
       <div className="ul-cols">
         <MeshRosterPanel />
         <MeshChatPanel
