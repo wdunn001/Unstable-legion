@@ -139,3 +139,225 @@ test('resolveCommunalShardPlan: a failed manifest fetch throws with a descriptiv
     /failed to fetch communal manifest/,
   );
 });
+
+// ── CDN-primary / origin-fallback manifest fetch ──────────────────────────
+
+/** Fetch mock keyed by URL — throws/404s for any URL not listed, so a test
+ * can assert exactly which URL(s) actually got hit. */
+function fetchByUrlMap(behaviors: Record<string, 'throw' | '404' | unknown>): { fetchImpl: typeof fetch; calls: string[] } {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    calls.push(url);
+    const behavior = behaviors[url];
+    if (behavior === undefined) throw new Error(`unexpected fetch: ${url}`);
+    if (behavior === 'throw') throw new Error(`network error fetching ${url}`);
+    if (behavior === '404') return { ok: false, status: 404, statusText: 'Not Found' } as unknown as Response;
+    return { ok: true, status: 200, statusText: 'OK', json: async () => behavior } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+test('resolveCommunalShardPlan: CDN manifestUrl succeeds -> manifestFallbackUrl is never fetched', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const { fetchImpl, calls } = fetchByUrlMap({ 'https://cdn.test/model-package.json': manifest });
+
+  const { plan, manifestCache } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 10, includeOutput: false },
+    {
+      manifestUrl: 'https://cdn.test/model-package.json',
+      manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl,
+    },
+  );
+
+  assert.deepEqual(calls, ['https://cdn.test/model-package.json']);
+  assert.equal(manifestCache?.url, 'https://cdn.test/model-package.json');
+  assert.equal(plan.shardUrls.length, 9); // metadata + 8 layers
+  // Fragment URLs resolve against the CDN base (the origin that served it).
+  assert.ok(plan.shardUrls.every((u) => u.startsWith('https://cdn.test/')));
+});
+
+test('resolveCommunalShardPlan: CDN manifestUrl throws -> falls back to manifestFallbackUrl, and fragments resolve against the FALLBACK origin', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const { fetchImpl, calls } = fetchByUrlMap({
+    'https://cdn.test/model-package.json': 'throw',
+    'https://origin.test/webllm/stages/m/model-package.json': manifest,
+  });
+
+  const { plan, manifestCache } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 10, includeOutput: false },
+    {
+      manifestUrl: 'https://cdn.test/model-package.json',
+      manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl,
+    },
+  );
+
+  assert.deepEqual(calls, ['https://cdn.test/model-package.json', 'https://origin.test/webllm/stages/m/model-package.json']);
+  assert.equal(manifestCache?.url, 'https://origin.test/webllm/stages/m/model-package.json');
+  assert.equal(plan.shardUrls.length, 9);
+  // Fragments resolve against the ORIGIN that actually served the
+  // manifest -- never unconditionally against the CDN primary.
+  assert.ok(plan.shardUrls.every((u) => u.startsWith('https://origin.test/webllm/stages/m/')));
+});
+
+test('resolveCommunalShardPlan: CDN manifestUrl 404s (non-OK, not a throw) -> also falls back', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const { fetchImpl, calls } = fetchByUrlMap({
+    'https://cdn.test/model-package.json': '404',
+    'https://origin.test/webllm/stages/m/model-package.json': manifest,
+  });
+
+  const { manifestCache } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 10, includeOutput: false },
+    {
+      manifestUrl: 'https://cdn.test/model-package.json',
+      manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl,
+    },
+  );
+
+  assert.deepEqual(calls, ['https://cdn.test/model-package.json', 'https://origin.test/webllm/stages/m/model-package.json']);
+  assert.equal(manifestCache?.url, 'https://origin.test/webllm/stages/m/model-package.json');
+});
+
+test('resolveCommunalShardPlan: BOTH manifestUrl and manifestFallbackUrl fail -> throws (no silent hang)', async () => {
+  const { fetchImpl } = fetchByUrlMap({
+    'https://cdn.test/model-package.json': 'throw',
+    'https://origin.test/webllm/stages/m/model-package.json': '404',
+  });
+
+  await assert.rejects(
+    () =>
+      resolveCommunalShardPlan(
+        { layerStart: 2, layerEnd: 10, includeOutput: false },
+        {
+          manifestUrl: 'https://cdn.test/model-package.json',
+          manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+          opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+          fetchImpl,
+        },
+      ),
+    /failed to fetch communal manifest/,
+  );
+});
+
+test('resolveCommunalShardPlan: no manifestFallbackUrl configured -> a CDN failure propagates (no fallback to try)', async () => {
+  const { fetchImpl } = fetchByUrlMap({ 'https://cdn.test/model-package.json': 'throw' });
+
+  await assert.rejects(
+    () =>
+      resolveCommunalShardPlan(
+        { layerStart: 2, layerEnd: 10, includeOutput: false },
+        { manifestUrl: 'https://cdn.test/model-package.json', opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl },
+      ),
+    /network error fetching/,
+  );
+});
+
+test('resolveCommunalShardPlan: a manifest cached from the fallback origin is reused (not re-fetched) on a later call with the same options', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const { fetchImpl, calls } = fetchByUrlMap({
+    'https://cdn.test/model-package.json': 'throw',
+    'https://origin.test/webllm/stages/m/model-package.json': manifest,
+  });
+
+  const first = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 10, includeOutput: false },
+    {
+      manifestUrl: 'https://cdn.test/model-package.json',
+      manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl,
+    },
+  );
+  assert.equal(calls.length, 2); // CDN attempt + fallback
+
+  const second = await resolveCommunalShardPlan(
+    { layerStart: 10, layerEnd: 18, includeOutput: false },
+    {
+      manifestUrl: 'https://cdn.test/model-package.json',
+      manifestFallbackUrl: 'https://origin.test/webllm/stages/m/model-package.json',
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl,
+      manifestCache: first.manifestCache,
+    },
+  );
+  assert.equal(calls.length, 2, 'cached fallback manifest must not trigger another CDN-then-fallback round');
+  assert.equal(second.plan.shardUrls.length, 9);
+});
+
+test('resolveCommunalShardPlan: a PAGE-RELATIVE fallback URL (chatModelSource.ts\'s real .198 shape, e.g. "/webllm/stages/m/model-package.json") resolves fragments correctly under a real `location` (regression: WHATWG URL rejects a relative base even for an already-absolute path)', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const relativeFallback = '/webllm/stages/m/model-package.json';
+  const { fetchImpl, calls } = fetchByUrlMap({
+    'https://cdn.test/model-package.json': 'throw',
+    [relativeFallback]: manifest,
+  });
+
+  // Simulate a browser: `location` is what chatModelSource.ts/toAbsoluteManifestUrl
+  // resolves a page-relative manifest path against. Restored in `finally` so
+  // this doesn't leak into other tests in this file.
+  const priorLocation = (globalThis as { location?: unknown }).location;
+  (globalThis as { location?: unknown }).location = { origin: 'https://app.example.test' } as Location;
+  try {
+    const { plan, manifestCache } = await resolveCommunalShardPlan(
+      { layerStart: 2, layerEnd: 10, includeOutput: false },
+      {
+        manifestUrl: 'https://cdn.test/model-package.json',
+        manifestFallbackUrl: relativeFallback,
+        opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+        fetchImpl,
+      },
+    );
+    assert.deepEqual(calls, ['https://cdn.test/model-package.json', relativeFallback]);
+    // Would previously throw "Invalid URL" inside fragmentsForRange/toFragment
+    // before manifestBaseUrl was resolved to an absolute URL.
+    assert.equal(manifestCache?.url, 'https://app.example.test/webllm/stages/m/model-package.json');
+    assert.equal(plan.shardUrls.length, 9);
+    assert.ok(plan.shardUrls.every((u) => u.startsWith('https://app.example.test/webllm/stages/m/')));
+  } finally {
+    (globalThis as { location?: unknown }).location = priorLocation;
+  }
+});
+
+// ── CDN-chunked artifacts survive the ShardPlan flattening ────────────────
+
+function fakeManifestWithChunkedLayer(layerCount: number, perLayerBytes: number) {
+  const m = fakeManifest(layerCount, perLayerBytes) as any;
+  m.layers[2] = {
+    ...m.layers[2],
+    chunks: [
+      { path: 'layers/layer-00002.gguf.part0', sha256: 'd'.repeat(64), bytes: Math.floor(perLayerBytes / 2) },
+      { path: 'layers/layer-00002.gguf.part1', sha256: 'e'.repeat(64), bytes: perLayerBytes - Math.floor(perLayerBytes / 2) },
+    ],
+  };
+  return m;
+}
+
+test('resolveCommunalShardPlan: a chunked layer artifact carries shardChunks through the plan, aligned to shardUrls', async () => {
+  const manifest = fakeManifestWithChunkedLayer(28, 1_000_000);
+  const { plan } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 4, includeOutput: false }, // layers 2,3 -- layer 2 is chunked
+    { manifestUrl: 'https://cdn.test/model-package.json', opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: fetchByUrlMap({ 'https://cdn.test/model-package.json': manifest }).fetchImpl },
+  );
+  // metadata, layer-2 (chunked), layer-3 (not chunked)
+  assert.equal(plan.shardUrls.length, 3);
+  assert.equal(plan.shardChunks?.[0], undefined); // metadata: not chunked
+  assert.equal(plan.shardChunks?.[1]?.length, 2); // layer-2: chunked
+  assert.equal(plan.shardChunks?.[2], undefined); // layer-3: not chunked
+  assert.equal(plan.shardChunks?.[1]?.[0]?.url, 'https://cdn.test/layers/layer-00002.gguf.part0');
+});
+
+test('resolveCommunalShardPlan: no artifact in range is chunked -> shardChunks is omitted entirely (byte-for-byte pre-chunking behavior)', async () => {
+  const manifest = fakeManifest(28, 1_000_000); // no chunks anywhere
+  const { plan } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 10, includeOutput: false },
+    { manifestUrl: 'https://cdn.test/model-package.json', opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: fetchByUrlMap({ 'https://cdn.test/model-package.json': manifest }).fetchImpl },
+  );
+  assert.equal(plan.shardChunks, undefined);
+});

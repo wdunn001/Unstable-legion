@@ -16,11 +16,26 @@
  * MANIFEST WIRED: the per-layer package manifest for `qwen3-8b-q4` IS
  * deployed (/webllm/stages/qwen3-8b-q4/model-package.json — layer-package
  * format, 36 per-layer fragments + shared embeddings/output). `manifestUrl()`
- * returns it, so `useCommunalChat` + every communal host pull ONLY their
- * assigned layer fragments via `fragmentsForRange`. There is NO full.gguf
- * staged for 8B (it's 4.9GB — the whole point of per-layer artifacts is to
- * never fetch the monolith); requesting it 404s, which is why the fallback
- * path must not be used for the production model.
+ * returns it, so every communal host pull ONLY their assigned layer
+ * fragments via `fragmentsForRange`. There is NO full.gguf staged for 8B
+ * (it's 4.9GB — the whole point of per-layer artifacts is to never fetch
+ * the monolith); requesting it 404s, which is why the fallback path must
+ * not be used for the production model.
+ *
+ * CDN PRIMARY + ORIGIN FALLBACK: the large per-artifact fragments (some up
+ * to 516MB) are moving off the single `.198` origin to a jsDelivr-backed
+ * public CDN mirror (`legion-model-qwen3-8b` on GitHub — see
+ * legion-stage-runtime's `manifest.ts` for the corresponding `chunks[]`
+ * reassembly, since the CDN's <50MB per-file limit means large artifacts
+ * are re-chunked there). `chatManifestUrl()` now returns the CDN manifest
+ * URL (primary); `chatManifestFallbackUrl()` returns the original
+ * `.198`-mirror path (fallback, unchunked, unchanged from before this
+ * migration). `useCommunalHost`'s `resolveCommunalShardPlan` is the actual
+ * fetch call site (see `packages/mesh-react/src/useCommunalHost.ts`) — it
+ * tries the CDN manifest first and falls back to the `.198` manifest on any
+ * fetch failure/non-OK response, resolving every fragment (including
+ * `fragmentsForRange`'s per-artifact `chunks[]`) against WHICHEVER base URL
+ * actually served the manifest, never unconditionally against the CDN.
  *
  * `AVG_LAYER_BYTES` is a planning-upper-bound ESTIMATE (same role as
  * `STAGE_AVG_LAYER_BYTES` in mesh-react's doc comment: "real models have
@@ -87,14 +102,33 @@ export function chatShardUrls(baseUrl?: string): readonly string[] {
   const path = chatShardPath();
   return [baseUrl ? new URL(path, baseUrl).toString() : path];
 }
-/** The deployed per-layer package manifest for Qwen3-8B (layer-package
- * format: shared/{metadata,embeddings,output}.gguf + layers/layer-NNN.gguf,
- * each SHA-256'd). When set, useCommunalChat's local stage-0 AND every
- * communal host resolve exactly their assigned fragments via
- * `fragmentsForRange` and pull each layer separately — NO monolith
- * full.gguf is fetched (it isn't even staged for 8B). Same-origin absolute
- * path (served from the /webllm/ mirror). */
+/** jsDelivr/GitHub CDN base for `legion-model-qwen3-8b` — see module doc's
+ * "CDN PRIMARY + ORIGIN FALLBACK". `@main` tracks the repo's default
+ * branch; the manifest + chunked artifacts are pushed there by the
+ * server-side rechunking pipeline (a separate, parallel effort — this
+ * module only needs to know the URL shape). */
+const CDN_BASE_URL = 'https://cdn.jsdelivr.net/gh/wdunn001/legion-model-qwen3-8b@main/';
+
+/** CDN (primary) per-layer package manifest for Qwen3-8B — see module doc's
+ * "CDN PRIMARY + ORIGIN FALLBACK". Every communal host resolves its
+ * assigned fragments via `fragmentsForRange` (including any per-artifact
+ * `chunks[]` the CDN's rechunking adds) against whichever base URL
+ * actually served the manifest — `useCommunalHost.ts`'s
+ * `resolveCommunalShardPlan` owns the primary/fallback fetch itself; this
+ * function only names the primary target. */
 export function chatManifestUrl(): string | undefined {
+  return `${CDN_BASE_URL}model-package.json`;
+}
+
+/** The original `.198`-mirror per-layer package manifest (layer-package
+ * format: shared/{metadata,embeddings,output}.gguf + layers/layer-NNN.gguf,
+ * each SHA-256'd, NO `chunks[]` — this origin never chunks). Used as the
+ * fallback base when the CDN manifest fetch fails — see module doc. Kept
+ * as its own function (not folded into `chatManifestUrl()`) so it stays
+ * exactly what it always was: the same-origin absolute path served from
+ * the `/webllm/` mirror, byte-for-byte what production ran on before the
+ * CDN migration. */
+export function chatManifestFallbackUrl(): string | undefined {
   return `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
 }
 
@@ -121,6 +155,10 @@ export interface ChatModelConfig {
   nEmbd: number;
   avgLayerBytes: number;
   manifestUrl: string | undefined;
+  /** Fetched only if `manifestUrl` (the CDN) fails — see module doc's "CDN
+   * PRIMARY + ORIGIN FALLBACK". Undefined whenever `manifestUrl` is (the
+   * test-model swap has neither). */
+  manifestFallbackUrl: string | undefined;
   shardUrls: () => readonly string[];
   /** True when this is the e2e/local-dev test-model swap, not the real
    * production target — surfaced so UI can (optionally) show a subtle
@@ -155,6 +193,7 @@ export function resolveChatModelConfig(): ChatModelConfig {
       nEmbd: TEST_N_EMBD,
       avgLayerBytes: TEST_AVG_LAYER_BYTES,
       manifestUrl: undefined,
+      manifestFallbackUrl: undefined,
       shardUrls: badShard
         ? () => [`/webllm/stages/${TEST_MODEL_ID}/does-not-exist-e2e.gguf`]
         : () => testShardUrls(),
@@ -172,6 +211,7 @@ export function resolveChatModelConfig(): ChatModelConfig {
     nEmbd: CHAT_N_EMBD,
     avgLayerBytes: CHAT_AVG_LAYER_BYTES,
     manifestUrl: chatManifestUrl(),
+    manifestFallbackUrl: chatManifestFallbackUrl(),
     shardUrls: () => chatShardUrls(),
     isTestModel: false,
     displayName: CHAT_MODEL_DISPLAY_NAME,

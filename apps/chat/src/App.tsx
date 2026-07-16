@@ -202,6 +202,7 @@ function Dashboard(props: {
     ctxSize: modelConfig.ctxSize,
     wireDtype: 'f32',
     manifestUrl: modelConfig.manifestUrl,
+    manifestFallbackUrl: modelConfig.manifestFallbackUrl,
     fallbackShardUrls: modelConfig.shardUrls,
     avgLayerBytes: modelConfig.avgLayerBytes,
     keepaliveEnabled: audioKeepalive.enabled,

@@ -82,7 +82,7 @@ import {
   type StageControlMessageFor,
   type StandingLedger,
 } from '@unstable-legion/core';
-import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
+import { createActivationWireDecoder, type ActivationWireDecoder, type FragmentChunk } from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
@@ -170,6 +170,9 @@ export interface UseStageHostOptions {
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
+    /** Parallel to shardUrls/shardHashes/shardBytes — see
+     * `stage-runtime`'s `StageDescriptor.shardChunks`. */
+    shardChunks?: readonly (readonly FragmentChunk[] | undefined)[];
     useMemoryShardStore?: boolean;
   } | null;
   /**
@@ -300,6 +303,8 @@ interface PendingOpen {
    * convention has no per-fragment hashes to source these from). */
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** M3 preload only — see `UseStageHostOptions.preloadStage`'s matching field. */
+  shardChunks?: readonly (readonly FragmentChunk[] | undefined)[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** Present only for `origin === 'session'` — lets the host build the
@@ -635,6 +640,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               shardUrls: req.shardUrls,
               shardHashes: req.shardHashes,
               shardBytes: req.shardBytes,
+              shardChunks: req.shardChunks,
               ctxSize: req.ctxSize,
               // +1: legion_stage_open always creates one FUSED session
               // internally (used here only for the warm-up dispatch below) —
@@ -691,6 +697,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardUrls: req.shardUrls,
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
+        shardChunks: req.shardChunks,
         useMemoryShardStore: req.useMemoryShardStore,
       };
       try {
