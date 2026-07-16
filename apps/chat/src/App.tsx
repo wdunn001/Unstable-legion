@@ -267,6 +267,7 @@ function Dashboard(props: {
     modelId: modelConfig.modelId,
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
+    manifestUrl: modelConfig.manifestUrl,
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
     wireDtype: 'f32',

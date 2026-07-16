@@ -359,6 +359,13 @@ export async function resolveCommunalShardPlan(
     opfsQuotaBytes: number;
     fetchImpl?: typeof fetch;
     manifestCache?: { url: string; manifest: LayerPackageManifest } | null;
+    /** Pull the shared embeddings fragment in ADDITION to the layer range.
+     * The driver's local stage-0 (`[0, driverLayers)`) is the FIRST stage and
+     * needs embeddings; communal hosts (which start at `driverLayers`, never
+     * layer 0) do not. Defaults to false so every existing communal-host
+     * caller is unchanged. Model-agnostic: the embeddings fragment and its
+     * size come entirely from the manifest — no hardcoded dimensions. */
+    includeEmbeddings?: boolean;
   },
 ): Promise<{ plan: ShardPlan; manifestCache: { url: string; manifest: LayerPackageManifest } | null }> {
   if (!opts.manifestUrl) {
@@ -376,7 +383,7 @@ export async function resolveCommunalShardPlan(
     cache = { url: opts.manifestUrl, manifest };
   }
   const manifest = cache.manifest;
-  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, false, claim.includeOutput);
+  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {
@@ -495,6 +502,18 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const manifestCacheRef = useRef<{ url: string; manifest: LayerPackageManifest } | null>(null);
   const opfsQuotaBytesRef = useRef<number>(OPFS_QUOTA_CEILING_BYTES);
   const tickInFlightRef = useRef(false);
+  // Anti-thundering-herd stagger, made remount-proof. A fresh claim must
+  // wait out `jitterMs` before committing (so N hosts don't stampede the
+  // same gap). The OLD implementation did that with `await sleep(jitterMs)`
+  // INSIDE the tick — but a background-tab timer throttle stretches that
+  // sleep for many seconds, and any effect remount during it flips the
+  // tick's local `cancelled` and discards the whole commit, so the host
+  // livelocks at 0% (claim decided, never loaded, no fetch, no error). This
+  // ref instead records the claim + a WALL-CLOCK deadline and SURVIVES
+  // remounts: any later tick (interval, scheduled re-tick, or the immediate
+  // tick a remount itself fires) commits it once `Date.now()` passes the
+  // deadline — throttle-proof, since the deadline is real time, not a timer.
+  const pendingClaimRef = useRef<{ claim: CommunalClaimRange; notBeforeMs: number } | null>(null);
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
 
@@ -735,6 +754,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         }
 
         if (!decision.claim) {
+          pendingClaimRef.current = null; // nothing to claim — drop any armed jitter
           if (phaseRef.current !== 'idle') setPhase('idle');
           return;
         }
@@ -744,11 +764,13 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         const changed = !claimsEqual(claimRef.current, decision.claim);
 
         if (!changed) {
-          // Same claim we already hold. If a load for it FAILED, honor the
-          // backoff window: re-issue the preload ONLY once the scheduled
-          // retry time arrives (never every tick), and never while a retry
-          // load is already in flight. Otherwise stay quiet — this is the
-          // idempotent no-op that replaces the old tight retry loop.
+          // Same claim we already hold — the jitter window is behind us.
+          pendingClaimRef.current = null;
+          // If a load for it FAILED, honor the backoff window: re-issue the
+          // preload ONLY once the scheduled retry time arrives (never every
+          // tick), and never while a retry load is already in flight.
+          // Otherwise stay quiet — the idempotent no-op that replaces the
+          // old tight retry loop.
           const retry = retryRef.current;
           if (retry && retry.key === rangeKey && !retry.inFlight && Date.now() >= retry.nextAttemptAt) {
             retry.inFlight = true;
@@ -758,16 +780,34 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           return;
         }
 
-        // A genuinely NEW claim — clear any prior failure/backoff, jitter,
-        // re-check the roster, then issue the load fresh (attempt 0).
+        // A genuinely NEW claim — clear any prior failure/backoff, then stage
+        // it behind the anti-thundering-herd jitter using a REMOUNT-PROOF
+        // wall-clock deadline (see `pendingClaimRef`) instead of a
+        // `setCancellable(await sleep)` that a background-tab throttle +
+        // remount would silently discard, livelocking the host at 0%.
         retryRef.current = null;
         setErrorState(undefined);
 
-        await new Promise((resolve) => setTimeout(resolve, decision.jitterMs));
-        if (cancelled) return;
-        // Re-check after the jitter delay — the roster may have moved and
-        // this claim may no longer be the right one (another peer beat us
-        // to it, or the gap closed already).
+        let armed = pendingClaimRef.current;
+        if (!armed || !claimsEqual(armed.claim, decision.claim)) {
+          // First sighting of this claim: arm the deadline. A quiet (no
+          // re-render) tab won't re-tick before the ~5s interval, so nudge a
+          // commit-tick just past the deadline; a busy tab's remounts
+          // re-drive the check for free. `jitterMs === 0` makes the deadline
+          // `now`, so it falls straight through to commit on this tick.
+          armed = { claim: decision.claim, notBeforeMs: Date.now() + decision.jitterMs };
+          pendingClaimRef.current = armed;
+          if (decision.jitterMs > 0) {
+            if (jitterTimer) clearTimeout(jitterTimer);
+            jitterTimer = setTimeout(() => void tick(), decision.jitterMs + 20);
+            return;
+          }
+        }
+        if (Date.now() < armed.notBeforeMs) return; // deadline not reached yet
+
+        // Deadline reached — re-check the roster (it may have moved: another
+        // peer beat us to this gap, or the gap closed) and commit fresh.
+        pendingClaimRef.current = null;
         const recheck = communalHostClaim({
           roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
           selfPeerId: safePeer.selfId,
