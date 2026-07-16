@@ -90,3 +90,23 @@ pieces above but are deliberately left for a follow-up:
 - **MCP-backed tools from a GPU-less node.** A tool node can front an MCP
   endpoint (`mcp.ts`'s `callMcpTool`) as a mesh tool; the advertise/dispatch
   path is unchanged, only the handler differs.
+
+## ChatML / Qwen3 integration (post-rebase note, 2026-07-16)
+
+`apps/chat` now prompts the communal model in **Qwen3 ChatML**
+(`apps/chat/src/chatPrompt.ts`) — which is good news for this workstream:
+`<tool_call>{"name": ..., "arguments": ...}</tool_call>` is Qwen3's NATIVE
+tool-call emission format, so `parseToolCalls` matches what the deployed
+model actually produces without any adapter. Two things the
+`useCommunalChat` wiring step must do when it lands:
+
+1. **Declare tools in the system turn.** Qwen3 only emits `<tool_call>`
+   blocks when the system prompt lists the available functions (its template
+   wraps them in a `<tools>…</tools>` JSON block). `buildPrompt` needs an
+   optional tools parameter fed from the mesh's advertised tool registry
+   (`findPeersByTool` sources — see `routing.ts`).
+2. **Re-prefill results the way Qwen3 expects.** Qwen3's template renders a
+   tool result as a user-side `<tool_response>…</tool_response>` turn, NOT
+   a bare `<tool_result>` block. `buildToolResultBlock`'s output is the
+   mesh-level convention (shared with `useDirector`); the chat app should
+   wrap it accordingly when folding it back through `chatPrompt.ts`.
