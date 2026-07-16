@@ -56,7 +56,13 @@ import {
   type Peer,
   type StandingLedger,
 } from '@unstable-legion/core';
-import { fragmentsForRange, manifestTiesEmbeddings, parseLayerPackageManifest, type LayerPackageManifest } from '@unstable-legion/stage-runtime';
+import {
+  fragmentsForRange,
+  manifestTiesEmbeddings,
+  parseLayerPackageManifest,
+  type FragmentChunk,
+  type LayerPackageManifest,
+} from '@unstable-legion/stage-runtime';
 import { useMeshRoster } from './useMeshRoster.js';
 import { useStageHost, type UseStageHostSession, type UseStageHostHandle } from './useStageHost.js';
 import { sanitizeWasmHeapBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
@@ -105,6 +111,15 @@ export interface UseCommunalHostOptions {
    * OPFS-quota check is skipped (no per-fragment byte accounting exists
    * without a manifest). */
   manifestUrl?: string;
+  /** Second manifest URL tried ONLY if `manifestUrl` fails to fetch (throws
+   * or a non-OK response) — the CDN-primary/origin-fallback design (see
+   * `chatModelSource.ts`'s module doc). Every fragment `fragmentsForRange`
+   * resolves is anchored against WHICHEVER of the two URLs actually served
+   * the manifest, not unconditionally against `manifestUrl` — a manifest
+   * fetched from the fallback origin resolves its artifact `path`s (and
+   * any `chunks[]`) against that same origin. Ignored when `manifestUrl`
+   * is absent. */
+  manifestFallbackUrl?: string;
   fallbackShardUrls?: () => readonly string[];
   /** Uniform per-layer byte estimate, used to convert this peer's
    * WebGPU/wasm capacity into a layer COUNT for `communalHostClaim`. Real
@@ -199,7 +214,69 @@ interface ShardPlan {
   shardUrls: readonly string[];
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** Parallel to shardUrls/shardHashes/shardBytes — see
+   * `stage-runtime`'s `StageDescriptor.shardChunks` (this is where a
+   * CDN-chunked artifact's `Fragment.chunks` survives the flattening into
+   * these parallel arrays; without it a chunked shard would be requested
+   * whole at shardUrls[i], which the CDN doesn't serve). Undefined
+   * entries are shards that aren't chunked. */
+  shardChunks?: readonly (readonly FragmentChunk[] | undefined)[];
   useMemoryShardStore: boolean;
+}
+
+/**
+ * `fragmentsForRange`'s `manifestBaseUrl` contract requires a FULLY
+ * QUALIFIED absolute URL — the WHATWG `URL` constructor rejects a
+ * page-relative base (e.g. `/webllm/stages/m/model-package.json`) even
+ * when the thing being resolved against it is itself already absolute
+ * (`new URL(x, base)` eagerly parses `base` first, unconditionally). A
+ * same-origin manifest path like the `.198` mirror's is exactly such a
+ * relative base, so it's resolved against `location.origin` here before
+ * ever being used as one. Outside a browser (SSR/tests, no `location`)
+ * it's returned unchanged — callers there are expected to supply an
+ * already-absolute URL, same convention `resolveChatModelConfig` uses.
+ */
+function toAbsoluteManifestUrl(url: string): string {
+  if (typeof location === 'undefined') return url;
+  try {
+    return new URL(url, location.origin).toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Fetch+parse a layer-package manifest from `primaryUrl`, falling back to
+ * `fallbackUrl` (when supplied) on ANY failure — a thrown fetch, a non-OK
+ * response, or a body that fails manifest validation. Returns the URL that
+ * actually served the manifest alongside it (resolved absolute — see
+ * `toAbsoluteManifestUrl`), so the caller resolves every fragment
+ * (`fragmentsForRange`'s `manifestBaseUrl`) against WHICHEVER origin
+ * actually served it, not unconditionally against `primaryUrl` — a
+ * manifest served by the fallback origin must resolve its artifact
+ * `path`s (and any `chunks[]`) relative to that same origin, since a CDN
+ * path wouldn't exist there.
+ */
+async function fetchLayerPackageManifest(
+  primaryUrl: string,
+  fallbackUrl: string | undefined,
+  fetchImpl: typeof fetch,
+): Promise<{ url: string; manifest: LayerPackageManifest }> {
+  const candidates = fallbackUrl ? [primaryUrl, fallbackUrl] : [primaryUrl];
+  let lastError: unknown;
+  for (const url of candidates) {
+    try {
+      const res = await fetchImpl(url);
+      if (!res.ok) throw new Error(`failed to fetch communal manifest ${url}: ${res.status} ${res.statusText}`);
+      const manifest = parseLayerPackageManifest(await res.json());
+      return { url: toAbsoluteManifestUrl(url), manifest };
+    } catch (err) {
+      lastError = err;
+      // Try the next candidate (typically the .198 origin fallback) — see
+      // chatModelSource.ts's CDN-primary-then-origin-fallback design.
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`failed to fetch communal manifest from any of: ${candidates.join(', ')}`);
 }
 
 /**
@@ -210,11 +287,16 @@ interface ShardPlan {
  * otherwise. A communal host never sets `isFirst` for `fragmentsForRange`
  * purposes — the driver always owns embeddings locally (`driverLayers`),
  * a communal claim never starts before that boundary.
+ *
+ * `manifestFallbackUrl` (typically the `.198` origin mirror) is tried ONLY
+ * if `manifestUrl` (typically the CDN) fails to fetch — see
+ * `fetchLayerPackageManifest`.
  */
 export async function resolveCommunalShardPlan(
   claim: CommunalClaimRange,
   opts: {
     manifestUrl?: string;
+    manifestFallbackUrl?: string;
     fallbackShardUrls?: () => readonly string[];
     opfsQuotaBytes: number;
     fetchImpl?: typeof fetch;
@@ -229,21 +311,31 @@ export async function resolveCommunalShardPlan(
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
   let cache = opts.manifestCache ?? null;
-  if (!cache || cache.url !== opts.manifestUrl) {
-    const res = await fetchImpl(opts.manifestUrl);
-    if (!res.ok) throw new Error(`failed to fetch communal manifest ${opts.manifestUrl}: ${res.status} ${res.statusText}`);
-    const manifest = parseLayerPackageManifest(await res.json());
-    cache = { url: opts.manifestUrl, manifest };
+  // Compared against `cache.url`, which `fetchLayerPackageManifest` always
+  // resolves to an absolute URL — resolve these the same way so a cached
+  // manifest fetched via a page-relative candidate is still recognized as
+  // a hit (see `toAbsoluteManifestUrl`).
+  const candidateUrls = [toAbsoluteManifestUrl(opts.manifestUrl), ...(opts.manifestFallbackUrl ? [toAbsoluteManifestUrl(opts.manifestFallbackUrl)] : [])];
+  if (!cache || !candidateUrls.includes(cache.url)) {
+    cache = await fetchLayerPackageManifest(opts.manifestUrl, opts.manifestFallbackUrl, fetchImpl);
   }
   const manifest = cache.manifest;
-  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, false, claim.includeOutput);
+  // Resolve against `cache.url` — whichever of the two candidates actually
+  // served the manifest — never unconditionally against `opts.manifestUrl`.
+  const fragments = fragmentsForRange(manifest, cache.url, claim.layerStart, claim.layerEnd, false, claim.includeOutput);
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
+  const shardChunks = fragments.map((f) => f.chunks);
+  const anyChunked = shardChunks.some((c) => c && c.length > 0);
   return {
     plan: {
       shardUrls: fragments.map((f) => f.url),
       shardHashes: fragments.map((f) => f.sha256),
       shardBytes: fragments.map((f) => f.bytes),
+      // Only set when at least one fragment is actually chunked — keeps
+      // the non-chunked (today's .198-only) case identical to before this
+      // field existed rather than always carrying an all-undefined array.
+      ...(anyChunked ? { shardChunks } : {}),
       useMemoryShardStore,
     },
     manifestCache: cache,
@@ -265,6 +357,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     ctxSize,
     wireDtype,
     manifestUrl,
+    manifestFallbackUrl,
     fallbackShardUrls,
     avgLayerBytes,
     reassemblyIntervalMs = DEFAULT_REASSEMBLY_MS,
@@ -579,6 +672,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       try {
         const { plan, manifestCache } = await resolveCommunalShardPlan(target, {
           manifestUrl,
+          manifestFallbackUrl,
           fallbackShardUrls,
           opfsQuotaBytes: opfsQuotaBytesRef.current,
           manifestCache: manifestCacheRef.current,
@@ -595,6 +689,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardUrls: plan.shardUrls,
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
+          shardChunks: plan.shardChunks,
           useMemoryShardStore: plan.useMemoryShardStore,
         });
         setSuppressAdvertise(false);
@@ -625,7 +720,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // cancelling the retry it was issuing. The interval alone drives the
     // cadence; the loop only decides intent (useStageHost owns resources).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
+  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, manifestFallbackUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
 
   useEffect(() => {
     if (!enabled) {
