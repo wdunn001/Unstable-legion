@@ -22,7 +22,10 @@ export function MessageBubble(props: MessageBubbleProps) {
         {streaming && <span className="msg-cursor" aria-hidden="true" />}
         {message.reconnected && (
           <div className="msg-reconnected" title="A host went offline mid-reply; the mesh picked up from where it left off on another host.">
-            <span aria-hidden="true">⟳</span> reconnected via another host
+            {/* Plain status marker, not a button — this already happened
+                (past tense, nothing to retry), and a refresh-style glyph
+                here reads as a clickable affordance it isn't. */}
+            <span aria-hidden="true">•</span> reconnected via another host
           </div>
         )}
       </div>

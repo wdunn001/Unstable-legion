@@ -456,8 +456,19 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
         stepTimeoutMs = Math.max(stepTimeoutFloorMs, 10 * meanOf(tpotSamples));
         generatedTokens.push(tok.token);
         if (tok.done) {
-          notifyRemotesDone('driver finished generation (eos)');
+          // Order matters: `finish()` first (sets `finished = true`,
+          // unsubscribes OUR OWN onTool listener) THEN notify — a
+          // self-hosted hop's `stage.stop` loops back through the SAME
+          // `peer.onTool` this driver listens on (see peer.ts's
+          // self-loopback doc comment), and the 'stage.stop' branch below
+          // would otherwise misread our own outbound "session's done"
+          // courtesy notice as an external host telling US to replan,
+          // firing a spurious 'stall' event a tick after a clean finish.
+          // Reversing this order is safe: notifyRemotesDone only needs
+          // `currentRemotePeerIds`/`opts.peer.sendTool`, neither of which
+          // `finish()` touches.
           void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+          notifyRemotesDone('driver finished generation (eos)');
           emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           return;
         }
@@ -468,8 +479,10 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       }
     }
     if (!aborted && !finished) {
-      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
+      // See the tok.done branch above for why `finish()` must run BEFORE
+      // notifyRemotesDone (self-hosted-hop stage.stop echo).
       void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
       emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
     }
   }
@@ -485,8 +498,10 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(plan), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {
-        notifyRemotesDone('driver finished generation (eos)');
+        // See runDecodeLoop's tok.done branch above for why `finish()`
+        // must run BEFORE notifyRemotesDone (self-hosted-hop stage.stop echo).
         void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+        notifyRemotesDone('driver finished generation (eos)');
         emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         return;
       }
@@ -928,8 +943,19 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
         stepTimeoutMs = Math.max(stepTimeoutFloorMs, 10 * meanOf(tpotSamples));
         generatedTokens.push(tok.token);
         if (tok.done) {
-          notifyRemotesDone('driver finished generation (eos)');
+          // Order matters: `finish()` first (sets `finished = true`,
+          // unsubscribes OUR OWN onTool listener) THEN notify — a
+          // self-hosted hop's `stage.stop` loops back through the SAME
+          // `peer.onTool` this driver listens on (see peer.ts's
+          // self-loopback doc comment), and the 'stage.stop' branch below
+          // would otherwise misread our own outbound "session's done"
+          // courtesy notice as an external host telling US to replan,
+          // firing a spurious 'stall' event a tick after a clean finish.
+          // Reversing this order is safe: notifyRemotesDone only needs
+          // `currentRemotePeerIds`/`opts.peer.sendTool`, neither of which
+          // `finish()` touches.
           void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+          notifyRemotesDone('driver finished generation (eos)');
           emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           return;
         }
@@ -940,8 +966,10 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       }
     }
     if (!aborted && !finished) {
-      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
+      // See the tok.done branch above for why `finish()` must run BEFORE
+      // notifyRemotesDone (self-hosted-hop stage.stop echo).
       void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
       emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
     }
   }
@@ -956,8 +984,10 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {
-        notifyRemotesDone('driver finished generation (eos)');
+        // See runDecodeLoop's tok.done branch above for why `finish()`
+        // must run BEFORE notifyRemotesDone (self-hosted-hop stage.stop echo).
         void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+        notifyRemotesDone('driver finished generation (eos)');
         emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         return;
       }

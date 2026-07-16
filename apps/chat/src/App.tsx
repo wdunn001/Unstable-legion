@@ -219,6 +219,7 @@ function Dashboard(props: {
     standingLedger,
     telemetry: trackEvent,
     contributionBudgetBytes: hostingConsent.contributionBudgetBytes,
+    maxLayersOverride: hostingConsent.maxLayersOverride,
     log,
   });
 
@@ -242,8 +243,23 @@ function Dashboard(props: {
     [gpuDetection.limits?.maxStorageBufferBindingSize, hostingConsent.contributionBudgetBytes, modelConfig.avgLayerBytes],
   );
   const communalLayerCount = Math.max(0, modelConfig.totalLayers - modelConfig.driverLayers);
-  const layersHosted = Math.max(0, Math.min(communalLayerCount, Math.floor(weightBudgetBytes / modelConfig.avgLayerBytes)));
-  const capacitySummaryLabel = `Hosting up to ${layersHosted} of ${communalLayerCount} layers (~${formatVramLabel(weightBudgetBytes)})`;
+  const byteBudgetLayersHosted = Math.max(0, Math.min(communalLayerCount, Math.floor(weightBudgetBytes / modelConfig.avgLayerBytes)));
+  // "Layers to host: N of 34" REPLACES the byte-budget-derived count when
+  // set — mirrors `useCommunalHost.ts`'s own `selfCapacityLayers` derivation
+  // exactly, so this label never promises a number the host loop wouldn't
+  // actually claim (same discipline `weightBudgetBytes` above already follows
+  // for the GB-budget path).
+  const layersHosted =
+    hostingConsent.maxLayersOverride !== undefined
+      ? Math.max(0, Math.min(communalLayerCount, hostingConsent.maxLayersOverride))
+      : byteBudgetLayersHosted;
+  // GB readout follows WHICHEVER budget is actually in effect — once a
+  // layers override is set it no longer tracks `weightBudgetBytes` (the
+  // GB-budget path), so re-derive it from the effective layer count
+  // instead of showing a stale/mismatched GB figure.
+  const effectiveApproxBytes =
+    hostingConsent.maxLayersOverride !== undefined ? layersHosted * modelConfig.avgLayerBytes : weightBudgetBytes;
+  const capacitySummaryLabel = `Hosting up to ${layersHosted} of ${communalLayerCount} layers (~${formatVramLabel(effectiveApproxBytes)})`;
 
   const chat = useCommunalChat({
     peer,
@@ -251,6 +267,7 @@ function Dashboard(props: {
     modelId: modelConfig.modelId,
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
+    manifestUrl: modelConfig.manifestUrl,
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
     wireDtype: 'f32',
@@ -483,7 +500,9 @@ function Dashboard(props: {
               onChangeBudget: hostingConsent.setContributionBudgetBytes,
               layersHosted,
               totalLayers: communalLayerCount,
-              approxGbLabel: formatVramLabel(weightBudgetBytes),
+              approxGbLabel: formatVramLabel(effectiveApproxBytes),
+              maxLayersOverride: hostingConsent.maxLayersOverride,
+              onChangeMaxLayers: hostingConsent.setMaxLayersOverride,
             },
           }}
           audioKeepalive={audioKeepalive}

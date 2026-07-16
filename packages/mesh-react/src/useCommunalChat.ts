@@ -67,6 +67,7 @@ import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './sta
 import { emitTelemetry, type MeshTelemetrySink } from './meshResilience.js';
 import { acquireLeaderLock } from './useStagePipeline.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import { resolveCommunalShardPlan, OPFS_QUOTA_CEILING_BYTES } from './useCommunalHost.js';
 import {
   STAGE_CTX_SIZE,
   STAGE_DRIVER_LAYERS,
@@ -88,6 +89,17 @@ export interface UseCommunalChatOptions {
   /** Must match every communal host's own `driverLayers` assumption — see
    * this module's doc comment. Default `STAGE_DRIVER_LAYERS`. */
   driverLayers?: number;
+  /** Per-layer package manifest URL (the SAME one communal hosts use). When
+   * set, the driver's local stage-0 resolves its shards from the manifest
+   * (embeddings + layers `[0, driverLayers)`) via `fragmentsForRange` —
+   * model-agnostic, no monolithic `full.gguf` fetch and no hardcoded
+   * dimensions. Without it, stage-0 falls back to `stageShardUrls()` (the
+   * test-model path). CRITICAL: a driver whose stage-0 loads a DIFFERENT
+   * model file than the communal hosts' sharded package produces
+   * wrong-width activations → the remote stage rejects the frame
+   * ("activation input payload is N bytes, expected M"). The manifest is the
+   * single source of truth that keeps every stage on the same model. */
+  manifestUrl?: string;
   nEmbd?: number;
   ctxSize?: number;
   wireDtype?: 'f32' | 'f16';
@@ -154,6 +166,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     modelId = STAGE_MODEL_ID,
     totalLayers = STAGE_TOTAL_LAYERS,
     driverLayers = STAGE_DRIVER_LAYERS,
+    manifestUrl,
     nEmbd = STAGE_N_EMBD,
     ctxSize = STAGE_CTX_SIZE,
     wireDtype = 'f32',
@@ -247,15 +260,37 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           `[communal-chat] route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
         );
 
+        // Resolve stage-0's shards from the SAME per-layer manifest the
+        // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
+        // the monolithic `full.gguf` fallback. This keeps every stage on one
+        // model: a stage-0 loaded from a different artifact than the sharded
+        // package emits wrong-width activations the remote stage rejects
+        // ("activation input payload is N bytes, expected M"). Model-agnostic
+        // — widths/fragments come from the manifest. Falls back to
+        // `stageShardUrls()` only when no manifest is set (the test model).
+        const { plan: stage0Plan } = await resolveCommunalShardPlan(
+          { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+          {
+            manifestUrl,
+            fallbackShardUrls: stageShardUrls,
+            includeEmbeddings: true,
+            opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+          },
+        );
         const localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
-        await localWorker.load({
-          modelId,
-          layerStart: 0,
-          layerEnd: driverLayers,
-          totalLayers,
-          shardUrls: stageShardUrls(),
-          ctxSize,
-        });
+        await localWorker.load(
+          {
+            modelId,
+            layerStart: 0,
+            layerEnd: driverLayers,
+            totalLayers,
+            shardUrls: stage0Plan.shardUrls,
+            shardHashes: stage0Plan.shardHashes,
+            shardBytes: stage0Plan.shardBytes,
+            ctxSize,
+          },
+          { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+        );
         log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
         await warmUpStageWorker(localWorker, log);
         log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);

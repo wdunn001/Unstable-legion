@@ -68,6 +68,7 @@ import {
   type ColocationCoordinatorOptions,
 } from './colocation.js';
 import type { StageWorkerLog } from './stageWorkerClient.js';
+import type { StageWorkerLoadProgress } from './stageWorkerProtocol.js';
 import type { PriorityScoreFn } from './stageSessionAdmission.js';
 import {
   claimKey,
@@ -91,6 +92,15 @@ import {
  * the smaller, safer number either way).
  */
 export const OPFS_QUOTA_CEILING_BYTES = 3_300_000_000;
+
+/**
+ * Safety headroom subtracted from a GENUINE, generous quota estimate
+ * (persisted storage, or a UA reporting real available disk) — never
+ * claim the last byte of available storage (other origins/apps share the
+ * same disk budget; a hair-thin margin risks a mid-write
+ * QuotaExceededError on a slow/large final shard).
+ */
+export const OPFS_QUOTA_SAFETY_MARGIN_BYTES = 1_500_000_000;
 
 export interface UseCommunalHostOptions {
   /** Operator toggle — "participate in the communal pipeline". */
@@ -158,6 +168,28 @@ export interface UseCommunalHostOptions {
    */
   contributionBudgetBytes?: number;
   /**
+   * Operator opt-in (apps/chat's "Layers to host: N of 34" slider) — a
+   * DIRECT layer-count cap on the claim WIDTH the assembly loop's greedy
+   * lowest-uncovered-gap claim (`communalHostClaim`, `communalAssembly.ts`)
+   * is willing to take, applied to `selfCapacityLayers` — the SAME
+   * capacity input `contributionBudgetBytes`/VRAM detection ultimately
+   * feeds (see `hostCapacityBytes`'s doc comment: capacity is always
+   * "this host's usable budget for one stage", byte-derived-by-default).
+   * This is an ALTERNATE, more direct way to express that same budget for
+   * users who'd rather pick a layer count than reason about GB — it
+   * REPLACES the byte-derived count (not intersected with it) once set,
+   * mirroring `contributionBudgetBytes`'s own "operator self-report,
+   * clamped only for sanity" trust model (worst case of setting it too
+   * high is a slow/failed load — the hard safety ceiling is
+   * `wasmHeapBudget`/`WASM_HEAP_CEILING_BYTES`, untouched by this field,
+   * same as `contributionBudgetBytes`). `undefined` = unchanged
+   * byte-budget-derived behavior. Clamped to `>= 0`; `communalHostClaim`
+   * itself already clamps the resulting claim width to the actual gap
+   * size, so no upper clamp against `totalLayers - driverLayers` is
+   * needed here.
+   */
+  maxLayersOverride?: number;
+  /**
    * Same-origin tab colocation (see `colocation.ts`'s module doc) —
    * collapses hosting to exactly ONE tab per browser profile per machine.
    * Default `true`. Set `false` to opt this consumer OUT and restore the
@@ -204,6 +236,12 @@ export interface UseCommunalHostHandle {
   nextRetryAtMs?: number;
   /** How many load attempts have failed for the current claim. 0 = healthy. */
   retryAttempt: number;
+  /** Per-shard download progress for the stage currently loading — see
+   * `UseStageHostHandle.loadProgress`'s doc comment. Undefined outside an
+   * in-flight load (nothing claimed yet, or already fully loaded/active).
+   * On a follower tab (colocation), this mirrors the leader's relayed
+   * snapshot instead of running its own load. */
+  downloadProgress?: StageWorkerLoadProgress;
 }
 
 const DEFAULT_REASSEMBLY_MS = 5000;
@@ -226,7 +264,56 @@ function colocationLikelySupported(): boolean {
   );
 }
 
-async function probeOpfsQuotaBytes(override?: number): Promise<number> {
+/**
+ * Best-effort: ask the UA not to evict this origin's OPFS storage under
+ * storage pressure — called once hosting is actually opted into (not on
+ * cold mount, before the user has agreed to anything). On Chromium this
+ * both makes OPFS non-evictable AND typically unlocks a far larger real
+ * quota (a substantial fraction of disk instead of the small default
+ * per-origin slice) — see `probeOpfsQuotaBytes`'s `persisted` param,
+ * which is what actually stops over-3.3GB claims being forced onto the
+ * (never-persisted, wiped-on-retry) in-memory shard store. Never throws;
+ * returns whether persistence is granted (false on any failure or an
+ * unsupported browser) and logs the grant result when `log` is supplied.
+ */
+export async function requestPersistentStorage(log: StageWorkerLog = () => undefined): Promise<boolean> {
+  try {
+    if (typeof navigator === 'undefined' || typeof navigator.storage?.persist !== 'function') return false;
+    const already = (await navigator.storage.persisted?.()) ?? false;
+    if (already) return true;
+    const granted = await navigator.storage.persist();
+    log(`[communal-host] navigator.storage.persist() ${granted ? 'GRANTED' : 'denied'}`);
+    return granted;
+  } catch (err) {
+    log(`[communal-host] navigator.storage.persist() failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Resolves the OPFS byte budget `resolveCommunalShardPlan` weighs a
+ * claim's total fragment bytes against to decide OPFS-cached vs
+ * in-memory (see that function's `useMemoryShardStore` derivation).
+ *
+ * Used to unconditionally cap this at `OPFS_QUOTA_CEILING_BYTES`
+ * (~3.3GB) regardless of what the UA actually reported — which meant
+ * ANY claim bigger than that (a full 34-layer Qwen3-8B range is ~4.7GB)
+ * got the in-memory store, which doesn't survive a worker restart: a
+ * stall-watchdog retry (or a page reload) re-downloaded every shard from
+ * scratch every time, even shards already fetched moments earlier.
+ *
+ * Now: a GENUINE generous estimate — `persisted` storage (see
+ * `requestPersistentStorage`), or a UA reporting more real available
+ * space than the conservative ceiling on its own — is trusted directly
+ * (minus `OPFS_QUOTA_SAFETY_MARGIN_BYTES`), so a host with disk to spare
+ * gets its whole claim OPFS-cached and persisted. The in-memory store
+ * stays the fallback ONLY when the real available quota genuinely can't
+ * fit the range (a small/default-looking estimate, or `estimate()`
+ * itself unavailable/erroring) — `OPFS_QUOTA_CEILING_BYTES` is the
+ * conservative floor for exactly that case, not the default ceiling for
+ * every host.
+ */
+async function probeOpfsQuotaBytes(override?: number, persisted = false): Promise<number> {
   if (override !== undefined) return override;
   try {
     if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
@@ -235,6 +322,10 @@ async function probeOpfsQuotaBytes(override?: number): Promise<number> {
       const usage = est.usage ?? 0;
       const available = quota - usage;
       if (Number.isFinite(available) && available > 0) {
+        const genuinelyGenerous = persisted || available > OPFS_QUOTA_CEILING_BYTES;
+        if (genuinelyGenerous) {
+          return Math.max(0, available - OPFS_QUOTA_SAFETY_MARGIN_BYTES);
+        }
         return Math.min(available, OPFS_QUOTA_CEILING_BYTES);
       }
     }
@@ -268,6 +359,13 @@ export async function resolveCommunalShardPlan(
     opfsQuotaBytes: number;
     fetchImpl?: typeof fetch;
     manifestCache?: { url: string; manifest: LayerPackageManifest } | null;
+    /** Pull the shared embeddings fragment in ADDITION to the layer range.
+     * The driver's local stage-0 (`[0, driverLayers)`) is the FIRST stage and
+     * needs embeddings; communal hosts (which start at `driverLayers`, never
+     * layer 0) do not. Defaults to false so every existing communal-host
+     * caller is unchanged. Model-agnostic: the embeddings fragment and its
+     * size come entirely from the manifest — no hardcoded dimensions. */
+    includeEmbeddings?: boolean;
   },
 ): Promise<{ plan: ShardPlan; manifestCache: { url: string; manifest: LayerPackageManifest } | null }> {
   if (!opts.manifestUrl) {
@@ -285,7 +383,7 @@ export async function resolveCommunalShardPlan(
     cache = { url: opts.manifestUrl, manifest };
   }
   const manifest = cache.manifest;
-  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, false, claim.includeOutput);
+  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {
@@ -404,6 +502,18 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const manifestCacheRef = useRef<{ url: string; manifest: LayerPackageManifest } | null>(null);
   const opfsQuotaBytesRef = useRef<number>(OPFS_QUOTA_CEILING_BYTES);
   const tickInFlightRef = useRef(false);
+  // Anti-thundering-herd stagger, made remount-proof. A fresh claim must
+  // wait out `jitterMs` before committing (so N hosts don't stampede the
+  // same gap). The OLD implementation did that with `await sleep(jitterMs)`
+  // INSIDE the tick — but a background-tab timer throttle stretches that
+  // sleep for many seconds, and any effect remount during it flips the
+  // tick's local `cancelled` and discards the whole commit, so the host
+  // livelocks at 0% (claim decided, never loaded, no fetch, no error). This
+  // ref instead records the claim + a WALL-CLOCK deadline and SURVIVES
+  // remounts: any later tick (interval, scheduled re-tick, or the immediate
+  // tick a remount itself fires) commits it once `Date.now()` passes the
+  // deadline — throttle-proof, since the deadline is real time, not a timer.
+  const pendingClaimRef = useRef<{ claim: CommunalClaimRange; notBeforeMs: number } | null>(null);
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
 
@@ -556,7 +666,14 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       { ...safeLimits, contributionBudgetBytes: opts.contributionBudgetBytes },
       { minBytes: avgLayerBytes },
     );
-    const selfCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
+    const byteDerivedCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
+    // "Layers to host: N of 34" REPLACES the byte-derived count once set —
+    // see `maxLayersOverride`'s doc comment for why this isn't intersected
+    // with `byteDerivedCapacityLayers` instead.
+    const selfCapacityLayers =
+      opts.maxLayersOverride !== undefined
+        ? Math.max(0, Math.floor(opts.maxLayersOverride))
+        : byteDerivedCapacityLayers;
     let cancelled = false;
     let jitterTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -637,6 +754,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         }
 
         if (!decision.claim) {
+          pendingClaimRef.current = null; // nothing to claim — drop any armed jitter
           if (phaseRef.current !== 'idle') setPhase('idle');
           return;
         }
@@ -646,11 +764,13 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         const changed = !claimsEqual(claimRef.current, decision.claim);
 
         if (!changed) {
-          // Same claim we already hold. If a load for it FAILED, honor the
-          // backoff window: re-issue the preload ONLY once the scheduled
-          // retry time arrives (never every tick), and never while a retry
-          // load is already in flight. Otherwise stay quiet — this is the
-          // idempotent no-op that replaces the old tight retry loop.
+          // Same claim we already hold — the jitter window is behind us.
+          pendingClaimRef.current = null;
+          // If a load for it FAILED, honor the backoff window: re-issue the
+          // preload ONLY once the scheduled retry time arrives (never every
+          // tick), and never while a retry load is already in flight.
+          // Otherwise stay quiet — the idempotent no-op that replaces the
+          // old tight retry loop.
           const retry = retryRef.current;
           if (retry && retry.key === rangeKey && !retry.inFlight && Date.now() >= retry.nextAttemptAt) {
             retry.inFlight = true;
@@ -660,16 +780,34 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           return;
         }
 
-        // A genuinely NEW claim — clear any prior failure/backoff, jitter,
-        // re-check the roster, then issue the load fresh (attempt 0).
+        // A genuinely NEW claim — clear any prior failure/backoff, then stage
+        // it behind the anti-thundering-herd jitter using a REMOUNT-PROOF
+        // wall-clock deadline (see `pendingClaimRef`) instead of a
+        // `setCancellable(await sleep)` that a background-tab throttle +
+        // remount would silently discard, livelocking the host at 0%.
         retryRef.current = null;
         setErrorState(undefined);
 
-        await new Promise((resolve) => setTimeout(resolve, decision.jitterMs));
-        if (cancelled) return;
-        // Re-check after the jitter delay — the roster may have moved and
-        // this claim may no longer be the right one (another peer beat us
-        // to it, or the gap closed already).
+        let armed = pendingClaimRef.current;
+        if (!armed || !claimsEqual(armed.claim, decision.claim)) {
+          // First sighting of this claim: arm the deadline. A quiet (no
+          // re-render) tab won't re-tick before the ~5s interval, so nudge a
+          // commit-tick just past the deadline; a busy tab's remounts
+          // re-drive the check for free. `jitterMs === 0` makes the deadline
+          // `now`, so it falls straight through to commit on this tick.
+          armed = { claim: decision.claim, notBeforeMs: Date.now() + decision.jitterMs };
+          pendingClaimRef.current = armed;
+          if (decision.jitterMs > 0) {
+            if (jitterTimer) clearTimeout(jitterTimer);
+            jitterTimer = setTimeout(() => void tick(), decision.jitterMs + 20);
+            return;
+          }
+        }
+        if (Date.now() < armed.notBeforeMs) return; // deadline not reached yet
+
+        // Deadline reached — re-check the roster (it may have moved: another
+        // peer beat us to this gap, or the gap closed) and commit fresh.
+        pendingClaimRef.current = null;
         const recheck = communalHostClaim({
           roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
           selfPeerId: safePeer.selfId,
@@ -752,7 +890,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // immediately rather than continuing to compute claims it'll never
     // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
 
   useEffect(() => {
     if (!hostingActive) {
@@ -803,9 +941,22 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       errorMessage,
       retrying: !!errorState?.retrying,
       retryAttempt: errorState?.attempt ?? 0,
+      downloadProgress: host.loadProgress,
       ts: Date.now(),
     });
-  }, [hostingActive, phase, claim, host.active, host.sessions.length, host.tokensDecoded, host.maxSessions, host.queueLength, errorMessage, errorState]);
+  }, [
+    hostingActive,
+    phase,
+    claim,
+    host.active,
+    host.sessions.length,
+    host.tokensDecoded,
+    host.maxSessions,
+    host.queueLength,
+    errorMessage,
+    errorState,
+    host.loadProgress,
+  ]);
 
   // ── Follower view — mirror the leader's relayed status instead of this
   // tab's own (intentionally idle) local state. `bumpSharedStatusTick`
@@ -828,6 +979,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       retrying: shared?.retrying ?? false,
       nextRetryAtMs: undefined,
       retryAttempt: shared?.retryAttempt ?? 0,
+      downloadProgress: shared?.downloadProgress,
     };
   }
 
@@ -846,5 +998,6 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     retrying: !!errorState?.retrying,
     nextRetryAtMs: errorState?.nextAttemptAtMs,
     retryAttempt: errorState?.attempt ?? 0,
+    downloadProgress: host.loadProgress,
   };
 }

@@ -52,7 +52,7 @@ export {
 } from './guards.js';
 
 // ── Trystero peer + roster ──────────────────────────────────────────
-export { joinMesh, type Peer, type PeerOptions, type JoinRoomFn, type TrysteroRoom } from './peer.js';
+export { joinMesh, splitPeerTarget, type Peer, type PeerOptions, type JoinRoomFn, type TrysteroRoom, type SplitPeerTarget } from './peer.js';
 export { Roster, type RosterOptions } from './roster.js';
 
 // ── Phase C: pipeline-split stage-control protocol (over `tc`) ──────

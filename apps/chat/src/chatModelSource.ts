@@ -95,7 +95,17 @@ export function chatShardUrls(baseUrl?: string): readonly string[] {
  * full.gguf is fetched (it isn't even staged for 8B). Same-origin absolute
  * path (served from the /webllm/ mirror). */
 export function chatManifestUrl(): string | undefined {
-  return `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
+  const path = `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
+  // MUST be absolute: resolveCommunalShardPlan feeds this to
+  // `fragmentsForRange(manifest, manifestUrl, …)`, which resolves each
+  // fragment via `new URL(fragment.path, manifestUrl)` — and new URL()
+  // throws "Invalid base URL" when the base is a site-relative string.
+  // (The unit tests never caught this: they all pass an absolute
+  // `https://x/model-package.json`.) Resolve against the current origin;
+  // fall back to the bare path only in non-browser/SSR/test contexts.
+  return typeof location !== 'undefined' && location.origin
+    ? new URL(path, location.origin).toString()
+    : path;
 }
 
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI

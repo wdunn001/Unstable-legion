@@ -84,10 +84,11 @@ import {
 } from '@unstable-legion/core';
 import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
-import type { WireActivationFrame } from './stageWorkerProtocol.js';
+import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import { extractHttpStatus, type StageHostLifecycleEvent } from './meshResilience.js';
+import { runWithStallWatchdog, StallTimeoutError } from './loadWatchdog.js';
 import {
   canAdmitNow,
   enqueue,
@@ -276,11 +277,27 @@ export interface UseStageHostHandle {
    * backoff + the UI's error card. Distinct from `lastError` (which also
    * catches per-session frame errors). Undefined once a load succeeds. */
   preloadError?: { modelId: string; layerStart: number; layerEnd: number; reason: string; httpStatus?: number };
+  /**
+   * Per-shard download progress for the stage CURRENTLY loading (or the
+   * last one loaded, until a new load starts) — drives a UI progress bar
+   * (see apps/chat's ContributionPanel/HostingConsentBanner) and, via
+   * `runWithStallWatchdog`, this hook's own load watchdog. Undefined
+   * before the first shard of the first load has reported in, and reset
+   * to undefined at the start of every new load.
+   */
+  loadProgress?: StageWorkerLoadProgress;
 }
 
 const DEFAULT_REPUBLISH_MS = 15_000;
 const DEFAULT_PROGRESS_EVERY_N = 8;
 const DEFAULT_IDLE_SWEEP_MS = 30_000;
+// See loadWatchdog.ts's module doc — a multi-GB model download has no
+// fixed duration a flat timeout could safely encode, so the load watchdog
+// resets on every shard-progress tick instead. LOAD_STALL_MS is the real
+// health signal (no progress at all for this long => genuinely stuck);
+// LOAD_CEILING_MS is a generous backstop, not the primary timeout.
+const LOAD_STALL_MS = 90_000;
+const LOAD_CEILING_MS = 30 * 60_000;
 
 // ── base64 <-> bytes (browser main-thread; Buffer fallback for Node test hosts) ──
 
@@ -417,6 +434,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   const [queueLength, setQueueLength] = useState(0);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
   const [preloadError, setPreloadError] = useState<UseStageHostHandle['preloadError']>(undefined);
+  const [loadProgress, setLoadProgress] = useState<StageWorkerLoadProgress | undefined>(undefined);
 
   // Read by the "publish cap" effect so every heartbeat reflects the
   // CURRENT session occupancy without that effect needing to depend on
@@ -643,32 +661,52 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           log,
           (message) => onLifecycleRef.current?.({ type: 'worker-crashed', reason: message }),
         );
-        const loadDeadlineMs = 240_000;
-        await Promise.race([
-          client.load(
-            {
-              modelId: req.modelId,
-              layerStart: req.layerStart,
-              layerEnd: req.layerEnd,
-              totalLayers: req.totalLayers,
-              shardUrls: req.shardUrls,
-              shardHashes: req.shardHashes,
-              shardBytes: req.shardBytes,
-              ctxSize: req.ctxSize,
-              // +1: legion_stage_open always creates one FUSED session
-              // internally (used here only for the warm-up dispatch below) —
-              // see this file's top doc comment and MULTI-SESSION.md.
-              maxSessions: driverMaxSessions + 1,
-            },
-            { useMemoryShardStore: req.useMemoryShardStore },
-          ),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`stage worker load exceeded ${loadDeadlineMs}ms (worker died silently or stalled)`)),
-              loadDeadlineMs,
+        setLoadProgress(undefined);
+        // A multi-GB model download has no fixed duration a flat timeout
+        // could safely encode (observed live: Qwen3-8B's 4.7GB tripped a
+        // 240s flat deadline mid-download, killing a perfectly healthy
+        // load — "stage worker load exceeded 240000ms (worker died
+        // silently or stalled)" — then it restarted and re-served from
+        // the OPFS cache). Instead: watch for a STALL (no shard-progress
+        // for LOAD_STALL_MS) and keep a generous LOAD_CEILING_MS backstop
+        // for the pathological "progress never actually finishes" case —
+        // see loadWatchdog.ts's module doc.
+        await runWithStallWatchdog(
+          (progressTick) =>
+            client.load(
+              {
+                modelId: req.modelId,
+                layerStart: req.layerStart,
+                layerEnd: req.layerEnd,
+                totalLayers: req.totalLayers,
+                shardUrls: req.shardUrls,
+                shardHashes: req.shardHashes,
+                shardBytes: req.shardBytes,
+                ctxSize: req.ctxSize,
+                // +1: legion_stage_open always creates one FUSED session
+                // internally (used here only for the warm-up dispatch below) —
+                // see this file's top doc comment and MULTI-SESSION.md.
+                maxSessions: driverMaxSessions + 1,
+              },
+              { useMemoryShardStore: req.useMemoryShardStore },
+              (progress) => {
+                progressTick();
+                setLoadProgress(progress);
+                log(
+                  `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +
+                    (progress.totalBytes
+                      ? ` (${(progress.bytesFetched / 1048576).toFixed(0)}/${(progress.totalBytes / 1048576).toFixed(0)} MB)`
+                      : ''),
+                );
+              },
             ),
-          ),
-        ]);
+          { stallMs: LOAD_STALL_MS, ceilingMs: LOAD_CEILING_MS },
+        ).catch((err) => {
+          if (err instanceof StallTimeoutError) {
+            throw new Error(`stage worker load ${err.message}`);
+          }
+          throw err;
+        });
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
         await warmUpStageWorker(client, log);
         workerClient = client;

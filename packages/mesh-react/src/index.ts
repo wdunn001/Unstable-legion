@@ -220,7 +220,21 @@ export {
   stageWasmGlueUrl,
 } from './stageModelSource.js';
 export { StageWorkerClient, type StageWorkerLog } from './stageWorkerClient.js';
-export type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+export type { StageWorkerRequest, StageWorkerResponse, StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
+
+// ── WebGPU device buffer-limit patch (FIX for 8B+ models — see
+// webgpuDevicePatch.ts's module doc) — installed by a stage-hosting
+// worker entry point before the wasm module instantiates. ───────────────
+export {
+  patchWebGpuDeviceLimits,
+  mergeAdapterLimitsIntoRequiredLimits,
+  type WebGpuLimitKey,
+  type WebGpuLimitsSource,
+} from './webgpuDevicePatch.js';
+
+// ── Progress-based stall watchdog (replaces a flat load-timeout with a
+// "no progress for N ms" one — see loadWatchdog.ts's module doc). ───────
+export { runWithStallWatchdog, StallTimeoutError, type StallWatchdogOptions } from './loadWatchdog.js';
 
 // ── UI components (host styles them via `ul-*` classes) ─────────────
 export { LlmStatusPanel, type LlmStatusPanelProps } from './components/LlmStatusPanel.js';

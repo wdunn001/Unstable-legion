@@ -12,7 +12,7 @@
  * this package never constructs a Worker itself, keeping it bundler-agnostic.
  */
 import type { StageDescriptor } from '@unstable-legion/stage-runtime';
-import type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+import type { StageWorkerLoadProgress, StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
 
 export type StageWorkerLog = (line: string) => void;
 
@@ -28,6 +28,10 @@ export class StageWorkerClient {
     number,
     { resolve: (v: StageWorkerResponse) => void; reject: (e: Error) => void }
   >();
+  /** Keyed by the `load` request's own `reqId` — a `progress` response
+   * shares that reqId (see stageWorkerProtocol.ts) but is NOT terminal,
+   * so it's routed here instead of resolving/removing the pending entry. */
+  private readonly progressHandlers = new Map<number, (progress: StageWorkerLoadProgress) => void>();
   isFirst = false;
   isFinal = false;
   nEmbd = 0;
@@ -49,6 +53,7 @@ export class StageWorkerClient {
       this.log(`[${label}] worker error: ${ev.message}`);
       for (const [, p] of this.pending) p.reject(new Error(`[${label}] worker error: ${ev.message}`));
       this.pending.clear();
+      this.progressHandlers.clear();
       try {
         this.onWorkerError?.(ev.message || 'worker crashed');
       } catch {
@@ -58,6 +63,17 @@ export class StageWorkerClient {
   }
 
   private onMessage(msg: StageWorkerResponse): void {
+    if (msg.type === 'progress') {
+      // Not terminal — the pending `load` entry stays open, waiting for
+      // the real `ready`/`error` that follows.
+      this.progressHandlers.get(msg.reqId)?.({
+        shardsFetched: msg.shardsFetched,
+        totalShards: msg.totalShards,
+        bytesFetched: msg.bytesFetched,
+        totalBytes: msg.totalBytes,
+      });
+      return;
+    }
     const pending = this.pending.get(msg.reqId);
     if (!pending) return;
     this.pending.delete(msg.reqId);
@@ -68,8 +84,11 @@ export class StageWorkerClient {
     pending.resolve(msg);
   }
 
-  private send(req: DistributiveOmit<StageWorkerRequest, 'reqId'>, transfer: Transferable[] = []): Promise<StageWorkerResponse> {
-    const reqId = this.nextReqId++;
+  private send(
+    req: DistributiveOmit<StageWorkerRequest, 'reqId'>,
+    transfer: Transferable[] = [],
+    reqId: number = this.nextReqId++,
+  ): Promise<StageWorkerResponse> {
     const full = { ...req, reqId } as StageWorkerRequest;
     return new Promise((resolve, reject) => {
       this.pending.set(reqId, { resolve, reject });
@@ -77,12 +96,27 @@ export class StageWorkerClient {
     });
   }
 
-  async load(descriptor: StageDescriptor, opts: { useMemoryShardStore?: boolean } = {}): Promise<void> {
-    const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore });
-    if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
-    this.isFirst = res.isFirst;
-    this.isFinal = res.isFinal;
-    this.nEmbd = res.nEmbd;
+  /** `onProgress`, when supplied, is called once per shard as the worker
+   * fetches it (see `StageWorkerLoadProgress` / stage-runtime's
+   * `StageLoadProgress`) — lets a caller drive a download-progress UI and/
+   * or a progress-based stall watchdog (see `useStageHost.ts`'s
+   * `runWithStallWatchdog` usage) instead of only a flat total timeout. */
+  async load(
+    descriptor: StageDescriptor,
+    opts: { useMemoryShardStore?: boolean } = {},
+    onProgress?: (progress: StageWorkerLoadProgress) => void,
+  ): Promise<void> {
+    const reqId = this.nextReqId++;
+    if (onProgress) this.progressHandlers.set(reqId, onProgress);
+    try {
+      const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore }, [], reqId);
+      if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
+      this.isFirst = res.isFirst;
+      this.isFinal = res.isFinal;
+      this.nEmbd = res.nEmbd;
+    } finally {
+      this.progressHandlers.delete(reqId);
+    }
   }
 
   /** `sessionId` absent = the legacy fused single-session path (unchanged

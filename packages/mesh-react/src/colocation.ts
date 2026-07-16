@@ -132,6 +132,11 @@ export interface SharedHostStatus {
   errorMessage?: string;
   retrying: boolean;
   retryAttempt: number;
+  /** Per-shard download progress for the stage the LEADER is currently
+   * loading — see `useStageHost.ts`'s `loadProgress` doc comment. Lets a
+   * follower tab render the same download-progress bar the leader shows,
+   * instead of a dead/frozen state while the leader is mid-load. */
+  downloadProgress?: { shardsFetched: number; totalShards: number; bytesFetched: number; totalBytes?: number };
   /** Epoch-ms this snapshot was published — see `STATUS_STALE_MS`. */
   ts: number;
 }

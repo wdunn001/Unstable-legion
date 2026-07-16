@@ -60,6 +60,27 @@ test('resolveCommunalShardPlan: manifest-based fetch resolves layer fragments + 
   assert.equal(manifestCache?.url, 'https://x/model-package.json');
 });
 
+test('resolveCommunalShardPlan: includeEmbeddings=true pulls in the shared embeddings fragment (driver stage-0)', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  // Stage-0 covers [0, driverLayers) and, being the FIRST stage, must pull
+  // the shared embeddings fragment — the fix for the 0.6B-vs-8B stage-0
+  // model mismatch. Model-agnostic: the embeddings fragment comes from the
+  // manifest, never a hardcoded monolith.
+  const withEmb = await resolveCommunalShardPlan(
+    { layerStart: 0, layerEnd: 2, includeOutput: false },
+    { manifestUrl: 'https://x/model-package.json', opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: fetchReturning(manifest), includeEmbeddings: true },
+  );
+  const withoutEmb = await resolveCommunalShardPlan(
+    { layerStart: 0, layerEnd: 2, includeOutput: false },
+    { manifestUrl: 'https://x/model-package.json', opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: fetchReturning(manifest) },
+  );
+  // metadata + embeddings + 2 layers = 4 (vs metadata + 2 layers = 3 without).
+  assert.equal(withEmb.plan.shardUrls.length, 4);
+  assert.equal(withoutEmb.plan.shardUrls.length, 3);
+  assert.ok(withEmb.plan.shardUrls.some((u) => u.includes('embeddings')));
+  assert.ok(!withoutEmb.plan.shardUrls.some((u) => u.includes('embeddings')));
+});
+
 test('resolveCommunalShardPlan: includeOutput=true pulls in the output artifact', async () => {
   const manifest = fakeManifest(28, 1_000_000);
   const { plan } = await resolveCommunalShardPlan(

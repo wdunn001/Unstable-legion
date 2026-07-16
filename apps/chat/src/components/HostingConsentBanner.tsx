@@ -14,6 +14,14 @@
  * the Accept action and explains why, in both the 'unset' and (in case a
  * capability probe resolves AFTER an earlier accept on a since-changed
  * device) 'accepted' states.
+ *
+ * NOTE: `../hostingLabels.js` now has the lifecycle-aware
+ * (Downloading/Loading into GPU/Hosting) + layer-count-clean label
+ * helpers this component SHOULD render (see that module's doc comment
+ * and its unit tests) — deliberately not wired in yet. Split out into a
+ * follow-up PR so the functional load-path fixes (WebGPU device limits,
+ * stall watchdog, OPFS persistence) could ship first; this component's
+ * JSX is UNCHANGED pending that follow-up.
  */
 import type { CommunalHostPhase } from '@unstable-legion/react';
 import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
@@ -56,8 +64,11 @@ export interface HostingConsentBannerProps {
 function HostErrorCard(props: { message: string; retrying?: boolean }) {
   return (
     <div className={`host-error-card ${props.retrying ? 'host-error-retrying' : 'host-error-failing'}`} role="alert" aria-live="polite">
+      {/* Status glyph only, not a button — see ChatPane.tsx's identical
+          note: a refresh-style glyph here reads as a clickable "retry"
+          affordance even though nothing is wired to it. */}
       <span className="host-error-icon" aria-hidden="true">
-        {props.retrying ? '↻' : '⚠'}
+        {props.retrying ? '⏳' : '⚠'}
       </span>
       <span className="host-error-message">{props.message}</span>
     </div>
