@@ -35,14 +35,9 @@ if [ -z "$FOUND" ]; then
   exit 1
 fi
 
-# Mobile-carrier hardening (2026-07-16): the URL list must also carry the
-# TLS fallback — UDP-only TURN is exactly what carriers break.
-FOUND_TLS=$(docker run --rm --entrypoint sh "$IMAGE" -c \
-  "grep -lo 'turns:${EXPECTED_HOST}' /usr/share/nginx/html/assets/*.js 2>/dev/null || true")
-if [ -z "$FOUND_TLS" ]; then
-  echo "FAIL: 'turn:' is baked but 'turns:${EXPECTED_HOST}' (TLS fallback) is missing." >&2
-  echo "VITE_TURN_URLS should carry the 3-URL list — see .env.example." >&2
-  exit 1
-fi
+# NOTE (2026-07-16): the TLS-fallback requirement was removed. The TCP/TLS
+# TURN URLs are dead until the router forwards TCP 3478 + TCP 5349 to .198;
+# shipping them made every ICE attempt fail those candidates (701 flood).
+# Re-add a `turns:` check here only once those router forwards exist.
 
 echo "OK: TURN config is baked into $FOUND"
