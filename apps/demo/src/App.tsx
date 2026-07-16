@@ -49,6 +49,7 @@ import {
   type CodecMapHandle,
 } from '@unstable-legion/react';
 import { StagePipelinePanel } from './components/StagePipelinePanel.js';
+import { CommunalHostPanel } from './components/CommunalHostPanel.js';
 
 // `?room=` override lets e2e runs (and anyone testing against a live
 // deploy) use an isolated room instead of the shared public one —
@@ -483,6 +484,7 @@ function Dashboard(props: {
       />
       <AudioKeepaliveToggle handle={audioKeepalive} />
       <StagePipelinePanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} />
+      <CommunalHostPanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} />
       <div className="ul-cols">
         <MeshRosterPanel />
         <MeshChatPanel

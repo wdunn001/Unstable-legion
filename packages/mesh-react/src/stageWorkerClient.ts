@@ -65,8 +65,8 @@ export class StageWorkerClient {
     });
   }
 
-  async load(descriptor: StageDescriptor): Promise<void> {
-    const res = await this.send({ type: 'load', descriptor });
+  async load(descriptor: StageDescriptor, opts: { useMemoryShardStore?: boolean } = {}): Promise<void> {
+    const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore });
     if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
     this.isFirst = res.isFirst;
     this.isFinal = res.isFinal;

@@ -26,7 +26,22 @@ export interface WireActivationFrame {
 }
 
 export type StageWorkerRequest =
-  | { type: 'load'; reqId: number; descriptor: StageDescriptor }
+  | {
+      type: 'load';
+      reqId: number;
+      descriptor: StageDescriptor;
+      /**
+       * M3 — force the OPFS-cached shard store off for this load, using
+       * an in-memory `ShardStore` instead (`shardCache.ts`'s
+       * `createMemoryShardStore`). `useCommunalHost.ts` sets this when a
+       * claimed layer range's fragment bytes would exceed the browser's
+       * OPFS-origin quota (~3.3-3.5GB observed ceiling) — a stage that
+       * can't fit OPFS still loads and serves fine, it just re-fetches on
+       * every reload instead of caching. Absent/false = the normal OPFS
+       * path (unchanged default for every existing caller).
+       */
+      useMemoryShardStore?: boolean;
+    }
   | {
       type: 'prefill';
       reqId: number;

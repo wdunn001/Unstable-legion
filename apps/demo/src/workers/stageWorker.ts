@@ -17,7 +17,14 @@
  * apps/demo/public/wasm/legion-stage.{js,wasm}, gitignored, copied from
  * legion-stage-runtime's build output).
  */
-import { loadStage, type StageDescriptor, type StageHandle, type StageSessionHandle, type ActivationFrame } from '@unstable-legion/stage-runtime';
+import {
+  loadStage,
+  createMemoryShardStore,
+  type StageDescriptor,
+  type StageHandle,
+  type StageSessionHandle,
+  type ActivationFrame,
+} from '@unstable-legion/stage-runtime';
 import type {
   StageWorkerRequest,
   StageWorkerResponse,
@@ -78,10 +85,14 @@ async function handle(req: StageWorkerRequest): Promise<void> {
           /* @vite-ignore */ new URL('/wasm/legion-stage.js', self.location.origin).toString()
         );
         console.log(`[stage-worker] glue module imported ${mem()}`);
+        // M3: in-memory shard store when the caller says the claimed
+        // range would exceed the OPFS-origin quota — see
+        // stageWorkerProtocol.ts's `useMemoryShardStore` doc comment.
         stage = await loadStage(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
           onProgress: (phase: string) => console.log(`[stage-worker] ${phase} ${mem()}`),
+          ...(req.useMemoryShardStore ? { shardStore: createMemoryShardStore() } : {}),
         } as Parameters<typeof loadStage>[1]);
         console.log(`[stage-worker] stage loaded ${mem()}`);
         post({

@@ -45,6 +45,7 @@ import {
   hostCapacityBytes,
   hostStabilityScore,
   planPipeline,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type MeshRosterEntry,
   type PlanPipelineOptions,
@@ -100,12 +101,17 @@ export interface StageHostSessionCapacity {
   activeSessions: number;
 }
 
-/** Build the `MeshPeerCap.stageHost` block this peer should advertise. */
+/** Build the `MeshPeerCap.stageHost` block this peer should advertise.
+ * `loadedStages` (M3) is passed straight through when non-empty — this
+ * function doesn't compute it (`useStageHost.ts` derives it from its own
+ * `workerClient`/`hostSessions` state, `useCommunalHost.ts` from its own
+ * assembly-loop state), it just carries it onto the wire shape. */
 export function buildStageHostCap(
   limits: StageHostLimits,
   stability: StageHostStabilityInputs,
   cachedFragments?: readonly string[],
   sessionCapacity?: StageHostSessionCapacity,
+  loadedStages?: readonly MeshLoadedStage[],
 ): NonNullable<MeshPeerCap['stageHost']> {
   return {
     ...(limits.vramBytes !== undefined ? { vramBytes: limits.vramBytes } : {}),
@@ -113,6 +119,7 @@ export function buildStageHostCap(
     wasmHeapBudget: sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize),
     ...(cachedFragments && cachedFragments.length > 0 ? { cachedFragments } : {}),
     ...(sessionCapacity ? { maxSessions: sessionCapacity.maxSessions, activeSessions: sessionCapacity.activeSessions } : {}),
+    ...(loadedStages && loadedStages.length > 0 ? { loadedStages } : {}),
     stability: {
       keepalive: stability.keepalive,
       visible: stability.visible,

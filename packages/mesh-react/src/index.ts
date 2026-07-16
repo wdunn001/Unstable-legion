@@ -160,6 +160,16 @@ export {
   type PopResult,
 } from './stageSessionAdmission.js';
 export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
+
+// ── M3: communal pipeline — self-assembly host loop ─────────────────
+export {
+  useCommunalHost,
+  resolveCommunalShardPlan,
+  OPFS_QUOTA_CEILING_BYTES,
+  type UseCommunalHostOptions,
+  type UseCommunalHostHandle,
+  type CommunalHostPhase,
+} from './useCommunalHost.js';
 export {
   STAGE_MODEL_ID,
   STAGE_TOTAL_LAYERS,

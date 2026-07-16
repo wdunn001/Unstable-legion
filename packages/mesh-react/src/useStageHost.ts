@@ -142,6 +142,44 @@ export interface UseStageHostOptions {
   /** Idle threshold (ms, no inbound `sf` frame) before a session is
    * evicted. Default 5 minutes. */
   idleEvictMs?: number;
+  /**
+   * M3 — proactively load this stage BEFORE any driver ever sends
+   * `stage.load`/`stage.session.open`, so it's already warm by the time
+   * `useCommunalHost.ts`'s assembly loop advertises it. Reuses the SAME
+   * `ensureWorkerLoaded` reuse/reload/conflict semantics every other open
+   * path goes through: a matching config while idle is a no-op; a
+   * DIFFERENT config while sessions are still active THROWS (caught,
+   * logged, left for the next call once sessions drain) rather than
+   * disrupting a live session — this is what gives `useCommunalHost.ts`
+   * "never reconfigure out from under an active driver" for free. Pass a
+   * NEW object identity only when the target actually changes (a fresh
+   * identity every render would spam `ensureWorkerLoaded` pointlessly —
+   * harmless since it's idempotent, but wasteful). `null`/undefined =
+   * no proactive preload (pure legacy/session-open-triggered loading,
+   * the pre-M3 default).
+   */
+  preloadStage?: {
+    modelId: string;
+    layerStart: number;
+    layerEnd: number;
+    totalLayers: number;
+    ctxSize: number;
+    wireDtype: 'f32' | 'f16';
+    shardUrls: readonly string[];
+    shardHashes?: readonly string[];
+    shardBytes?: readonly number[];
+    useMemoryShardStore?: boolean;
+  } | null;
+  /**
+   * M3 — publish `stageHost` WITHOUT `loadedStages` while true, even
+   * though a stage may still be loaded and actively serving sessions.
+   * `useCommunalHost.ts`'s teardown sequence sets this the INSTANT a
+   * claim needs to change ("stop advertising" — CHAOS.md/plan-doc
+   * ordering: stop advertising -> drain -> grace -> dispose) so no NEW
+   * driver picks this host for a range it's about to stop serving, while
+   * existing sessions already in flight keep running undisturbed.
+   */
+  suppressAdvertise?: boolean;
   log?: StageWorkerLog;
 }
 
@@ -209,7 +247,16 @@ interface PendingOpen {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
+  wireDtype: 'f32' | 'f16';
   shardUrls: readonly string[];
+  /** M3 preload only (manifest-based artifact-slice fetch) — see
+   * `stage-runtime`'s `StageDescriptor.shardHashes`/`shardBytes`.
+   * Absent for legacy/session-origin opens (Phase A/B full.gguf demo
+   * convention has no per-fragment hashes to source these from). */
+  shardHashes?: readonly string[];
+  shardBytes?: readonly number[];
+  /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
+  useMemoryShardStore?: boolean;
   /** Present only for `origin === 'session'` — lets the host build the
    * decoder at accept time instead of via the legacy first-frame convention. */
   wireHeaderB64?: string;
@@ -240,6 +287,7 @@ interface LoadedConfig {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
+  wireDtype: 'f32' | 'f16';
 }
 
 function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
@@ -248,7 +296,8 @@ function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
     a.layerStart === b.layerStart &&
     a.layerEnd === b.layerEnd &&
     a.totalLayers === b.totalLayers &&
-    a.ctxSize === b.ctxSize
+    a.ctxSize === b.ctxSize &&
+    a.wireDtype === b.wireDtype
   );
 }
 
@@ -302,6 +351,26 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     maxSessions: driverMaxSessions,
     activeSessions: 0,
   });
+  // M3: `cap.stageHost.loadedStages` — the fact `communalTopology.ts`
+  // unions across the roster. Read by the "publish cap" effect the same
+  // way `sessionCapacityRef` is; empty when nothing is loaded.
+  const loadedStagesRef = useRef<NonNullable<MeshPeerCap['stageHost']>['loadedStages']>([]);
+  // M3: lets the "answer" effect (which owns `hostSessions`/`workerClient`)
+  // trigger an IMMEDIATE republish from the separate "publish cap" effect
+  // (which owns the actual `peer.setCap` call + its interval timer)
+  // whenever `activeSessions` changes, instead of waiting up to
+  // `republishMs` for the next heartbeat tick — a driver deciding whether
+  // a host has a free lane right now shouldn't see stale occupancy.
+  const republishNowRef = useRef<() => void>(() => undefined);
+  // M3 — read fresh on every publish tick without needing the publish
+  // effect to restart (same ref-read idiom as `baseCapRef`).
+  const suppressAdvertiseRef = useRef(opts.suppressAdvertise ?? false);
+  suppressAdvertiseRef.current = opts.suppressAdvertise ?? false;
+  // M3 — bridge from the "preload watcher" effect (below) into the
+  // "answer" effect's `applyPreload`, same ref-bridge pattern as
+  // `republishNowRef` (two independent effects, one triggers the other
+  // without becoming a dependency of it).
+  const preloadRequestRef = useRef<(req: NonNullable<UseStageHostOptions['preloadStage']>) => void>(() => undefined);
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
@@ -369,13 +438,18 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         },
         cachedFragments,
         sessionCapacityRef.current,
+        suppressAdvertiseRef.current ? [] : loadedStagesRef.current,
       );
       setStageHostCap(cap);
       peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
     };
+    republishNowRef.current = publish;
     publish();
     const timer = setInterval(publish, republishMs);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      republishNowRef.current = () => undefined;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs]);
 
@@ -399,6 +473,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     let loadInFlight: Promise<void> | undefined;
     const hostSessions = new Map<string, HostSessionState>();
     let queue: readonly QueueEntry<PendingOpen>[] = [];
+    // M3: bumped every successful (re)load — see MeshLoadedStage.epoch's
+    // doc comment in types.ts (lets a consumer tell "this is a fresh load
+    // of the same range" apart from stale cap data during a fast reload).
+    let loadEpoch = 0;
 
     function syncPublicState(): void {
       setSessions(
@@ -417,6 +495,28 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       );
       setQueueLength(queue.length);
       sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: hostSessions.size };
+      loadedStagesRef.current =
+        workerClient && loadedConfig
+          ? [
+              {
+                modelId: loadedConfig.modelId,
+                layerStart: loadedConfig.layerStart,
+                layerEnd: loadedConfig.layerEnd,
+                includeEmbeddings: workerClient.isFirst,
+                includeOutput: workerClient.isFinal,
+                ctxSize: loadedConfig.ctxSize,
+                wireDtype: loadedConfig.wireDtype,
+                maxSessions: driverMaxSessions,
+                activeSessions: hostSessions.size,
+                epoch: loadEpoch,
+              },
+            ]
+          : [];
+      // M3: an immediate republish (not waiting for the next `republishMs`
+      // heartbeat) whenever occupancy/load state changes — a driver
+      // deciding "does this host have a free lane right now" needs
+      // current data, not up-to-15s-stale data.
+      republishNowRef.current();
     }
 
     async function disposeWorker(): Promise<void> {
@@ -437,6 +537,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         layerEnd: req.layerEnd,
         totalLayers: req.totalLayers,
         ctxSize: req.ctxSize,
+        wireDtype: req.wireDtype,
       };
       if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
 
@@ -460,18 +561,23 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         const client = new StageWorkerClient(createStageWorker(), `stage-host-${req.layerStart}-${req.layerEnd}`, log);
         const loadDeadlineMs = 240_000;
         await Promise.race([
-          client.load({
-            modelId: req.modelId,
-            layerStart: req.layerStart,
-            layerEnd: req.layerEnd,
-            totalLayers: req.totalLayers,
-            shardUrls: req.shardUrls,
-            ctxSize: req.ctxSize,
-            // +1: legion_stage_open always creates one FUSED session
-            // internally (used here only for the warm-up dispatch below) —
-            // see this file's top doc comment and MULTI-SESSION.md.
-            maxSessions: driverMaxSessions + 1,
-          }),
+          client.load(
+            {
+              modelId: req.modelId,
+              layerStart: req.layerStart,
+              layerEnd: req.layerEnd,
+              totalLayers: req.totalLayers,
+              shardUrls: req.shardUrls,
+              shardHashes: req.shardHashes,
+              shardBytes: req.shardBytes,
+              ctxSize: req.ctxSize,
+              // +1: legion_stage_open always creates one FUSED session
+              // internally (used here only for the warm-up dispatch below) —
+              // see this file's top doc comment and MULTI-SESSION.md.
+              maxSessions: driverMaxSessions + 1,
+            },
+            { useMemoryShardStore: req.useMemoryShardStore },
+          ),
           new Promise<never>((_, reject) =>
             setTimeout(
               () => reject(new Error(`stage worker load exceeded ${loadDeadlineMs}ms (worker died silently or stalled)`)),
@@ -483,6 +589,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         await warmUpStageWorker(client, log);
         workerClient = client;
         loadedConfig = want;
+        loadEpoch += 1;
       })();
       loadInFlight = doLoad;
       try {
@@ -491,6 +598,46 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         if (loadInFlight === doLoad) loadInFlight = undefined;
       }
     }
+
+    /**
+     * M3 — proactive preload (`opts.preloadStage`). Reuses
+     * `ensureWorkerLoaded` verbatim (same reuse/reload/conflict rules as
+     * every wire-triggered open) but never creates a session or replies
+     * to a peer — there IS no peer, this is self-directed. Errors are
+     * swallowed into `lastError`/a log line rather than thrown: the
+     * caller (`useCommunalHost.ts`) polls `sessions`/`stageHostCap` state
+     * and retries on its own cadence, so a transient failure here (e.g.
+     * "still serving sessions on a different config" while draining)
+     * isn't exceptional — it's the expected shape of "try again once
+     * idle."
+     */
+    async function applyPreload(req: NonNullable<UseStageHostOptions['preloadStage']>): Promise<void> {
+      const pending: PendingOpen = {
+        origin: 'legacy',
+        sessionId: '__preload__',
+        peerId: '__preload__',
+        callId: '__preload__',
+        modelId: req.modelId,
+        layerStart: req.layerStart,
+        layerEnd: req.layerEnd,
+        totalLayers: req.totalLayers,
+        ctxSize: req.ctxSize,
+        wireDtype: req.wireDtype,
+        shardUrls: req.shardUrls,
+        shardHashes: req.shardHashes,
+        shardBytes: req.shardBytes,
+        useMemoryShardStore: req.useMemoryShardStore,
+      };
+      try {
+        await ensureWorkerLoaded(pending);
+        syncPublicState();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setLastError(message);
+        log(`[stage-host] preload FAILED layers=[${req.layerStart},${req.layerEnd}): ${message}`);
+      }
+    }
+    preloadRequestRef.current = applyPreload;
 
     async function failOpen(req: PendingOpen, message: string): Promise<void> {
       setLastError(message);
@@ -630,6 +777,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         layerEnd: msg.payload.layerEnd,
         totalLayers: msg.payload.totalLayers,
         ctxSize: msg.payload.ctxSize,
+        wireDtype: msg.payload.wireDtype,
         shardUrls,
       });
     }
@@ -646,6 +794,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         layerEnd: msg.payload.layerEnd,
         totalLayers: msg.payload.totalLayers,
         ctxSize: msg.payload.ctxSize,
+        wireDtype: msg.payload.wireDtype,
         shardUrls: [],
         wireHeaderB64: msg.payload.wireHeader,
       });
@@ -783,6 +932,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       unsubRoster();
       unsubTool();
       unsubFrame();
+      preloadRequestRef.current = () => undefined;
       void disposeWorker();
     };
     // `log` deliberately excluded — see logRef above; this effect must not
@@ -793,6 +943,22 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     // `progressEveryN`'s existing precedent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peer, enabled, createStageWorker, progressEveryN, driverMaxSessions, idleSweepMs, idleEvictMs]);
+
+  // ── M3: preload watcher — bridges `opts.preloadStage` changes into the
+  // "answer" effect's `applyPreload` via `preloadRequestRef`, WITHOUT
+  // making the answer effect itself depend on `preloadStage` (which would
+  // tear down live sessions on every claim change — exactly what this
+  // hook must never do). Caller must pass a stable object identity for
+  // `preloadStage` (new identity only when the target actually changes,
+  // same discipline `createStageWorker` already requires) — this effect
+  // re-fires whenever that identity changes. ──────────────────────────
+  useEffect(() => {
+    if (!enabled) return;
+    const req = opts.preloadStage;
+    if (!req) return;
+    void preloadRequestRef.current(req);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, opts.preloadStage]);
 
   const tokensDecoded = sessions.reduce((sum, s) => sum + s.decodedCount, 0);
 
