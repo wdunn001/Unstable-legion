@@ -862,6 +862,16 @@ code {
   align-self: flex-start;
   font-size: 11px;
 }
+.contribution-layers-field {
+  margin-top: 4px;
+}
+.contribution-layers-slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.contribution-layers-note {
+  margin-top: -2px;
+}
 
 .audio-keepalive-row {
   display: flex;

@@ -3,6 +3,7 @@ import type { HostingConsent } from '../components/HostingConsentBanner.js';
 
 const STORAGE_KEY = 'unstable-legion-chat:hosting-consent-v1';
 const CONTRIBUTION_BUDGET_STORAGE_KEY = 'unstable-legion-chat:contribution-budget-bytes-v1';
+const MAX_LAYERS_OVERRIDE_STORAGE_KEY = 'unstable-legion-chat:max-layers-override-v1';
 
 function load(): HostingConsent {
   if (typeof localStorage === 'undefined') return 'unset';
@@ -49,6 +50,34 @@ function saveContributionBudgetBytes(bytes: number | undefined): void {
   }
 }
 
+/** Sticky "Layers to host: N of 34" override — a direct layer-count cap
+ * that supersedes the VRAM-derived (`contributionBudgetBytes`) claim
+ * width, for users who'd rather just pick a layer count than reason about
+ * GB. `undefined` = no override, the byte-budget-derived count applies
+ * unchanged (today's only behavior, pre-this-feature). See
+ * `useCommunalHost`'s `maxLayersOverride` option. */
+function loadMaxLayersOverride(): number | undefined {
+  if (typeof localStorage === 'undefined') return undefined;
+  try {
+    const raw = localStorage.getItem(MAX_LAYERS_OVERRIDE_STORAGE_KEY);
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveMaxLayersOverride(layers: number | undefined): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (layers === undefined) localStorage.removeItem(MAX_LAYERS_OVERRIDE_STORAGE_KEY);
+    else localStorage.setItem(MAX_LAYERS_OVERRIDE_STORAGE_KEY, String(Math.round(layers)));
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 export interface UseHostingConsentHandle {
   consent: HostingConsent;
   accept: () => void;
@@ -63,6 +92,12 @@ export interface UseHostingConsentHandle {
   contributionBudgetBytes: number | undefined;
   /** Set (or clear, with `undefined`) the override — persists immediately. */
   setContributionBudgetBytes: (bytes: number | undefined) => void;
+  /** Persisted "Layers to host: N of 34" direct override, or `undefined`
+   * when using the VRAM/byte-budget-derived count. Threaded into
+   * `useCommunalHost`'s `maxLayersOverride` option. */
+  maxLayersOverride: number | undefined;
+  /** Set (or clear, with `undefined`) the override — persists immediately. */
+  setMaxLayersOverride: (layers: number | undefined) => void;
 }
 
 /** Persisted one-time "contribute your GPU?" decision (M5 brief §4).
@@ -76,6 +111,7 @@ export interface UseHostingConsentHandle {
 export function useHostingConsent(): UseHostingConsentHandle {
   const [consent, setConsent] = useState<HostingConsent>(() => load());
   const [contributionBudgetBytes, setContributionBudgetBytesState] = useState<number | undefined>(() => loadContributionBudgetBytes());
+  const [maxLayersOverride, setMaxLayersOverrideState] = useState<number | undefined>(() => loadMaxLayersOverride());
 
   const accept = useCallback(() => {
     setConsent('accepted');
@@ -93,6 +129,19 @@ export function useHostingConsent(): UseHostingConsentHandle {
     setContributionBudgetBytesState(bytes);
     saveContributionBudgetBytes(bytes);
   }, []);
+  const setMaxLayersOverride = useCallback((layers: number | undefined) => {
+    setMaxLayersOverrideState(layers);
+    saveMaxLayersOverride(layers);
+  }, []);
 
-  return { consent, accept, decline, reconsider, contributionBudgetBytes, setContributionBudgetBytes };
+  return {
+    consent,
+    accept,
+    decline,
+    reconsider,
+    contributionBudgetBytes,
+    setContributionBudgetBytes,
+    maxLayersOverride,
+    setMaxLayersOverride,
+  };
 }

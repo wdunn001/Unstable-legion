@@ -64,8 +64,11 @@ export interface HostingConsentBannerProps {
 function HostErrorCard(props: { message: string; retrying?: boolean }) {
   return (
     <div className={`host-error-card ${props.retrying ? 'host-error-retrying' : 'host-error-failing'}`} role="alert" aria-live="polite">
+      {/* Status glyph only, not a button — see ChatPane.tsx's identical
+          note: a refresh-style glyph here reads as a clickable "retry"
+          affordance even though nothing is wired to it. */}
       <span className="host-error-icon" aria-hidden="true">
-        {props.retrying ? '↻' : '⚠'}
+        {props.retrying ? '⏳' : '⚠'}
       </span>
       <span className="host-error-message">{props.message}</span>
     </div>

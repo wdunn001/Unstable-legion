@@ -168,6 +168,28 @@ export interface UseCommunalHostOptions {
    */
   contributionBudgetBytes?: number;
   /**
+   * Operator opt-in (apps/chat's "Layers to host: N of 34" slider) — a
+   * DIRECT layer-count cap on the claim WIDTH the assembly loop's greedy
+   * lowest-uncovered-gap claim (`communalHostClaim`, `communalAssembly.ts`)
+   * is willing to take, applied to `selfCapacityLayers` — the SAME
+   * capacity input `contributionBudgetBytes`/VRAM detection ultimately
+   * feeds (see `hostCapacityBytes`'s doc comment: capacity is always
+   * "this host's usable budget for one stage", byte-derived-by-default).
+   * This is an ALTERNATE, more direct way to express that same budget for
+   * users who'd rather pick a layer count than reason about GB — it
+   * REPLACES the byte-derived count (not intersected with it) once set,
+   * mirroring `contributionBudgetBytes`'s own "operator self-report,
+   * clamped only for sanity" trust model (worst case of setting it too
+   * high is a slow/failed load — the hard safety ceiling is
+   * `wasmHeapBudget`/`WASM_HEAP_CEILING_BYTES`, untouched by this field,
+   * same as `contributionBudgetBytes`). `undefined` = unchanged
+   * byte-budget-derived behavior. Clamped to `>= 0`; `communalHostClaim`
+   * itself already clamps the resulting claim width to the actual gap
+   * size, so no upper clamp against `totalLayers - driverLayers` is
+   * needed here.
+   */
+  maxLayersOverride?: number;
+  /**
    * Same-origin tab colocation (see `colocation.ts`'s module doc) —
    * collapses hosting to exactly ONE tab per browser profile per machine.
    * Default `true`. Set `false` to opt this consumer OUT and restore the
@@ -625,7 +647,14 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       { ...safeLimits, contributionBudgetBytes: opts.contributionBudgetBytes },
       { minBytes: avgLayerBytes },
     );
-    const selfCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
+    const byteDerivedCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
+    // "Layers to host: N of 34" REPLACES the byte-derived count once set —
+    // see `maxLayersOverride`'s doc comment for why this isn't intersected
+    // with `byteDerivedCapacityLayers` instead.
+    const selfCapacityLayers =
+      opts.maxLayersOverride !== undefined
+        ? Math.max(0, Math.floor(opts.maxLayersOverride))
+        : byteDerivedCapacityLayers;
     let cancelled = false;
     let jitterTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -821,7 +850,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // immediately rather than continuing to compute claims it'll never
     // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
 
   useEffect(() => {
     if (!hostingActive) {

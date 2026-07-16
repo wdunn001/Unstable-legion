@@ -120,6 +120,55 @@ export interface Peer {
   leave(): void;
 }
 
+// ── Self-addressed sends: loopback instead of Trystero ──────────────────
+//
+// Trystero has no data channel to ourselves — `room.makeAction(...)[0]`
+// (the sender) only knows about REMOTE peer connections, so naming our
+// own `selfId` as a `sendTool`/`sendStageFrame` target throws ("no peer
+// with id <selfId> found") instead of silently no-op'ing. This used to be
+// purely theoretical (nothing ever addressed itself) until M3's communal
+// pipeline made it real: `planCommunalRoute` can legitimately pick THIS
+// peer as a segment's host — e.g. the only candidate when solo, or a
+// mixed mesh where this peer covers one hop and a remote peer covers
+// another — because a driver's own `useCommunalHost` contribution is a
+// perfectly valid host, advertised on the very same roster remote hosts
+// are. `stageOrchestrator.ts`'s `runCommunalDriverSession` has no
+// special-cased "is this peerId mine" branch (by design — see that
+// module's SCOPE NOTE), so it happily emits a `stage.session.open`/`sf`
+// call straight at `selfId` for a self-hosted hop. The fix belongs HERE,
+// not in the orchestrator: `useStageHost`'s "answer" effect already
+// listens on `peer.onTool`/`peer.onStageFrame` and runs the exact
+// session-open/prefill/decode machinery a self-hosted hop needs — it
+// just never gets invoked because the call never arrives locally. Routing
+// a self-addressed `sendTool`/`sendStageFrame` to the LOCAL listener
+// registry instead of Trystero makes that existing host-answer loop
+// transparently serve the driver's own communal claim, with zero
+// duplicated attach/session logic and zero orchestrator changes — and it
+// generalizes for free to a mixed route (self covers one segment, a real
+// remote peer covers another): only the genuinely-remote portion of a
+// `peers` target ever reaches Trystero.
+export interface SplitPeerTarget {
+  /** True when `selfId` was one of the addressed targets — the caller
+   * must deliver the frame to its own local listeners. */
+  loopback: boolean;
+  /** What's left to actually hand to Trystero's sender. `undefined` means
+   * "broadcast to every connected peer" (Trystero's own `peers` contract —
+   * preserved as-is, no loopback inferred, since nothing named `selfId`
+   * explicitly). An empty array means "nothing left to send over the
+   * wire" — callers MUST skip the underlying Trystero send in that case;
+   * an empty-array target isn't guaranteed to be a harmless no-op across
+   * every Trystero strategy, and it's also just wasted work. */
+  remote: string | string[] | undefined;
+}
+
+export function splitPeerTarget(peers: string | string[] | undefined, selfId: string): SplitPeerTarget {
+  if (peers === undefined) return { loopback: false, remote: undefined };
+  if (typeof peers === 'string') {
+    return peers === selfId ? { loopback: true, remote: [] } : { loopback: false, remote: peers };
+  }
+  return { loopback: peers.includes(selfId), remote: peers.filter((p) => p !== selfId) };
+}
+
 // ── joinMesh ──────────────────────────────────────────────────────────────
 
 /**
@@ -340,14 +389,26 @@ export function joinMesh(opts: PeerOptions): Peer {
       return () => envelopeListeners.delete(cb);
     },
     async sendTool(frame, peers) {
-      await sendTool(frame, peers);
+      const { loopback, remote } = splitPeerTarget(peers, selfId);
+      if (loopback) {
+        for (const cb of toolListeners) cb(frame, selfId);
+      }
+      if (remote === undefined || remote.length > 0) {
+        await sendTool(frame, remote);
+      }
     },
     onTool(cb) {
       toolListeners.add(cb);
       return () => toolListeners.delete(cb);
     },
     async sendStageFrame(bytes, peers) {
-      await sendStageFrameBytes(bytes, peers);
+      const { loopback, remote } = splitPeerTarget(peers, selfId);
+      if (loopback) {
+        for (const cb of stageFrameListeners) cb(bytes, selfId);
+      }
+      if (remote === undefined || remote.length > 0) {
+        await sendStageFrameBytes(bytes, remote);
+      }
     },
     onStageFrame(cb) {
       stageFrameListeners.add(cb);

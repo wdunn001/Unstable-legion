@@ -33,10 +33,19 @@ export interface ContributionPanelProps {
   /** Live "what this budget actually affords you" reflection — computed
    * by the caller (needs `avgLayerBytes`/`totalLayers`/`driverLayers`,
    * which this component deliberately doesn't know about — it only knows
-   * bytes). */
+   * bytes). Already reflects `maxLayersOverride` when one is set (see
+   * `App.tsx`'s `effectiveLayersHosted`) — this is the number the slider
+   * below should default to. */
   layersHosted: number;
   totalLayers: number;
   approxGbLabel: string;
+  /** "Layers to host: N of `totalLayers`" — a direct layer-count override
+   * that supersedes the GB-based budget above. `undefined` = no override
+   * yet (the slider still shows/defaults to `layersHosted`, it's just not
+   * persisted until the user actually moves it). See
+   * `useCommunalHost.ts`'s `maxLayersOverride` doc comment. */
+  maxLayersOverride?: number;
+  onChangeMaxLayers: (layers: number | undefined) => void;
 }
 
 const FREE_TEXT_OPTION = '__free_text__';
@@ -141,6 +150,31 @@ export function ContributionPanel(props: ContributionPanelProps) {
       {props.contributionBudgetBytes !== undefined && (
         <button type="button" className="btn-link contribution-reset" onClick={() => props.onChangeBudget(undefined)}>
           Reset to default (~1.6GB safe budget)
+        </button>
+      )}
+
+      <label className="contribution-field contribution-layers-field">
+        <span>
+          Layers to host: {props.maxLayersOverride ?? props.layersHosted} of {props.totalLayers}
+        </span>
+        <input
+          type="range"
+          className="contribution-layers-slider"
+          min={0}
+          max={props.totalLayers}
+          step={1}
+          value={props.maxLayersOverride ?? props.layersHosted}
+          onChange={(e) => props.onChangeMaxLayers(Number(e.target.value))}
+        />
+      </label>
+      <p className="contribution-note contribution-layers-note">
+        Prefer picking a GB budget above (it adapts to what your GPU can actually hold) — use this only if you'd rather
+        just say how many layers to serve directly. Setting it overrides the GB budget's layer count.
+      </p>
+
+      {props.maxLayersOverride !== undefined && (
+        <button type="button" className="btn-link contribution-reset" onClick={() => props.onChangeMaxLayers(undefined)}>
+          Reset to GB-budget-derived layer count
         </button>
       )}
     </div>
