@@ -184,25 +184,64 @@ dev machine's `/mnt/h/dev` layout uses. `apps/demo`'s Playwright e2e /
 WebGPU chaos suite is a `workflow_dispatch`-only stub — no GPU on the
 runner yet.
 
-Deploy: the demo (`apps/demo`) ships to `legion.codecai.net`, built by
-`docker-compose.yml` on the `.198` public-edge host (behind the existing
-`nginx-proxy` + `acme-companion` stack). Before `docker compose build`:
+Deploy: **`legion.codecai.net` root-swapped to `apps/chat` as of M6
+(2026-07-15)** — the flagship product now owns `/`; `apps/demo` (the
+original workstream showcase) moved to `/classic/`. Both are built by
+`docker-compose.yml`'s ONE `legion-chat` service (`apps/chat/Dockerfile`)
+on the `.198` public-edge host (behind the existing `nginx-proxy` +
+`acme-companion` stack). This is a single container/single nginx by
+necessity, not preference: `nginx-proxy` routes by **hostname**, not
+path, so "chat at `/` and demo at `/classic` on the same
+`legion.codecai.net`" can't be two separate `VIRTUAL_HOST` services —
+`apps/chat/Dockerfile` builds `apps/demo` too (with `vite build
+--base=/classic/` so its own asset URLs resolve under that prefix
+instead of colliding with the chat bundle's `/assets/`), and
+`apps/chat/nginx.conf` serves the demo's `dist/` under `/classic/` from
+the same nginx that serves the chat bundle at `/`. Shared root-absolute
+paths (`/webllm/`, `/wasm/`, `/mcp-proxy/`, `/.well-known/`) work
+identically for both — see the Dockerfile's and nginx.conf's comments
+for exactly which app needs which and why `/.well-known/codec/` (demo's
+MLC tokenizer-map fetch, not used by chat's own stage-runtime detokenize
+path) is mirrored to both the root and `/classic/`. The old `legion-demo`
+service / `unstable-legion-demo` container is retired by this change.
+
+Before `docker compose build`:
 
 1. `scripts/prepare-deploy-context.sh [legion-stage-runtime-dir] [codec-dir]`
    — materializes `codec-local/` and `.deploy-context/legion-stage-runtime/`
    as real files (Docker's build-context tar doesn't dereference symlinks
    pointing outside the context) from built sibling checkouts, and copies
-   the wasm glue/binary into `apps/demo/public/wasm/`.
-2. The model weights (`full.gguf` + the per-layer package) are NOT part
-   of the image — they live on the host's `webllm-mirror` volume under a
-   `stages/<model-id>/` subpath, same mount `/webllm/` already reads from.
+   the wasm glue/binary into **both** `apps/demo/public/wasm/` and
+   `apps/chat/public/wasm/` (M6: the image builds both apps now).
+2. The model weights (`full.gguf` + the per-layer package, for both
+   `apps/demo`'s MLC models and `apps/chat`'s fixed `qwen3-8b-q4` target)
+   are NOT part of the image — they live on the host's `webllm-mirror`
+   volume under a `stages/<model-id>/` subpath, same mount `/webllm/`
+   already reads from.
 
 This isn't wired to CD yet (no Forgejo Actions secret grants deploy SSH
 access to `.198` — that's a deliberate gap, not an oversight: minting a
 new persistent credential onto a shared production edge host needs an
 explicit go-ahead first). Until then, deploy is: rsync/tar a prepared
-checkout to `.198:/storage/unstable-legion`, `docker compose build`,
-`docker compose up -d`.
+checkout to `.198:/storage/unstable-legion` (keep a timestamped backup of
+the previous checkout first — `cp -a` the whole directory — for
+rollback), `docker compose build legion-chat`,
+`scripts/verify-turn-baked.sh`, then cut over: stop + remove the old
+`unstable-legion-demo` container (if present) so `nginx-proxy` doesn't
+see two containers claiming the same `VIRTUAL_HOST`, then
+`docker compose up -d legion-chat`.
+
+**GOTCHA (Windows dev machines):** `codec-local/packages/{web,web-safety,web-llm}`
+are git-tracked **symlinks** to a sibling Codec checkout. A Windows `git`
+checkout without symlink privileges materializes these as tiny text
+files containing the link target, not real directories — rsyncing a
+Windows checkout's `codec-local/` (or `.deploy-context/`, gitignored but
+easy to have stale/partial locally) over a deploy host's already-correctly-materialized
+copies silently breaks the next build. Exclude both `codec-local/` and
+`.deploy-context/` from the rsync when the deploy host already has good
+copies from a prior `prepare-deploy-context.sh` run; only re-run that
+script (from a machine with real sibling checkouts, or directly on a
+Linux host) if those need refreshing.
 
 **TURN config gotcha (M0.5 reliability spike, 2026-07-15):** `docker
 compose build` reads `VITE_TURN_URLS` / `VITE_TURN_USERNAME` /
@@ -214,18 +253,28 @@ what happened in production for the first several days: `legion-coturn`
 ran healthy the whole time while the deployed demo never used it. Always:
 1. Confirm `.198:/storage/unstable-legion/.env` has real values (credential
    from `.198:/storage/coturn/turnserver.conf`, never commit it).
-2. After `docker compose build legion-demo`, run
+2. After `docker compose build legion-chat`, run
    `scripts/verify-turn-baked.sh` before `up -d` — it fails loud if the
-   TURN URL isn't actually in the built bundle.
+   TURN URL isn't actually in the built bundle. Both apps/chat and the
+   `/classic` apps/demo build share the same build-time args, so one
+   check (against the chat bundle) covers both.
 
 See `docs/TURN-RELIABILITY.md` for the full M0.5 reliability findings and
-verdict.
+verdict (verdict: YELLOW — self-hosted TURN is correctly configured and
+wired in, but true cross-NAT reachability from a genuinely external
+network is still unverified; this lab has no vantage point outside its
+own NAT to test it from, and M6 did not change that).
 
 ## Status
 
-Pre-release. The v0.0.1 cut is the cap-announce + roster + chat slice
-described above. Tool calls (`tc`), classifier-on-receive, and the
-Module Federation remote build are in progress.
+**M6 shipped (2026-07-15): the chat pivot is complete.** `apps/chat` —
+the flagship Open-WebUI-style product where opening the page makes you
+part of the communal mesh serving a fixed Qwen3-8B — is live at the root
+of `legion.codecai.net`. `apps/demo` (the original workstream
+showcase/debug surface) moved to `legion.codecai.net/classic`. Tool calls
+(`tc`), classifier-on-receive, and the Module Federation remote build
+remain in progress/pre-release for the underlying `@unstable-legion/core`
++ `@unstable-legion/react` packages.
 
 ## Related
 

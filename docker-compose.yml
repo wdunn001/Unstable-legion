@@ -9,15 +9,25 @@
 # network. Make sure that network already exists on the host:
 #   docker network ls | grep nginx-proxy
 # (codec-website wires the same way.)
+#
+# M6 root-swap: `legion-chat` (apps/chat) is now the ONE container behind
+# legion.codecai.net / cdn.codecai.net — nginx-proxy routes by HOSTNAME,
+# not path, so "chat at / and demo at /classic on the same hostname"
+# can't be two separate VIRTUAL_HOST services. apps/chat/Dockerfile
+# builds apps/demo too (with --base=/classic/) and apps/chat/nginx.conf
+# serves it under /classic/ from the same nginx. The old `legion-demo`
+# service/container is retired by this change (see README.md's deploy
+# runbook for the migration note + rollback path).
 
 services:
-  legion-demo:
+  legion-chat:
     build:
       context: .
-      dockerfile: apps/demo/Dockerfile
-      # TURN config is baked into the bundle at build time. Leave all
-      # blank for STUN-only behavior (works for same-LAN peers, fails
-      # for cross-NAT). Flip on by setting these to point at coturn:
+      dockerfile: apps/chat/Dockerfile
+      # TURN config is baked into the bundle at build time (both apps/chat
+      # and the /classic apps/demo build share these — see the Dockerfile).
+      # Leave all blank for STUN-only behavior (works for same-LAN peers,
+      # fails for cross-NAT). Flip on by setting these to point at coturn:
       #   VITE_TURN_URLS=turn:legion.codecai.net:3478
       #   VITE_TURN_USERNAME=legion
       #   VITE_TURN_CREDENTIAL=<from /storage/coturn/turnserver.conf>
@@ -26,7 +36,7 @@ services:
         VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-}
         VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-}
         VITE_TURN_USE_DEFAULT: ${VITE_TURN_USE_DEFAULT:-}
-    container_name: unstable-legion-demo
+    container_name: unstable-legion-chat
     restart: unless-stopped
     expose:
       - "80"
@@ -47,7 +57,8 @@ services:
       # script. Same volume the leet container reads at
       # /usr/share/nginx/html/webllm; legion mounts it read-only so we can't
       # accidentally corrupt the mirror. Same-origin from legion.codecai.net's
-      # perspective — no CORS needed.
+      # perspective — no CORS needed. Serves both the chat app's Qwen3-8B
+      # stage shards (stages/qwen3-8b-q4/) and /classic's MLC model set.
       - /storage/mzfs/webllm-mirror:/usr/share/nginx/html/webllm:ro
     networks:
       - nginx-proxy

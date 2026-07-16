@@ -92,7 +92,11 @@ mkdir -p "$(dirname "$MSGPACK_DST")"
 cp -a "$MSGPACK_SRC" "$MSGPACK_DST"
 echo "staged @msgpack/msgpack -> $MSGPACK_DST"
 
-# --- wasm glue/binary for apps/demo/public/wasm ---
+# --- wasm glue/binary for apps/demo/public/wasm AND apps/chat/public/wasm ---
+# (M6 root-swap: the deploy image builds both apps now — see
+# apps/chat/Dockerfile — so both need the wasm glue/binary physically
+# present in the build context, not just demo's.)
 bash "$ROOT/scripts/fetch-stage-assets.sh" "$LSR_DIR"
+bash "$ROOT/scripts/fetch-stage-assets.sh" "$LSR_DIR" "$ROOT/apps/chat/public/wasm"
 
 echo "deploy context ready."

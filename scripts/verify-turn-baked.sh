@@ -2,15 +2,22 @@
 # Post-build guard against the M0.5 regression: `docker compose build`
 # succeeds silently even when VITE_TURN_URLS/.env is missing — the bundle
 # just ships STUN-only with no error. Run this right after
-# `docker compose build legion-demo` (before `up -d`) so a missing/blank
+# `docker compose build legion-chat` (before `up -d`) so a missing/blank
 # .env fails loud instead of quietly degrading every cross-NAT peer.
 #
+# M6 root-swap: the built image now bundles BOTH apps/chat (served at /)
+# and apps/demo (served at /classic/) from the same `legion-chat` service
+# — both are built with the same VITE_TURN_* args (see
+# apps/chat/Dockerfile), so one grep against the chat bundle's assets/*.js
+# is sufficient; the demo build shares the identical ARG/ENV in the same
+# build stage.
+#
 # Usage: scripts/verify-turn-baked.sh [expected-turn-host] [container-image]
-#   scripts/verify-turn-baked.sh legion.codecai.net unstable-legion-legion-demo
+#   scripts/verify-turn-baked.sh legion.codecai.net unstable-legion-legion-chat
 set -euo pipefail
 
 EXPECTED_HOST="${1:-legion.codecai.net}"
-IMAGE="${2:-unstable-legion-legion-demo}"
+IMAGE="${2:-unstable-legion-legion-chat}"
 
 echo "Checking built image '$IMAGE' bakes in turn:${EXPECTED_HOST} ..."
 
