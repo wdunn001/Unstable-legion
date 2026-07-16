@@ -59,7 +59,7 @@ import {
 import { fragmentsForRange, manifestTiesEmbeddings, parseLayerPackageManifest, type LayerPackageManifest } from '@unstable-legion/stage-runtime';
 import { useMeshRoster } from './useMeshRoster.js';
 import { useStageHost, type UseStageHostSession, type UseStageHostHandle } from './useStageHost.js';
-import { sanitizeWasmHeapBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
+import { sanitizeWasmHeapBudget, sanitizeWeightBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import {
   createColocationCoordinator,
@@ -147,6 +147,16 @@ export interface UseCommunalHostOptions {
    * surfaces an error. Omit to disable telemetry entirely. */
   telemetry?: MeshTelemetrySink;
   log?: StageWorkerLog;
+  /**
+   * Operator opt-in (apps/chat's "Contribute more" panel) — overrides the
+   * WEIGHT budget used for layer-claim sizing, separate from
+   * `wasmHeapBudget` (KV/session sizing, always governed by
+   * `WASM_HEAP_CEILING_BYTES` regardless of this field — see
+   * `stagePipelinePlanning.ts#sanitizeWeightBudget`'s doc comment).
+   * Absent = unchanged default behavior (~11 layers for Qwen3-8B q4).
+   * Clamped to `[avgLayerBytes, CONTRIBUTION_BUDGET_CEILING_BYTES]`.
+   */
+  contributionBudgetBytes?: number;
   /**
    * Same-origin tab colocation (see `colocation.ts`'s module doc) —
    * collapses hosting to exactly ONE tab per browser profile per machine.
@@ -517,6 +527,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     forceDisconnect,
     onLifecycle: handleLifecycle,
     failureDomainId,
+    contributionBudgetBytes: opts.contributionBudgetBytes,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;
@@ -536,7 +547,16 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     const safeLimits = limits;
     const safePeer = peer;
 
-    const selfCapacityLayers = Math.max(0, Math.floor(sanitizeWasmHeapBudget(safeLimits.maxStorageBufferBindingSize) / avgLayerBytes));
+    // WEIGHT budget (layer-claim sizing) — decoupled from wasmHeapBudget
+    // (KV/session sizing, computed separately below via
+    // `hostStabilityScore`'s own `sanitizeWasmHeapBudget` call, untouched
+    // by `contributionBudgetBytes`). See `sanitizeWeightBudget`'s doc
+    // comment for the full root-cause writeup.
+    const weightBudgetBytes = sanitizeWeightBudget(
+      { ...safeLimits, contributionBudgetBytes: opts.contributionBudgetBytes },
+      { minBytes: avgLayerBytes },
+    );
+    const selfCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
     let cancelled = false;
     let jitterTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -732,7 +752,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // immediately rather than continuing to compute claims it'll never
     // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes]);
 
   useEffect(() => {
     if (!hostingActive) {

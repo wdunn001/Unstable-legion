@@ -794,6 +794,74 @@ code {
   align-self: flex-start;
   font-size: 11px;
 }
+.consent-capacity-summary {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* ── Contribute more (contribution budget panel) ─────────────────────── */
+.contribution-expand,
+.contribution-collapse {
+  align-self: flex-start;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.contribution-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px;
+}
+.contribution-hint {
+  margin: 0;
+  color: var(--fg);
+}
+.contribution-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+}
+.contribution-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.contribution-select,
+.contribution-gb-input {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.contribution-field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.contribution-probe-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.contribution-probe-message {
+  color: var(--muted);
+  font-size: 11px;
+}
+.contribution-reset {
+  align-self: flex-start;
+  font-size: 11px;
+}
 
 .audio-keepalive-row {
   display: flex;

@@ -205,6 +205,15 @@ export interface UseStageHostOptions {
    */
   failureDomainId?: string;
   /**
+   * Operator opt-in weight budget (see `stagePipelinePlanning.ts#
+   * sanitizeWeightBudget`'s doc comment) — merged onto the internally-
+   * detected `StageHostLimits` before `buildStageHostCap` runs, so the
+   * advertised cap's `vramBytes` reflects it (informational only here;
+   * this hook doesn't itself do claim-sizing math). Absent = unchanged
+   * behavior.
+   */
+  contributionBudgetBytes?: number;
+  /**
    * M3 follow-up (the documented "forced session termination after
    * teardown grace" gap) — pass a NEW object identity (e.g. `{ reason,
    * nonce: Date.now() }`) to immediately free EVERY session currently
@@ -498,7 +507,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     }
     const publish = (): void => {
       const cap = buildStageHostCap(
-        limits,
+        { ...limits, contributionBudgetBytes: opts.contributionBudgetBytes },
         {
           keepalive: !!keepaliveEnabled,
           visible,
@@ -521,7 +530,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       republishNowRef.current = () => undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId]);
+  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes]);
 
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
