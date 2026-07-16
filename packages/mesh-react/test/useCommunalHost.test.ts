@@ -160,3 +160,60 @@ test('resolveCommunalShardPlan: a failed manifest fetch throws with a descriptiv
     /failed to fetch communal manifest/,
   );
 });
+
+test('resolveCommunalShardPlan: ordered manifest failover — dead primary falls through, fragments resolve against the WINNER', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  const attempted: string[] = [];
+  const failoverFetch = (async (url: unknown) => {
+    attempted.push(String(url));
+    if (String(url).includes('huggingface')) throw new Error('network down');
+    if (String(url).includes('jsdelivr')) return { ok: false, status: 500, statusText: 'Server Error' } as unknown as Response;
+    return { ok: true, status: 200, statusText: 'OK', json: async () => manifest } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const { plan, manifestCache } = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 4, includeOutput: false },
+    {
+      manifestUrl: [
+        'https://huggingface.co/x/resolve/main/model-package.json',
+        'https://cdn.jsdelivr.net/gh/x/model-package.json',
+        'https://cdn.local/webllm/stages/m/model-package.json',
+      ],
+      opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+      fetchImpl: failoverFetch,
+    },
+  );
+  assert.equal(attempted.length, 3, 'tried each source in order');
+  assert.equal(manifestCache?.url, 'https://cdn.local/webllm/stages/m/model-package.json');
+  // Relative fragment paths resolve against the WINNING source, not the primary.
+  assert.ok(plan.shardUrls.every((u) => u.startsWith('https://cdn.local/webllm/stages/m/')), plan.shardUrls[0]);
+});
+
+test('resolveCommunalShardPlan: every manifest source dead -> one descriptive error naming the chain', async () => {
+  const deadFetch = (async () => {
+    throw new Error('offline');
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    resolveCommunalShardPlan(
+      { layerStart: 2, layerEnd: 4, includeOutput: false },
+      { manifestUrl: ['https://a/m.json', 'https://b/m.json'], opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: deadFetch },
+    ),
+    /every source \(https:\/\/a\/m\.json → https:\/\/b\/m\.json\).*offline/,
+  );
+});
+
+test('resolveCommunalShardPlan: a cached manifest from a lower-priority source is kept while its url stays in the list', async () => {
+  const manifest = fakeManifest(28, 1_000_000);
+  let fetches = 0;
+  const countingFetch = (async () => {
+    fetches += 1;
+    return { ok: true, status: 200, statusText: 'OK', json: async () => manifest } as unknown as Response;
+  }) as unknown as typeof fetch;
+  const urls = ['https://primary/m.json', 'https://secondary/m.json'];
+  const first = await resolveCommunalShardPlan(
+    { layerStart: 2, layerEnd: 4, includeOutput: false },
+    { manifestUrl: urls, opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES, fetchImpl: countingFetch, manifestCache: { url: 'https://secondary/m.json', manifest: (await import('../src/useCommunalHost.ts'), manifest) as never } },
+  );
+  assert.equal(fetches, 0, 'cache hit — no refetch of any source');
+  assert.equal(first.manifestCache?.url, 'https://secondary/m.json');
+});

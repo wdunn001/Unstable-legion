@@ -87,25 +87,37 @@ export function chatShardUrls(baseUrl?: string): readonly string[] {
   const path = chatShardPath();
   return [baseUrl ? new URL(path, baseUrl).toString() : path];
 }
-/** The deployed per-layer package manifest for Qwen3-8B (layer-package
- * format: shared/{metadata,embeddings,output}.gguf + layers/layer-NNN.gguf,
- * each SHA-256'd). When set, useCommunalChat's local stage-0 AND every
- * communal host resolve exactly their assigned fragments via
- * `fragmentsForRange` and pull each layer separately — NO monolith
- * full.gguf is fetched (it isn't even staged for 8B). Same-origin absolute
- * path (served from the /webllm/ mirror). */
-export function chatManifestUrl(): string | undefined {
-  const path = `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
-  // MUST be absolute: resolveCommunalShardPlan feeds this to
-  // `fragmentsForRange(manifest, manifestUrl, …)`, which resolves each
-  // fragment via `new URL(fragment.path, manifestUrl)` — and new URL()
-  // throws "Invalid base URL" when the base is a site-relative string.
-  // (The unit tests never caught this: they all pass an absolute
-  // `https://x/model-package.json`.) Resolve against the current origin;
-  // fall back to the bare path only in non-browser/SSR/test contexts.
-  return typeof location !== 'undefined' && location.origin
-    ? new URL(path, location.origin).toString()
-    : path;
+/** Weight-distribution manifest sources, ORDERED by priority — fed to
+ * `resolveCommunalShardPlan`, which takes the first source that fetches +
+ * parses and resolves relative fragment paths against the WINNER:
+ *
+ *   1. Hugging Face (wdunn001/legion-model-qwen3-8b) — primary. Free
+ *      global CDN, CORS verified (`Access-Control-Allow-Origin` echoes
+ *      the origin on both the 302 and the CDN hop), LFS oids match the
+ *      manifest's sha256s. Its manifest carries RELATIVE paths, so the
+ *      weights come from HF too.
+ *   2. GitHub (same-name repo) via jsDelivr — manifest-only fallback; its
+ *      manifest carries ABSOLUTE HF `resolve` URLs (jsDelivr's /gh/ caps
+ *      files at 20MB, and GitHub's release-asset host sends no CORS —
+ *      weights can never live on GitHub itself; see that repo's README).
+ *   3. cdn.codecai.net (/webllm/ mirror, .198) — last resort, and the only
+ *      source fully independent of HF: manifest AND weights same-origin.
+ *
+ * All three describe byte-identical, content-addressed artifacts (same
+ * sha256s), so OPFS-cached fragments hit regardless of which source a
+ * given session resolved through. */
+export function chatManifestUrls(): readonly string[] {
+  const localPath = `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
+  // The local mirror URL MUST be absolute: fragmentsForRange resolves each
+  // fragment via `new URL(fragment.path, manifestUrl)`, which throws
+  // "Invalid base URL" on a site-relative base (hotfix/manifest-abs-url).
+  const local =
+    typeof location !== 'undefined' && location.origin ? new URL(localPath, location.origin).toString() : localPath;
+  return [
+    'https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/model-package.json',
+    'https://cdn.jsdelivr.net/gh/wdunn001/legion-model-qwen3-8b@main/model-package.json',
+    local,
+  ];
 }
 
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI
@@ -130,7 +142,7 @@ export interface ChatModelConfig {
   ctxSize: number;
   nEmbd: number;
   avgLayerBytes: number;
-  manifestUrl: string | undefined;
+  manifestUrl: string | readonly string[] | undefined;
   shardUrls: () => readonly string[];
   /** True when this is the e2e/local-dev test-model swap, not the real
    * production target — surfaced so UI can (optionally) show a subtle
@@ -181,7 +193,7 @@ export function resolveChatModelConfig(): ChatModelConfig {
     ctxSize: CHAT_CTX_SIZE,
     nEmbd: CHAT_N_EMBD,
     avgLayerBytes: CHAT_AVG_LAYER_BYTES,
-    manifestUrl: chatManifestUrl(),
+    manifestUrl: chatManifestUrls(),
     shardUrls: () => chatShardUrls(),
     isTestModel: false,
     displayName: CHAT_MODEL_DISPLAY_NAME,

@@ -129,7 +129,7 @@ export interface UseCommunalHostOptions {
    * full.gguf-with-runtime-filter convention) is used instead, and the
    * OPFS-quota check is skipped (no per-fragment byte accounting exists
    * without a manifest). */
-  manifestUrl?: string;
+  manifestUrl?: string | readonly string[];
   fallbackShardUrls?: () => readonly string[];
   /** Uniform per-layer byte estimate, used to convert this peer's
    * WebGPU/wasm capacity into a layer COUNT for `communalHostClaim`. Real
@@ -363,7 +363,12 @@ interface ShardPlan {
 export async function resolveCommunalShardPlan(
   claim: CommunalClaimRange,
   opts: {
-    manifestUrl?: string;
+    /** One manifest URL, or an ORDERED failover list (first reachable +
+     * parseable source wins; its URL becomes the base every relative
+     * fragment path resolves against, so a manifest and its weights
+     * share an origin unless the manifest carries absolute paths).
+     * apps/chat passes [Hugging Face, jsDelivr/GitHub, cdn.codecai.net]. */
+    manifestUrl?: string | readonly string[];
     fallbackShardUrls?: () => readonly string[];
     opfsQuotaBytes: number;
     fetchImpl?: typeof fetch;
@@ -377,22 +382,42 @@ export async function resolveCommunalShardPlan(
     includeEmbeddings?: boolean;
   },
 ): Promise<{ plan: ShardPlan; manifestCache: { url: string; manifest: LayerPackageManifest } | null }> {
-  if (!opts.manifestUrl) {
+  const manifestUrls = (typeof opts.manifestUrl === 'string' ? [opts.manifestUrl] : [...(opts.manifestUrl ?? [])]).filter(Boolean);
+  if (manifestUrls.length === 0) {
     return {
       plan: { shardUrls: opts.fallbackShardUrls?.() ?? [], useMemoryShardStore: false },
       manifestCache: opts.manifestCache ?? null,
     };
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
-  let cache = opts.manifestCache ?? null;
-  if (!cache || cache.url !== opts.manifestUrl) {
-    const res = await fetchImpl(opts.manifestUrl);
-    if (!res.ok) throw new Error(`failed to fetch communal manifest ${opts.manifestUrl}: ${res.status} ${res.statusText}`);
-    const manifest = parseLayerPackageManifest(await res.json());
-    cache = { url: opts.manifestUrl, manifest };
+  // A cached manifest stays valid as long as its source is still IN the
+  // list — reordering/removing a source invalidates, a lower-priority
+  // cache hit is kept rather than re-probing the primary every tick.
+  let cache = opts.manifestCache && manifestUrls.includes(opts.manifestCache.url) ? opts.manifestCache : null;
+  if (!cache) {
+    let lastError: unknown;
+    for (const url of manifestUrls) {
+      try {
+        const res = await fetchImpl(url);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        cache = { url, manifest: parseLayerPackageManifest(await res.json()) };
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!cache) {
+      throw new Error(
+        `failed to fetch communal manifest from every source (${manifestUrls.join(' → ')}): ` +
+          (lastError instanceof Error ? lastError.message : String(lastError)),
+      );
+    }
   }
   const manifest = cache.manifest;
-  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
+  // Base URL for relative fragment paths = the WINNING source, not the
+  // primary — a manifest served by the fallback origin must pull its
+  // weights from that same origin (absolute paths are unaffected).
+  const fragments = fragmentsForRange(manifest, cache.url, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {

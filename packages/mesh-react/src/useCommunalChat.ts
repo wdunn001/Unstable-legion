@@ -100,7 +100,7 @@ export interface UseCommunalChatOptions {
    * wrong-width activations → the remote stage rejects the frame
    * ("activation input payload is N bytes, expected M"). The manifest is the
    * single source of truth that keeps every stage on the same model. */
-  manifestUrl?: string;
+  manifestUrl?: string | readonly string[];
   nEmbd?: number;
   ctxSize?: number;
   wireDtype?: 'f32' | 'f16';

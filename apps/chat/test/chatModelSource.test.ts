@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CHAT_MODEL_DISPLAY_NAME,
   CHAT_MODEL_QUANT,
-  chatManifestUrl,
+  chatManifestUrls,
   chatModelLabel,
   resolveChatModelConfig,
 } from '../src/chatModelSource.ts';
@@ -23,22 +23,26 @@ test('resolveChatModelConfig: production (no query param) names the real target 
   assert.doesNotMatch(config.modelLabel, /test model/i);
 });
 
-test('chatManifestUrl: returns an ABSOLUTE url usable as a `new URL()` base', () => {
-  // Regression: it returned a site-relative "/webllm/…" string, and
-  // resolveCommunalShardPlan -> fragmentsForRange does
-  // `new URL(fragment.path, manifestUrl)`, which throws "Invalid base URL"
-  // when the base is relative. This broke live layer loading; the old
-  // tests missed it by only ever passing absolute manifest URLs.
+test('chatManifestUrls: ordered HF -> jsDelivr(GitHub) -> local mirror, every entry an ABSOLUTE `new URL()` base', () => {
+  // Regression (absolute-url half): a site-relative "/webllm/…" base makes
+  // resolveCommunalShardPlan -> fragmentsForRange's
+  // `new URL(fragment.path, manifestUrl)` throw "Invalid base URL" — this
+  // broke live layer loading once (hotfix/manifest-abs-url).
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'location');
   try {
     Object.defineProperty(globalThis, 'location', {
       value: { origin: 'https://legion.codecai.net' },
       configurable: true,
     });
-    const url = chatManifestUrl();
-    assert.ok(url && /^https?:\/\//.test(url), `expected absolute url, got ${String(url)}`);
-    // The exact failure mode fragmentsForRange hits:
-    assert.doesNotThrow(() => new URL('layers/layer-002.gguf', url));
+    const urls = chatManifestUrls();
+    assert.equal(urls.length, 3);
+    assert.match(urls[0]!, /^https:\/\/huggingface\.co\//, 'primary = Hugging Face');
+    assert.match(urls[1]!, /^https:\/\/cdn\.jsdelivr\.net\/gh\//, 'fallback = GitHub via jsDelivr');
+    assert.match(urls[2]!, /^https:\/\/legion\.codecai\.net\/webllm\//, 'last resort = local mirror');
+    for (const url of urls) {
+      assert.ok(/^https?:\/\//.test(url), `expected absolute url, got ${url}`);
+      assert.doesNotThrow(() => new URL('layers/layer-002.gguf', url));
+    }
   } finally {
     if (saved) Object.defineProperty(globalThis, 'location', saved);
     else delete (globalThis as { location?: unknown }).location;
