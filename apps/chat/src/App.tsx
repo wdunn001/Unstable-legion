@@ -76,8 +76,19 @@ import {
 const ROOM_ID =
   (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : null) ?? 'legion-chat';
 
+// Self-hosted MQTT-over-WSS signaling relay on the off-ISP VPS (mosquitto
+// behind nginx TLS at signal.quasarke.net, split-horizon-resolved to the VPS
+// from both LAN and public). PREPENDED so peer discovery/SDP exchange no longer
+// depends on flaky/overloaded public MQTT brokers (the public brokers stalled
+// discovery — peers never exchanged offers). Env-overridable; the public
+// defaults stay as fallback. See homelab-compose mail-stack/vps-relay.
+const SELF_RELAY_URLS = (import.meta.env.VITE_RELAY_URLS ?? 'wss://signal.quasarke.net/mqtt')
+  .split(/[\s,]+/)
+  .filter(Boolean);
+
 const RELAY_URLS = mergeRelayUrls({
   defaults: defaultRelayUrls,
+  extras: SELF_RELAY_URLS,
   blockedHosts: ['test.mosquitto.org', 'broker-cn.emqx.io'],
   max: 6,
 });
