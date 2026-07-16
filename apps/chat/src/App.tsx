@@ -468,7 +468,26 @@ function Dashboard(props: {
         finalizeExchange();
         return;
       }
+      // RESUME RACE: `status` flips to finished BEFORE the previous
+      // session's teardown clears the run guard (see isRunning's doc in
+      // useCommunalChat) — a start() fired straight from the status effect
+      // is silently refused and the reply would stay blank forever (first
+      // live-test symptom of this loop). Wait out the teardown, bounded.
       const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds });
+      const deadline = Date.now() + 15_000;
+      while (chat.isRunning() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      if (ex.cancelled || exchangeRef.current !== ex) {
+        if (exchangeRef.current === ex) finalizeExchange();
+        return;
+      }
+      if (chat.isRunning()) {
+        ex.trace.push('tool loop: could not resume generation (session never released)');
+        threads.setMessageToolTrace(ex.assistantId, ex.trace);
+        finalizeExchange();
+        return;
+      }
       void chat.start(prompt, { maxDecodeTokens: 256 });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps

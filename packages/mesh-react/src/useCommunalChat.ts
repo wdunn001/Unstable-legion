@@ -183,8 +183,24 @@ export interface UseCommunalChatHandle {
    * for the CURRENT route — UI topology display can render a per-stage
    * readiness badge, mirroring `useStagePipeline`'s `readyStageIndexes`. */
   readyStageIndexes: readonly number[];
-  start: (prompt: string, opts?: { maxDecodeTokens?: number }) => Promise<void>;
+  /**
+   * Run one full session. Resolves `true` when the session ran to its end
+   * (any outcome — finished/aborted/error) and every resource is released;
+   * resolves `false` when it REFUSED to start (a previous session is still
+   * running or tearing down, no peer, or lost the cross-tab leader lock).
+   * TOOL-NODES relies on the distinction: the multi-round loop restarts
+   * generation on `finished`, which fires BEFORE the previous run's
+   * teardown clears the running guard — a caller seeing `false` should
+   * retry briefly, not conclude the mesh is broken.
+   */
+  start: (prompt: string, opts?: { maxDecodeTokens?: number }) => Promise<boolean>;
   abort: (reason?: string) => void;
+  /** True while a session holds the run guard — INCLUDING the teardown
+   * window after `status` already reads `finished` (worker dispose + lock
+   * release are awaited before the guard clears). A caller that wants to
+   * chain a new `start()` off a finished session must wait for this to go
+   * false first, or its `start()` returns `false` untried. */
+  isRunning: () => boolean;
 }
 
 export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHandle {
@@ -235,11 +251,11 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   }, []);
 
   const start = useCallback(
-    async (prompt: string, startOpts?: { maxDecodeTokens?: number }) => {
-      if (runningRef.current) return;
+    async (prompt: string, startOpts?: { maxDecodeTokens?: number }): Promise<boolean> => {
+      if (runningRef.current) return false;
       if (!peer) {
         setStatus({ phase: 'error', error: 'mesh not connected' });
-        return;
+        return false;
       }
       runningRef.current = true;
       setPlan(undefined);
@@ -253,7 +269,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       if (!lock) {
         setStatus({ phase: 'follower' });
         runningRef.current = false;
-        return;
+        return false;
       }
       lockRef.current = lock;
       emitTelemetry(telemetry, { name: 'chat_started', props: { modelId } });
@@ -529,6 +545,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
         lockRef.current = null;
         runningRef.current = false;
       }
+      return true;
     },
     [
       peer,
@@ -564,5 +581,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     };
   }, [teardownLocalWorker]);
 
-  return { status, plan, tokens, text, restartCount, readyStageIndexes, start, abort };
+  const isRunning = useCallback(() => runningRef.current, []);
+
+  return { status, plan, tokens, text, restartCount, readyStageIndexes, start, abort, isRunning };
 }
