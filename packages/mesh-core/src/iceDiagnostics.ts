@@ -50,13 +50,8 @@ interface IceDiagGlobal {
 }
 
 function debugLog(...args: unknown[]): void {
-  // OPT-IN only. ICE candidate errors fire dozens per second on any LAN
-  // with DNS quirks or router hairpin (STUN/TURN host-lookup + timeout
-  // spam) — logging them by default buries the console in red for zero
-  // user benefit. The data is ALWAYS recorded into `window.__legionIce`
-  // regardless; set `window.__legion_ice_debug = true` to also stream it
-  // to the console when actually debugging connectivity.
-  if ((globalThis as { __legion_ice_debug?: unknown }).__legion_ice_debug !== true) return;
+  const flag = (globalThis as { __legion_debug?: unknown }).__legion_debug;
+  if (flag === false) return;
   // eslint-disable-next-line no-console
   console.info('[legion-ice]', ...args);
 }
