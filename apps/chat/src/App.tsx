@@ -461,9 +461,14 @@ function Dashboard(props: {
         ex.trace[traceIdx] = `${call.name} → error`;
         threads.setMessageToolTrace(ex.assistantId, ex.trace);
         ex.rounds.push({ assistantText, toolResponse: buildToolResponsePayload(call.name, undefined, reason) });
-      } finally {
-        ex.toolLoopBusy = false;
       }
+      // NOTE: ex.toolLoopBusy stays TRUE here — through the resume wait and
+      // the chat.start() below — and is released by the status effect only
+      // once the NEW session's phase lands. Releasing it any earlier
+      // re-opens the door for the effect (which re-runs on every render)
+      // to re-detect the SAME finished-text tool call and serve it again:
+      // the live-test symptom was one call served 3× (burning the whole
+      // round budget) while the first resume was still waiting.
       if (ex.cancelled) {
         finalizeExchange();
         return;
@@ -510,7 +515,22 @@ function Dashboard(props: {
   useEffect(() => {
     if (!streamingMessageId) return;
     const ex = exchangeRef.current;
-    if (ex?.toolLoopBusy) return; // a round-trip owns the lifecycle right now
+    const phase = chat.status.phase;
+    // A non-terminal phase means the resumed session is genuinely underway
+    // — THIS is where a round's busy flag releases (see runToolRound's
+    // trailing note), so the next 'finished' can start the next round.
+    if (phase === 'planning' || phase === 'starting' || phase === 'running') {
+      if (ex?.toolLoopBusy) ex.toolLoopBusy = false;
+      return;
+    }
+    // Abort/error finalizes even mid-round: runToolRound's own post-wait
+    // guards (`exchangeRef.current !== ex`) make it bail out cleanly after
+    // this clears the exchange, so there's no double-finalize.
+    if (phase === 'aborted' || phase === 'error') {
+      finalizeExchange();
+      return;
+    }
+    if (ex?.toolLoopBusy) return; // a round-trip/resume owns the lifecycle right now
     if (chat.status.phase === 'finished') {
       // Tool round? Only when the mesh (or self) can actually serve it,
       // the round budget isn't spent, and the user hasn't stopped us.
@@ -529,8 +549,6 @@ function Dashboard(props: {
       // the timer via cleanup, and re-checks for a tool call above.
       const timer = setTimeout(() => finalizeExchange(), 400);
       return () => clearTimeout(timer);
-    } else if (chat.status.phase === 'aborted' || chat.status.phase === 'error') {
-      finalizeExchange();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.status, chat.text, streamingMessageId, runToolRound, finalizeExchange]);
