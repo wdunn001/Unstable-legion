@@ -16,7 +16,7 @@
 #   scripts/verify-turn-baked.sh legion.codecai.net unstable-legion-legion-chat
 set -euo pipefail
 
-EXPECTED_HOST="${1:-legion.codecai.net}"
+EXPECTED_HOST="${1:-51.81.33.184}"
 IMAGE="${2:-unstable-legion-legion-chat}"
 
 echo "Checking built image '$IMAGE' bakes in turn:${EXPECTED_HOST} ..."
