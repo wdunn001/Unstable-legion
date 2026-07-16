@@ -13,16 +13,14 @@
  * (`STAGE_DRIVER_LAYERS` in mesh-react) — a driver always hosts layers
  * [0, DRIVER_LAYERS) locally, communal hosts cover the rest.
  *
- * HONEST STATE (same gap `docs/COMMUNAL.md` already documents for
- * `qwen3-0.6b-q8_0`): no per-layer manifest is deployed for
- * `qwen3-8b-q4` yet — `manifestUrl()` is left unwired here, same as
- * `CommunalHostPanel.tsx`'s own comment on this, and
- * `resolveCommunalShardPlan` falls back to `fallbackShardUrls()`
- * (Phase A/B "every stage loads the same full.gguf, the runtime tensor
- * filter slices its own layer range out of it" convention) cleanly.
- * Wiring a real manifest is a one-line change (`manifestUrl` prop on
- * `useCommunalHost`) once one is deployed — not required for this
- * milestone (M5 builds the app; M6 deploys it).
+ * MANIFEST WIRED: the per-layer package manifest for `qwen3-8b-q4` IS
+ * deployed (/webllm/stages/qwen3-8b-q4/model-package.json — layer-package
+ * format, 36 per-layer fragments + shared embeddings/output). `manifestUrl()`
+ * returns it, so `useCommunalChat` + every communal host pull ONLY their
+ * assigned layer fragments via `fragmentsForRange`. There is NO full.gguf
+ * staged for 8B (it's 4.9GB — the whole point of per-layer artifacts is to
+ * never fetch the monolith); requesting it 404s, which is why the fallback
+ * path must not be used for the production model.
  *
  * `AVG_LAYER_BYTES` is a planning-upper-bound ESTIMATE (same role as
  * `STAGE_AVG_LAYER_BYTES` in mesh-react's doc comment: "real models have
@@ -89,11 +87,15 @@ export function chatShardUrls(baseUrl?: string): readonly string[] {
   const path = chatShardPath();
   return [baseUrl ? new URL(path, baseUrl).toString() : path];
 }
-/** No manifest deployed yet — see module doc's HONEST STATE note. Kept
- * as a named function (rather than a bare `undefined` export) so wiring
- * it later is a one-line body change, not a call-site hunt. */
+/** The deployed per-layer package manifest for Qwen3-8B (layer-package
+ * format: shared/{metadata,embeddings,output}.gguf + layers/layer-NNN.gguf,
+ * each SHA-256'd). When set, useCommunalChat's local stage-0 AND every
+ * communal host resolve exactly their assigned fragments via
+ * `fragmentsForRange` and pull each layer separately — NO monolith
+ * full.gguf is fetched (it isn't even staged for 8B). Same-origin absolute
+ * path (served from the /webllm/ mirror). */
 export function chatManifestUrl(): string | undefined {
-  return undefined;
+  return `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
 }
 
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI
