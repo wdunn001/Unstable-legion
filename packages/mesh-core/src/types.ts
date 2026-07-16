@@ -192,7 +192,14 @@ export interface MeshLoadedStage {
   includeEmbeddings: boolean;
   includeOutput: boolean;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  /**
+   * Wire dtype the host loaded with. OPTIONAL over the wire: a peer running a
+   * bundle that predates the f16-wire field omits it (and JSON drops an
+   * `undefined`), so it must not sink an otherwise-valid cap. A missing value
+   * is treated as `f16` (the current streaming default) at ingestion —
+   * see `collectCommunalAds`. Consumers must not assume it is present.
+   */
+  wireDtype?: 'f32' | 'f16';
   /** Lane ceiling committed at load time (see `chooseMaxSessions`). */
   maxSessions: number;
   /** Sessions currently occupying a lane on THIS stage. */

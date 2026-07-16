@@ -188,7 +188,10 @@ function toAd(
     includeEmbeddings: stage.includeEmbeddings,
     includeOutput: stage.includeOutput,
     ctxSize: stage.ctxSize,
-    wireDtype: stage.wireDtype,
+    // Default a dtype-less peer (older bundle) to f16 so the ad — and every
+    // downstream consumer (e.g. the activation-wire encoder) — never sees
+    // undefined. Both driver and host use whatever this resolves to.
+    wireDtype: stage.wireDtype ?? 'f16',
     maxSessions: stage.maxSessions,
     activeSessions: stage.activeSessions,
     epoch: stage.epoch,
