@@ -116,6 +116,20 @@ export interface Peer {
   sendStageFrame(bytes: Uint8Array, peers?: string | string[]): Promise<void>;
   /** Subscribe to inbound stage-activation frames. */
   onStageFrame(cb: (bytes: Uint8Array, peerId: string) => void): () => void;
+  /**
+   * Send a user-to-user room-chat frame (binary). Bytes are opaque here —
+   * the wire format is `@unstable-legion/core`'s `encodeUserChatWire`
+   * (compact msgpack + dict-deflate, self-describing codec tag). Distinct
+   * from `cm` (AI-oriented chat metadata) and from `cf`/`sf` (AI token /
+   * activation streams): the `uc` action is the human text channel and has
+   * no bearing on the AI-activation wire. A peer without user-chat support
+   * simply never registers an `onUserChat` handler (Trystero actions are
+   * per-name — an unknown action is a no-op for receivers).
+   */
+  sendUserChat(bytes: Uint8Array, peers?: string | string[]): Promise<void>;
+  /** Subscribe to inbound user-chat frames (opaque bytes; decode with
+   * `decodeUserChatWire`). */
+  onUserChat(cb: (bytes: Uint8Array, peerId: string) => void): () => void;
   /** Leave the room and stop the heartbeat. */
   leave(): void;
 }
@@ -168,6 +182,7 @@ export function joinMesh(opts: PeerOptions): Peer {
   const [sendFrameBytes, onFrameBytes] = room.makeAction<Uint8Array>('cf');
   const [sendTool, onTool] = room.makeAction<MeshToolFrame>('tc');
   const [sendStageFrameBytes, onStageFrameBytes] = room.makeAction<Uint8Array>('sf');
+  const [sendUserChatBytes, onUserChatBytes] = room.makeAction<Uint8Array>('uc');
 
   // ── Local listener registries ────────────────────────────────────────
   const chatListeners = new Set<(msg: MeshChatMessage, peerId: string) => void>();
@@ -175,6 +190,7 @@ export function joinMesh(opts: PeerOptions): Peer {
   const envelopeListeners = new Set<(env: WebRtcEnvelope, peerId: string) => void>();
   const toolListeners = new Set<(frame: MeshToolFrame, peerId: string) => void>();
   const stageFrameListeners = new Set<(bytes: Uint8Array, peerId: string) => void>();
+  const userChatListeners = new Set<(bytes: Uint8Array, peerId: string) => void>();
 
   // ── Debug logging — ON by default while we diagnose roster /
   //    chat-doesn't-work reports. To silence:
@@ -243,6 +259,11 @@ export function joinMesh(opts: PeerOptions): Peer {
   onStageFrameBytes((raw, peerId) => {
     if (!(raw instanceof Uint8Array)) return;
     for (const cb of stageFrameListeners) cb(raw, peerId);
+  });
+
+  onUserChatBytes((raw, peerId) => {
+    if (!(raw instanceof Uint8Array)) return;
+    for (const cb of userChatListeners) cb(raw, peerId);
   });
 
   // ── Peer join/leave: cap broadcast + roster prune ────────────────────
@@ -352,6 +373,13 @@ export function joinMesh(opts: PeerOptions): Peer {
     onStageFrame(cb) {
       stageFrameListeners.add(cb);
       return () => stageFrameListeners.delete(cb);
+    },
+    async sendUserChat(bytes, peers) {
+      await sendUserChatBytes(bytes, peers);
+    },
+    onUserChat(cb) {
+      userChatListeners.add(cb);
+      return () => userChatListeners.delete(cb);
     },
     leave() {
       if (heartbeat) clearInterval(heartbeat);

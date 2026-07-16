@@ -35,6 +35,15 @@ export {
 // ── Chat ────────────────────────────────────────────────────────────
 export { useMeshChat, type ChatHook } from './useMeshChat.js';
 
+// ── User-to-user room chat (compressed, rate-limited, distinct from AI) ──
+export {
+  useUserChat,
+  type UseUserChatOptions,
+  type UseUserChatHandle,
+  type UserChatSendResult,
+  type UserChatWireStats,
+} from './useUserChat.js';
+
 // ── Tools ───────────────────────────────────────────────────────────
 export {
   useMeshTools,

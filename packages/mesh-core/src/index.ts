@@ -181,6 +181,40 @@ export {
   type Detokenizer,
 } from './wire.js';
 
+// ── User-to-user room chat: compression + wire + rate-limit + dedup ──
+export {
+  CHAT_CODEC,
+  CHAT_DICT,
+  CHAT_DICT_CORPUS,
+  buildChatDict,
+  compressChatBytes,
+  decompressChatBytes,
+  measureCompression,
+  type ChatCodecTag,
+  type CompressionStats,
+} from './chatCompression.js';
+export {
+  encodeUserChatWire,
+  decodeUserChatWire,
+  newUserChatId,
+  createUserChatIdSequencer,
+  userChatDedupKey,
+  SeenSet,
+  type UserChatMessage,
+  type UserChatDecodeContext,
+} from './userChat.js';
+export {
+  TokenBucket,
+  PerPeerRateLimiter,
+  laneForStanding,
+  DEFAULT_RATE_LIMIT_CONFIG,
+  type RateLimitConfig,
+  type Lane,
+  type TokenBucketState,
+  type ConsumeResult,
+  type PerPeerRateLimiterOptions,
+} from './rateLimiter.js';
+
 // ── Safety prefilter glue ───────────────────────────────────────────
 export {
   prefilterOutbound,
