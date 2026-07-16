@@ -138,8 +138,13 @@ export interface ChatModelConfig {
  * `?testModel=1` from `location.search` — see module doc. Safe to call
  * outside a browser (SSR/tests): falls back to production Qwen3-8B. */
 export function resolveChatModelConfig(): ChatModelConfig {
-  const isTestModel =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).get('testModel') === '1';
+  const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;
+  const isTestModel = params?.get('testModel') === '1';
+  // e2e resilience knob: point a host at a shard URL that 404s so the load
+  // deterministically fails — exercises the backoff + error-surfacing path
+  // (Part A) without depending on a flaky real fetch failure. Test-only,
+  // same query-param idiom as `?testModel=1`; never affects production.
+  const badShard = params?.get('badShard') === '1';
 
   if (isTestModel) {
     return {
@@ -150,7 +155,9 @@ export function resolveChatModelConfig(): ChatModelConfig {
       nEmbd: TEST_N_EMBD,
       avgLayerBytes: TEST_AVG_LAYER_BYTES,
       manifestUrl: undefined,
-      shardUrls: () => testShardUrls(),
+      shardUrls: badShard
+        ? () => [`/webllm/stages/${TEST_MODEL_ID}/does-not-exist-e2e.gguf`]
+        : () => testShardUrls(),
       isTestModel: true,
       displayName: TEST_MODEL_DISPLAY_NAME,
       modelLabel: `${chatModelLabel(TEST_MODEL_DISPLAY_NAME, TEST_MODEL_QUANT)} (test model)`,

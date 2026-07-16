@@ -2,13 +2,16 @@ import { useEffect, useRef } from 'react';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import type { ChatMessage } from '../db/threadStore.js';
-import type { CapacityView } from '../viewmodels/meshViewModels.js';
+import type { CapacityView, ChatNoticeView } from '../viewmodels/meshViewModels.js';
 
 export interface ChatPaneProps {
   messages: readonly ChatMessage[];
   streamingMessageId: string | undefined;
   busy: boolean;
   capacity: CapacityView;
+  /** Driver-side failure/reconnect notice — a visible card, never a silent
+   * hang (see `deriveChatNotice`). Undefined when there's nothing to say. */
+  notice?: ChatNoticeView;
   onSend: (text: string) => void;
   onStop: () => void;
 }
@@ -39,6 +42,18 @@ export function ChatPane(props: ChatPaneProps) {
           props.messages.map((m) => <MessageBubble key={m.id} message={m} streaming={m.id === props.streamingMessageId} />)
         )}
       </div>
+      {props.notice && (
+        <div
+          className={`chat-notice ${props.notice.kind === 'retrying' ? 'chat-notice-retrying' : 'chat-notice-error'}`}
+          role="alert"
+          aria-live="polite"
+        >
+          <span className="chat-notice-icon" aria-hidden="true">
+            {props.notice.kind === 'retrying' ? '↻' : '⚠'}
+          </span>
+          <span className="chat-notice-message">{props.notice.message}</span>
+        </div>
+      )}
       <Composer disabled={disabled} disabledReason={disabledReason} busy={props.busy} onSend={props.onSend} onStop={props.onStop} />
     </div>
   );

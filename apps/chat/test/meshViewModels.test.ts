@@ -10,6 +10,7 @@ import { StandingLedger } from '@unstable-legion/core';
 import type { CommunalTopology, MeshRosterEntry } from '@unstable-legion/core';
 import {
   deriveCapacityView,
+  deriveChatNotice,
   deriveLeaderboard,
   deriveOccupancy,
   deriveStandingView,
@@ -195,6 +196,59 @@ test('deriveTopologySegments: local + covered + gap segments in layer order', ()
       [20, 36, 'gap', undefined],
     ],
   );
+});
+
+// ── deriveChatNotice — honest driver-side failure/reconnect copy ─────────
+
+const READY_CAPACITY = deriveCapacityView(
+  topology({ segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate()] }], seats: 3 }),
+  MODEL_LABEL,
+);
+const GAP_CAPACITY = deriveCapacityView(
+  topology({ coverageFraction: 0.6, gaps: [{ layerStart: 14, layerEnd: 27 }] }),
+  MODEL_LABEL,
+);
+
+test('deriveChatNotice: nothing to say for idle/planning/running-clean/finished', () => {
+  assert.equal(deriveChatNotice({ phase: 'idle' }, 0, READY_CAPACITY), undefined);
+  assert.equal(deriveChatNotice({ phase: 'planning' }, 0, READY_CAPACITY), undefined);
+  assert.equal(deriveChatNotice({ phase: 'running' }, 0, READY_CAPACITY), undefined);
+  assert.equal(deriveChatNotice({ phase: 'finished' }, 0, READY_CAPACITY), undefined);
+});
+
+test('deriveChatNotice: no-feasible-route error → actionable "layers X–Y need a host", model-named', () => {
+  const notice = deriveChatNotice(
+    { phase: 'error', error: 'no feasible communal route — mesh coverage has a gap' },
+    0,
+    GAP_CAPACITY,
+  )!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /Qwen3-8B · Q4_K_M/);
+  assert.match(notice.message, /layers 14–27 need a host/);
+});
+
+test('deriveChatNotice: host-loss error → "Lost connection to a host …"', () => {
+  const notice = deriveChatNotice({ phase: 'error', error: 'lost connection to host peer-a' }, 1, READY_CAPACITY)!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /Lost connection to a host/);
+});
+
+test('deriveChatNotice: generic error → "Something went wrong"', () => {
+  const notice = deriveChatNotice({ phase: 'error', error: 'kaboom' }, 0, READY_CAPACITY)!;
+  assert.match(notice.message, /Something went wrong: kaboom/);
+});
+
+test('deriveChatNotice: involuntary abort → framed as a stop, user abort → no notice', () => {
+  const involuntary = deriveChatNotice({ phase: 'aborted', reason: 'host left the mesh' }, 2, READY_CAPACITY)!;
+  assert.equal(involuntary.kind, 'error');
+  assert.match(involuntary.message, /The chat stopped/);
+  assert.equal(deriveChatNotice({ phase: 'aborted', reason: 'user stopped' }, 0, READY_CAPACITY), undefined);
+});
+
+test('deriveChatNotice: running after a replan → transient "reconnecting" notice', () => {
+  const notice = deriveChatNotice({ phase: 'running' }, 1, READY_CAPACITY)!;
+  assert.equal(notice.kind, 'retrying');
+  assert.match(notice.message, /reconnecting/i);
 });
 
 test('shortPeerId truncates long ids and leaves short ones alone', () => {

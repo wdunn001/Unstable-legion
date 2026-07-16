@@ -32,6 +32,28 @@ export interface HostingConsentBannerProps {
   claim?: { layerStart: number; layerEnd: number };
   approxDownloadLabel: string;
   layerRangeLabel: string;
+  /** Human, model-named failure copy from `useCommunalHost` — shown as a
+   * prominent error card (never a silent spinner) whenever the local host
+   * is failing to load / retrying. Undefined when healthy. */
+  errorMessage?: string;
+  /** True while a bounded retry is scheduled (transient) — styles the card
+   * as "retrying" rather than a hard "failing" state. */
+  retrying?: boolean;
+}
+
+/** The host-failure card — rendered inside the hosting panel whenever the
+ * local host can't load its claimed layers. Distinguishes transient
+ * (retrying, with the countdown baked into `message`) from persistent
+ * ("still failing"). Never a silent spinner. */
+function HostErrorCard(props: { message: string; retrying?: boolean }) {
+  return (
+    <div className={`host-error-card ${props.retrying ? 'host-error-retrying' : 'host-error-failing'}`} role="alert" aria-live="polite">
+      <span className="host-error-icon" aria-hidden="true">
+        {props.retrying ? '↻' : '⚠'}
+      </span>
+      <span className="host-error-message">{props.message}</span>
+    </div>
+  );
 }
 
 export function HostingConsentBanner(props: HostingConsentBannerProps) {
@@ -79,6 +101,7 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
           </span>
         </label>
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
+        {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
       </div>
     );
   }

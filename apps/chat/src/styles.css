@@ -839,3 +839,44 @@ code {
 .trust-interstitial-ack {
   margin-top: 8px;
 }
+
+/* ── Failure surfaces — honest, never a silent spinner ─────────────────
+   The host-error card (in the hosting panel) and the chat notice (above
+   the composer) both make a failure VISIBLE: a red "failing" state and an
+   amber "retrying" state (with the live countdown baked into the copy). */
+.host-error-card,
+.chat-notice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.chat-notice {
+  margin: 0 12px 8px;
+}
+.host-error-failing,
+.chat-notice-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.host-error-retrying,
+.chat-notice-retrying {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.host-error-icon,
+.chat-notice-icon {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+.host-error-message,
+.chat-notice-message {
+  flex: 1 1 auto;
+}

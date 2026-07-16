@@ -44,11 +44,13 @@ import { resolveChatModelConfig } from './chatModelSource.js';
 import { buildPrompt } from './chatPrompt.js';
 import {
   deriveCapacityView,
+  deriveChatNotice,
   deriveLeaderboard,
   deriveStandingView,
   deriveTopologySegments,
   nickLookup,
 } from './viewmodels/meshViewModels.js';
+import { createTelemetry, telemetryConfigFromEnv } from './telemetry.js';
 import {
   ACK_PENDING_ROUTE,
   hostSetKey,
@@ -157,6 +159,14 @@ function Dashboard(props: {
   const standingLedger = standingLedgerRef.current;
   const priorityScore = useMemo(() => bindPriorityScore(standingLedger, () => Date.now()), [standingLedger]);
 
+  // One OpenPanel telemetry handle per Dashboard mount — the ONLY analytics
+  // stack (telemetry.quasarke.net). A hard no-op unless VITE_OPENPANEL_CLIENT_ID
+  // is set at build time, so the app never depends on analytics being up.
+  const telemetryRef = useRef<ReturnType<typeof createTelemetry> | null>(null);
+  if (telemetryRef.current === null) telemetryRef.current = createTelemetry(telemetryConfigFromEnv(import.meta.env));
+  const telemetry = telemetryRef.current;
+  const trackEvent = useCallback((event: Parameters<typeof telemetry.trackEvent>[0]) => telemetry.trackEvent(event), [telemetry]);
+
   const createStageWorker = useCallback(
     () => new Worker(new URL('./workers/stageWorker.ts', import.meta.url), { type: 'module' }),
     [],
@@ -197,6 +207,7 @@ function Dashboard(props: {
     keepaliveEnabled: audioKeepalive.enabled,
     priorityScore,
     standingLedger,
+    telemetry: trackEvent,
     log,
   });
 
@@ -211,6 +222,7 @@ function Dashboard(props: {
     wireDtype: 'f32',
     priorityScore,
     standingLedger,
+    telemetry: trackEvent,
     log,
   });
 
@@ -242,6 +254,28 @@ function Dashboard(props: {
   const leaderboard = useMemo(
     () => deriveLeaderboard(topStandings.slice(0, 10), { selfId: selfId2, nickOf }),
     [topStandings, selfId2, nickOf],
+  );
+
+  // ── communal_coverage telemetry — fire only when the coverage picture
+  // actually CHANGES (deduped), not every 2s re-render. Whole-mesh metric
+  // (coverage %, seats, distinct host count), no PII. ───────────────────
+  const coverageKeyRef = useRef<string>('');
+  useEffect(() => {
+    const hostCount = new Set(topology.segments.map((s) => s.candidates[0]?.peerId).filter(Boolean)).size;
+    const key = `${capacity.coveragePercent}|${topology.seats}|${hostCount}`;
+    if (key === coverageKeyRef.current) return;
+    coverageKeyRef.current = key;
+    telemetry.trackEvent({
+      name: 'communal_coverage',
+      props: { coveragePct: capacity.coveragePercent, seats: topology.seats, hostCount },
+    });
+  }, [topology, capacity.coveragePercent, telemetry]);
+
+  // ── Driver-side chat notice — honest failure/reconnect copy, never a
+  // silent hang (see deriveChatNotice). ────────────────────────────────
+  const chatNotice = useMemo(
+    () => deriveChatNotice(chat.status, chat.restartCount, capacity),
+    [chat.status, chat.restartCount, capacity],
   );
 
   // ── Trust gate ─────────────────────────────────────────────────────
@@ -319,8 +353,31 @@ function Dashboard(props: {
       trustModalOpen: trustModal !== null,
       hostingConsent: hostingConsent.consent,
       hostingActive: communal.active,
+      hostingPhase: communal.phase,
+      hostingError: communal.errorMessage,
+      hostingRetrying: communal.retrying,
+      hostingRetryAttempt: communal.retryAttempt,
+      chatNotice: chatNotice?.message,
+      telemetryEnabled: telemetry.enabled,
     };
-  }, [peer, capacity, chat.status, chat.text, chat.restartCount, threads.threads, threads.activeThreadId, trustModal, hostingConsent.consent, communal.active]);
+  }, [
+    peer,
+    capacity,
+    chat.status,
+    chat.text,
+    chat.restartCount,
+    threads.threads,
+    threads.activeThreadId,
+    trustModal,
+    hostingConsent.consent,
+    communal.active,
+    communal.phase,
+    communal.errorMessage,
+    communal.retrying,
+    communal.retryAttempt,
+    chatNotice,
+    telemetry,
+  ]);
 
   return (
     <div className="app-shell">
@@ -360,6 +417,7 @@ function Dashboard(props: {
           streamingMessageId={streamingMessageId}
           busy={busy}
           capacity={capacity}
+          notice={chatNotice}
           onSend={handleSend}
           onStop={() => chat.abort('user stopped')}
         />
@@ -382,6 +440,8 @@ function Dashboard(props: {
             claim: communal.claim,
             approxDownloadLabel: approxDownloadLabel(modelConfig),
             layerRangeLabel: `${modelConfig.driverLayers}–${modelConfig.totalLayers}`,
+            errorMessage: communal.errorMessage,
+            retrying: communal.retrying,
           }}
           audioKeepalive={audioKeepalive}
           showAudioKeepalive={hostingConsent.consent === 'accepted'}

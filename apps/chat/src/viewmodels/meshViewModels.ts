@@ -121,6 +121,78 @@ export function deriveCapacityView(topology: CommunalTopology, modelLabel: strin
   };
 }
 
+// ── Driver-side chat notice ──────────────────────────────────────────────
+//
+// The chat pane must be HONEST about failures — never a silent hang. A
+// driver whose route can't be found, whose host failed, or that's
+// mid-reconnect gets a clear, actionable message instead of a frozen
+// spinner. Pure + testable (test/meshViewModels.test.ts): plain status in,
+// plain notice out.
+
+export interface ChatNoticeView {
+  kind: 'error' | 'retrying';
+  message: string;
+}
+
+/** Minimal shape of `useCommunalChat`'s status this derivation needs —
+ * avoids importing the full union just for a phase/error/reason read. */
+export interface ChatStatusLike {
+  phase: string;
+  error?: string;
+  reason?: string;
+}
+
+/** True when a raw reason/error string looks like a lost-host / connection
+ * failure rather than a coverage gap or a generic error. */
+function looksLikeHostLoss(text: string): boolean {
+  return /\b(host|peer|connection|disconnect|left|lost|timed? ?out|timeout|stop)\b/i.test(text);
+}
+
+/**
+ * Derive the chat pane's failure/reconnect notice. Returns `undefined`
+ * when there's nothing to say (idle/planning/running-clean/finished).
+ *
+ *   - error + "no feasible route"/coverage gap → the actionable "layers
+ *     X–Y need a host" framing (pulled from the live capacity gaps).
+ *   - error + host-loss → "Lost connection to a host …".
+ *   - aborted (involuntary) → the reason, framed as a stop, not a hang.
+ *   - running after ≥1 replan → "Reconnecting to a host…" (transient).
+ */
+export function deriveChatNotice(
+  status: ChatStatusLike,
+  restartCount: number,
+  capacity: CapacityView,
+): ChatNoticeView | undefined {
+  if (status.phase === 'error') {
+    const err = status.error ?? 'unknown error';
+    if (/no feasible|coverage|assembl|need a host|gap/i.test(err)) {
+      const gaps = capacity.gaps.map((g) => `${g.layerStart}–${g.layerEnd}`).join(', ');
+      return {
+        kind: 'error',
+        message: gaps
+          ? `${capacity.modelLabel} isn't fully assembled yet — layers ${gaps} need a host. Contribute your GPU or wait for another member.`
+          : `${capacity.modelLabel} isn't fully assembled yet — waiting for hosts to cover every layer.`,
+      };
+    }
+    if (looksLikeHostLoss(err)) {
+      return { kind: 'error', message: `Lost connection to a host and couldn't recover: ${err}. Try again.` };
+    }
+    return { kind: 'error', message: `Something went wrong: ${err}` };
+  }
+
+  if (status.phase === 'aborted') {
+    const reason = status.reason ?? 'stopped';
+    if (/\buser\b/i.test(reason)) return undefined; // an explicit user stop isn't an error notice
+    return { kind: 'error', message: `The chat stopped: ${reason}. Try sending again.` };
+  }
+
+  if (status.phase === 'running' && restartCount > 0) {
+    return { kind: 'retrying', message: 'Lost a host mid-reply — reconnecting to another…' };
+  }
+
+  return undefined;
+}
+
 // ── Topology map ─────────────────────────────────────────────────────────
 
 export interface TopologySegmentView {
