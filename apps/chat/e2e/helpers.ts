@@ -57,6 +57,9 @@ export interface ChatDebugSnapshot {
   capacityReady?: boolean;
   chatStatus?: { phase: string; error?: string; reason?: string };
   chatText?: string;
+  /** Raw generated token-id sequence for the most recent/in-flight run
+   * (prompt tokens excluded) — see App.tsx's `__legionChat` doc comment. */
+  chatTokens?: number[];
   chatRestartCount?: number;
   threadCount?: number;
   activeThreadId?: string;

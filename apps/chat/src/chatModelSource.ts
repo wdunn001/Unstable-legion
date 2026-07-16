@@ -151,6 +151,25 @@ export interface ChatModelConfig {
    * an explicit "(test model)" suffix when `isTestModel` so nobody
    * mistakes the e2e swap for the production target. */
   modelLabel: string;
+  /**
+   * Wire dtype for the per-token activation frames crossing pipeline-stage
+   * hops (see docs/WIRE-DTYPE.md) — how many bytes per nEmbd-wide
+   * hidden-state vector travel the wire per hop. Default `'f32'` (lossless,
+   * the historical behavior). Overridable via `?wireDtype=f16` (same
+   * e2e/local-dev query-param idiom as `?testModel=1`) for A/B bandwidth
+   * testing without a rebuild — see `wire-dtype.spec.ts`.
+   */
+  wireDtype: 'f32' | 'f16';
+}
+
+const VALID_WIRE_DTYPES = new Set(['f32', 'f16']);
+
+/** Parse `?wireDtype=` from `location.search`. Falls back to `'f32'` for
+ * anything unset/unrecognized — production never silently ships a lossy
+ * wire dtype from a typo'd or stale query param. */
+function resolveWireDtype(params: URLSearchParams | undefined): 'f32' | 'f16' {
+  const raw = params?.get('wireDtype');
+  return raw && VALID_WIRE_DTYPES.has(raw) ? (raw as 'f32' | 'f16') : 'f32';
 }
 
 /** Resolve the effective model config for the current page. Reads
@@ -164,6 +183,7 @@ export function resolveChatModelConfig(): ChatModelConfig {
   // (Part A) without depending on a flaky real fetch failure. Test-only,
   // same query-param idiom as `?testModel=1`; never affects production.
   const badShard = params?.get('badShard') === '1';
+  const wireDtype = resolveWireDtype(params);
 
   if (isTestModel) {
     return {
@@ -180,6 +200,7 @@ export function resolveChatModelConfig(): ChatModelConfig {
       isTestModel: true,
       displayName: TEST_MODEL_DISPLAY_NAME,
       modelLabel: `${chatModelLabel(TEST_MODEL_DISPLAY_NAME, TEST_MODEL_QUANT)} (test model)`,
+      wireDtype,
     };
   }
 
@@ -195,5 +216,6 @@ export function resolveChatModelConfig(): ChatModelConfig {
     isTestModel: false,
     displayName: CHAT_MODEL_DISPLAY_NAME,
     modelLabel: chatModelLabel(CHAT_MODEL_DISPLAY_NAME, CHAT_MODEL_QUANT),
+    wireDtype,
   };
 }

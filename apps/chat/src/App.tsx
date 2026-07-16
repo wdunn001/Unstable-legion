@@ -231,7 +231,7 @@ function Dashboard(props: {
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
     ctxSize: modelConfig.ctxSize,
-    wireDtype: 'f32',
+    wireDtype: modelConfig.wireDtype,
     manifestUrl: modelConfig.manifestUrl,
     fallbackShardUrls: modelConfig.shardUrls,
     avgLayerBytes: modelConfig.avgLayerBytes,
@@ -291,7 +291,7 @@ function Dashboard(props: {
     manifestUrl: modelConfig.manifestUrl,
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
-    wireDtype: 'f32',
+    wireDtype: modelConfig.wireDtype,
     priorityScore,
     standingLedger,
     telemetry: trackEvent,
@@ -587,6 +587,13 @@ function Dashboard(props: {
       capacityReady: capacity.ready,
       chatStatus: chat.status,
       chatText: chat.text,
+      // Raw generated token-id sequence (prompt tokens excluded — see
+      // useCommunalChat.ts's `tokens` state doc) — exposed for the
+      // wire-dtype A/B exactness e2e (wire-dtype.spec.ts), which needs the
+      // exact greedy-decode token stream, not just its detokenized text
+      // (two runs can render identical text from different byte-level
+      // rounding if detokenization ever normalizes whitespace/casing).
+      chatTokens: chat.tokens,
       chatRestartCount: chat.restartCount,
       threadCount: threads.threads.length,
       activeThreadId: threads.activeThreadId,
@@ -607,6 +614,7 @@ function Dashboard(props: {
     capacity,
     chat.status,
     chat.text,
+    chat.tokens,
     chat.restartCount,
     threads.threads,
     threads.activeThreadId,

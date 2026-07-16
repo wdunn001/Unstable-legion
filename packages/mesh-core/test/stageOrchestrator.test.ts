@@ -22,6 +22,8 @@ import {
   makeStageStop,
   makeStageToken,
 } from '../src/stageControl.ts';
+import { decodeStageFrameEnvelope } from '../src/stageFrameEnvelope.ts';
+import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
 import type { MeshToolFrame } from '../src/types.ts';
 import type { StagePlan } from '../src/stagePlanner.ts';
 
@@ -43,6 +45,25 @@ interface FakeHost {
   headerSeen: boolean;
   framesSeen: number;
   tokensSent: number[];
+  /**
+   * When set, this fake host does what a REAL `useStageHost.ts` does with
+   * inbound `sf` bytes instead of ignoring them: unwrap the sessionId
+   * envelope, build a real `ActivationWireDecoder` from the header frame,
+   * then `decodeFrameBytes` every subsequent frame — the exact path this
+   * milestone needs proven end to end (an f16-wire route decodes to f32
+   * buffers of the right byte length on the receiving side, not just at
+   * the codec unit-test layer). Populates `decodedActivationByteLengths`/
+   * `wireFrameByteLengths`/`decodedDtype` for the test to assert on.
+   */
+  decodeWire?: boolean;
+  decoder?: ActivationWireDecoder;
+  /** `activations.byteLength` for every real (non-header) frame decoded —
+   * always `tokenCount * nEmbd * 4` regardless of wire dtype, since
+   * `ActivationWireDecoder.decodeFrameBytes` always reconstructs f32. */
+  decodedActivationByteLengths: number[];
+  /** Raw enveloped wire bytes for every real frame — lets a test compare
+   * f16 vs f32 wire size for the identical activation. */
+  wireFrameByteLengths: number[];
 }
 
 function makeFakeHost(peerId: string, overrides: Partial<FakeHost> = {}): FakeHost {
@@ -53,6 +74,8 @@ function makeFakeHost(peerId: string, overrides: Partial<FakeHost> = {}): FakeHo
     headerSeen: false,
     framesSeen: 0,
     tokensSent: [],
+    decodedActivationByteLengths: [],
+    wireFrameByteLengths: [],
     ...overrides,
   };
 }
@@ -102,18 +125,34 @@ function createMockMesh(selfId: string) {
       toolListeners.add(cb);
       return () => toolListeners.delete(cb);
     },
-    async sendStageFrame(_bytes, peers) {
+    async sendStageFrame(bytes, peers) {
       for (const targetId of targetsOf(peers)) {
         const host = hosts.get(targetId);
         if (!host) continue;
         if (!host.headerSeen) {
           // Every `sf` stream opens with one header frame (no seq) —
-          // nothing to reply to, just note we've seen it.
+          // nothing to reply to, just note we've seen it. When
+          // `decodeWire` is set, do what `useStageHost.ts`'s `onStageFrame`
+          // really does: unwrap the sessionId envelope and build the real
+          // decoder from the header payload.
           host.headerSeen = true;
+          if (host.decodeWire) {
+            const envelope = decodeStageFrameEnvelope(bytes);
+            if (!envelope) throw new Error(`${targetId}: malformed sf envelope on header frame`);
+            host.decoder = createActivationWireDecoder(envelope.payload);
+          }
           continue;
         }
         const seq = host.framesSeen;
         host.framesSeen += 1;
+        if (host.decodeWire) {
+          const envelope = decodeStageFrameEnvelope(bytes);
+          if (!envelope) throw new Error(`${targetId}: malformed sf envelope on frame seq=${seq}`);
+          if (!host.decoder) throw new Error(`${targetId}: frame arrived before header was decoded`);
+          host.wireFrameByteLengths.push(bytes.byteLength);
+          const decodedFrame = host.decoder.decodeFrameBytes(envelope.payload);
+          host.decodedActivationByteLengths.push(decodedFrame.activations.byteLength);
+        }
         if (host.dieAtSeq !== undefined && seq >= host.dieAtSeq) {
           continue; // simulate death: never reply
         }
@@ -389,4 +428,100 @@ test('external abort() cleanly finishes the session with partial history intact'
   const result = await handle.result();
   assert.equal(result.aborted, true);
   assert.equal(result.abortReason, 'caller cancelled');
+});
+
+// ── Wire dtype: the receiving side actually decodes f16 -> f32 ─────────────
+//
+// Every other test in this file passes `wireDtype: 'f16'` too, but their
+// mock host ignores the bytes entirely — fine for proving the CONTROL flow
+// (replan/abort/token accounting), but it never actually exercises the
+// codec. These two tests turn `decodeWire: true` on so the mock host does
+// what `useStageHost.ts` really does: unwrap the envelope, build a real
+// `ActivationWireDecoder` from the header, and `decodeFrameBytes` every
+// frame — proving an f16 route delivers f32 buffers of the correct byte
+// length to the receiving side, and that the wire bytes it took to get
+// there are smaller than the f32 equivalent.
+
+test('f16 route: the receiving side decodes every frame to a full-precision f32 buffer of the right byte length', async () => {
+  const NEMBD = 16;
+  const mesh = createMockMesh('driver');
+  const hostA = makeFakeHost('hostA', { decodeWire: true });
+  mesh.hosts.set('hostA', hostA);
+  const plan = twoStagePlan('hostA');
+  const hooks = makeMockLocalHooks(NEMBD);
+
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan,
+    modelId: 'm',
+    prompt: 'hello world',
+    maxDecodeTokens: 3,
+    wireDtype: 'f16',
+    localHooks: hooks,
+    replan: () => null,
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: FAST_TIMEOUTS,
+  });
+
+  const result = await handle.result();
+  assert.equal(result.aborted, false);
+
+  // maxDecodeTokens=3: prefill produces 1 generated token (the prompt's
+  // first continuation), then the decode loop runs while
+  // generatedTokens.length < 3 — 2 more steps. Total frames sent: 1
+  // prefill (2 prompt tokens) + 2 decode (1 token each) = 3.
+  assert.equal(hostA.decodedActivationByteLengths.length, 3);
+  // The prefill frame carries 2 tokens; every decode frame carries 1 —
+  // decodeFrameBytes ALWAYS reconstructs f32 (4 bytes/elem) regardless of
+  // what crossed the wire as f16 (2 bytes/elem) — this is the exact
+  // guarantee `StageWorkerClient.prefill/decode`'s hard f32 requirement
+  // depends on.
+  assert.equal(hostA.decodedActivationByteLengths[0], 2 * NEMBD * 4);
+  for (let i = 1; i < hostA.decodedActivationByteLengths.length; i++) {
+    assert.equal(hostA.decodedActivationByteLengths[i], 1 * NEMBD * 4);
+  }
+  assert.equal(hostA.decoder?.dtype, 'f16');
+  assert.equal(hostA.decoder?.nEmbd, NEMBD);
+});
+
+test('f16 vs f32 route: identical activations produce smaller wire frames on the f16 route', async () => {
+  const NEMBD = 4096; // production hidden_size — small nEmbd values make msgpack/envelope overhead dominate the ratio
+  async function runOnce(wireDtype: 'f32' | 'f16'): Promise<FakeHost> {
+    const mesh = createMockMesh('driver');
+    const hostA = makeFakeHost('hostA', { decodeWire: true });
+    mesh.hosts.set('hostA', hostA);
+    const plan = twoStagePlan('hostA');
+    const hooks = makeMockLocalHooks(NEMBD);
+    const handle = runDriverStageSession({
+      peer: mesh.peer,
+      plan,
+      modelId: 'm',
+      prompt: 'hi',
+      // prefill (seq=0) produces 1 generated token; maxDecodeTokens=2 lets
+      // exactly one decode step (seq=1) run after it, so
+      // wireFrameByteLengths has [prefill, decodeStep] — index 1 is the
+      // hot per-token path this test wants to compare.
+      maxDecodeTokens: 2,
+      wireDtype,
+      localHooks: hooks,
+      replan: () => null,
+      loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+      timeouts: FAST_TIMEOUTS,
+    });
+    await handle.result();
+    return hostA;
+  }
+
+  const hostF32 = await runOnce('f32');
+  const hostF16 = await runOnce('f16');
+
+  // Compare the decode-step frame (the hot per-token path), not the
+  // (larger, one-time) prefill frame — index 1.
+  const b32 = hostF32.wireFrameByteLengths[1]!;
+  const b16 = hostF16.wireFrameByteLengths[1]!;
+  console.log(`[wire-dtype] orchestrator-level decode frame bytes: f32=${b32}B f16=${b16}B`);
+  assert.ok(b16 < b32 * 0.55, `expected f16 (${b16}B) well under half+overhead of f32 (${b32}B)`);
+  // But the DECODED side always reconstructs the same f32 byte length —
+  // the size win is wire-only, never visible to the native stage input.
+  assert.equal(hostF32.decodedActivationByteLengths[1], hostF16.decodedActivationByteLengths[1]);
 });
