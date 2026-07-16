@@ -25,6 +25,17 @@ export interface WireActivationFrame {
   payload: ArrayBuffer;
 }
 
+/** Per-shard download-progress snapshot for an in-flight `load` request —
+ * mirrors stage-runtime's `StageLoadProgress` (see wasm-loader.ts), wired
+ * worker -> `StageWorkerClient.load()`'s `onProgress` callback ->
+ * `useStageHost.ts` (drives the stall watchdog + the UI download bar). */
+export interface StageWorkerLoadProgress {
+  shardsFetched: number;
+  totalShards: number;
+  bytesFetched: number;
+  totalBytes?: number;
+}
+
 export type StageWorkerRequest =
   | {
       type: 'load';
@@ -72,6 +83,13 @@ export type StageWorkerRequest =
 
 export type StageWorkerResponse =
   | { type: 'ready'; reqId: number; isFirst: boolean; isFinal: boolean; nEmbd: number }
+  /**
+   * Zero or more of these precede the terminal `ready`/`error` response to
+   * the SAME `reqId` a `load` request got — NOT itself a terminal
+   * response (the caller keeps waiting for `ready`/`error` after
+   * receiving one). See `StageWorkerClient.load()`'s `onProgress` param.
+   */
+  | ({ type: 'progress'; reqId: number } & StageWorkerLoadProgress)
   | {
       type: 'result';
       reqId: number;

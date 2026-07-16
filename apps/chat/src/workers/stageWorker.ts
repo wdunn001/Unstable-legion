@@ -25,11 +25,24 @@ import {
   type StageSessionHandle,
   type ActivationFrame,
 } from '@unstable-legion/stage-runtime';
-import type {
-  StageWorkerRequest,
-  StageWorkerResponse,
-  WireActivationFrame,
+import {
+  patchWebGpuDeviceLimits,
+  type StageWorkerRequest,
+  type StageWorkerResponse,
+  type WireActivationFrame,
 } from '@unstable-legion/react';
+
+// FIX (live 8B-model load): GGML_WEBGPU's C++ init requests a WebGPU
+// device with NO requiredLimits, so it gets the spec-default limits
+// (maxBufferSize=256MB) even on an adapter that supports far more — every
+// 512MB+ layer/output-tensor buffer allocation for Qwen3-8B then fails
+// outright. Must run BEFORE `loadStage()` triggers wasm instantiation
+// (see wasm-loader.ts's "wasm module: instantiating (incl. WebGPU
+// adapter/device request)" phase) — module-top-level is the earliest
+// point in this worker, and the patch is idempotent/feature-detected, so
+// installing it unconditionally here is safe. See webgpuDevicePatch.ts's
+// module doc for the full rationale.
+patchWebGpuDeviceLimits();
 
 let stage: StageHandle | undefined;
 // M2: sessions opened via StageHandle.createSession() — each an
@@ -91,7 +104,24 @@ async function handle(req: StageWorkerRequest): Promise<void> {
         stage = await loadStage(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
-          onProgress: (phase: string) => console.log(`[stage-worker] ${phase} ${mem()}`),
+          // Per-shard structured progress -> relayed to the caller as a
+          // `progress` response (same reqId as this `load`) so
+          // `StageWorkerClient.load()`'s `onProgress` can drive a real
+          // download-progress UI and the stall watchdog (see
+          // useStageHost.ts) instead of only this console.log.
+          onProgress: (progress) => {
+            console.log(
+              `[stage-worker] shard ${progress.shardsFetched}/${progress.totalShards} ${mem()}`,
+            );
+            post({
+              type: 'progress',
+              reqId: req.reqId,
+              shardsFetched: progress.shardsFetched,
+              totalShards: progress.totalShards,
+              bytesFetched: progress.bytesFetched,
+              totalBytes: progress.totalBytes,
+            });
+          },
           ...(req.useMemoryShardStore ? { shardStore: createMemoryShardStore() } : {}),
         } as Parameters<typeof loadStage>[1]);
         console.log(`[stage-worker] stage loaded ${mem()}`);

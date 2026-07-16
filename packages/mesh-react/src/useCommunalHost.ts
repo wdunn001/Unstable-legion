@@ -68,6 +68,7 @@ import {
   type ColocationCoordinatorOptions,
 } from './colocation.js';
 import type { StageWorkerLog } from './stageWorkerClient.js';
+import type { StageWorkerLoadProgress } from './stageWorkerProtocol.js';
 import type { PriorityScoreFn } from './stageSessionAdmission.js';
 import {
   claimKey,
@@ -91,6 +92,15 @@ import {
  * the smaller, safer number either way).
  */
 export const OPFS_QUOTA_CEILING_BYTES = 3_300_000_000;
+
+/**
+ * Safety headroom subtracted from a GENUINE, generous quota estimate
+ * (persisted storage, or a UA reporting real available disk) — never
+ * claim the last byte of available storage (other origins/apps share the
+ * same disk budget; a hair-thin margin risks a mid-write
+ * QuotaExceededError on a slow/large final shard).
+ */
+export const OPFS_QUOTA_SAFETY_MARGIN_BYTES = 1_500_000_000;
 
 export interface UseCommunalHostOptions {
   /** Operator toggle — "participate in the communal pipeline". */
@@ -204,6 +214,12 @@ export interface UseCommunalHostHandle {
   nextRetryAtMs?: number;
   /** How many load attempts have failed for the current claim. 0 = healthy. */
   retryAttempt: number;
+  /** Per-shard download progress for the stage currently loading — see
+   * `UseStageHostHandle.loadProgress`'s doc comment. Undefined outside an
+   * in-flight load (nothing claimed yet, or already fully loaded/active).
+   * On a follower tab (colocation), this mirrors the leader's relayed
+   * snapshot instead of running its own load. */
+  downloadProgress?: StageWorkerLoadProgress;
 }
 
 const DEFAULT_REASSEMBLY_MS = 5000;
@@ -226,7 +242,56 @@ function colocationLikelySupported(): boolean {
   );
 }
 
-async function probeOpfsQuotaBytes(override?: number): Promise<number> {
+/**
+ * Best-effort: ask the UA not to evict this origin's OPFS storage under
+ * storage pressure — called once hosting is actually opted into (not on
+ * cold mount, before the user has agreed to anything). On Chromium this
+ * both makes OPFS non-evictable AND typically unlocks a far larger real
+ * quota (a substantial fraction of disk instead of the small default
+ * per-origin slice) — see `probeOpfsQuotaBytes`'s `persisted` param,
+ * which is what actually stops over-3.3GB claims being forced onto the
+ * (never-persisted, wiped-on-retry) in-memory shard store. Never throws;
+ * returns whether persistence is granted (false on any failure or an
+ * unsupported browser) and logs the grant result when `log` is supplied.
+ */
+export async function requestPersistentStorage(log: StageWorkerLog = () => undefined): Promise<boolean> {
+  try {
+    if (typeof navigator === 'undefined' || typeof navigator.storage?.persist !== 'function') return false;
+    const already = (await navigator.storage.persisted?.()) ?? false;
+    if (already) return true;
+    const granted = await navigator.storage.persist();
+    log(`[communal-host] navigator.storage.persist() ${granted ? 'GRANTED' : 'denied'}`);
+    return granted;
+  } catch (err) {
+    log(`[communal-host] navigator.storage.persist() failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Resolves the OPFS byte budget `resolveCommunalShardPlan` weighs a
+ * claim's total fragment bytes against to decide OPFS-cached vs
+ * in-memory (see that function's `useMemoryShardStore` derivation).
+ *
+ * Used to unconditionally cap this at `OPFS_QUOTA_CEILING_BYTES`
+ * (~3.3GB) regardless of what the UA actually reported — which meant
+ * ANY claim bigger than that (a full 34-layer Qwen3-8B range is ~4.7GB)
+ * got the in-memory store, which doesn't survive a worker restart: a
+ * stall-watchdog retry (or a page reload) re-downloaded every shard from
+ * scratch every time, even shards already fetched moments earlier.
+ *
+ * Now: a GENUINE generous estimate — `persisted` storage (see
+ * `requestPersistentStorage`), or a UA reporting more real available
+ * space than the conservative ceiling on its own — is trusted directly
+ * (minus `OPFS_QUOTA_SAFETY_MARGIN_BYTES`), so a host with disk to spare
+ * gets its whole claim OPFS-cached and persisted. The in-memory store
+ * stays the fallback ONLY when the real available quota genuinely can't
+ * fit the range (a small/default-looking estimate, or `estimate()`
+ * itself unavailable/erroring) — `OPFS_QUOTA_CEILING_BYTES` is the
+ * conservative floor for exactly that case, not the default ceiling for
+ * every host.
+ */
+async function probeOpfsQuotaBytes(override?: number, persisted = false): Promise<number> {
   if (override !== undefined) return override;
   try {
     if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
@@ -235,6 +300,10 @@ async function probeOpfsQuotaBytes(override?: number): Promise<number> {
       const usage = est.usage ?? 0;
       const available = quota - usage;
       if (Number.isFinite(available) && available > 0) {
+        const genuinelyGenerous = persisted || available > OPFS_QUOTA_CEILING_BYTES;
+        if (genuinelyGenerous) {
+          return Math.max(0, available - OPFS_QUOTA_SAFETY_MARGIN_BYTES);
+        }
         return Math.min(available, OPFS_QUOTA_CEILING_BYTES);
       }
     }
@@ -803,9 +872,22 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       errorMessage,
       retrying: !!errorState?.retrying,
       retryAttempt: errorState?.attempt ?? 0,
+      downloadProgress: host.loadProgress,
       ts: Date.now(),
     });
-  }, [hostingActive, phase, claim, host.active, host.sessions.length, host.tokensDecoded, host.maxSessions, host.queueLength, errorMessage, errorState]);
+  }, [
+    hostingActive,
+    phase,
+    claim,
+    host.active,
+    host.sessions.length,
+    host.tokensDecoded,
+    host.maxSessions,
+    host.queueLength,
+    errorMessage,
+    errorState,
+    host.loadProgress,
+  ]);
 
   // ── Follower view — mirror the leader's relayed status instead of this
   // tab's own (intentionally idle) local state. `bumpSharedStatusTick`
@@ -828,6 +910,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       retrying: shared?.retrying ?? false,
       nextRetryAtMs: undefined,
       retryAttempt: shared?.retryAttempt ?? 0,
+      downloadProgress: shared?.downloadProgress,
     };
   }
 
@@ -846,5 +929,6 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     retrying: !!errorState?.retrying,
     nextRetryAtMs: errorState?.nextAttemptAtMs,
     retryAttempt: errorState?.attempt ?? 0,
+    downloadProgress: host.loadProgress,
   };
 }

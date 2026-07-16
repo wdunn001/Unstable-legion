@@ -14,6 +14,14 @@
  * the Accept action and explains why, in both the 'unset' and (in case a
  * capability probe resolves AFTER an earlier accept on a since-changed
  * device) 'accepted' states.
+ *
+ * NOTE: `../hostingLabels.js` now has the lifecycle-aware
+ * (Downloading/Loading into GPU/Hosting) + layer-count-clean label
+ * helpers this component SHOULD render (see that module's doc comment
+ * and its unit tests) — deliberately not wired in yet. Split out into a
+ * follow-up PR so the functional load-path fixes (WebGPU device limits,
+ * stall watchdog, OPFS persistence) could ship first; this component's
+ * JSX is UNCHANGED pending that follow-up.
  */
 import type { CommunalHostPhase } from '@unstable-legion/react';
 import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
