@@ -112,9 +112,11 @@ export function buildStageHostCap(
   cachedFragments?: readonly string[],
   sessionCapacity?: StageHostSessionCapacity,
   loadedStages?: readonly MeshLoadedStage[],
+  failureDomainId?: string,
 ): NonNullable<MeshPeerCap['stageHost']> {
   return {
     ...(limits.vramBytes !== undefined ? { vramBytes: limits.vramBytes } : {}),
+    ...(failureDomainId !== undefined ? { failureDomainId } : {}),
     maxStorageBufferBytes: limits.maxStorageBufferBindingSize,
     wasmHeapBudget: sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize),
     ...(cachedFragments && cachedFragments.length > 0 ? { cachedFragments } : {}),

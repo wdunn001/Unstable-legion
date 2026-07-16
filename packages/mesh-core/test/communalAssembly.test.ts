@@ -24,6 +24,9 @@ function makePeer(
   // see an accurate score for each peer, not a fixed default) pass it
   // explicitly; single-decision tests that don't care use the default.
   stabilityScore = 1000,
+  // failure-domain-accounting tests set this to simulate colocated
+  // (same-domain) tabs; omitted -> peer is its own domain (back-compat).
+  failureDomainId?: string,
 ): MeshRosterEntry {
   return {
     v: 1,
@@ -39,6 +42,7 @@ function makePeer(
     stageHost: {
       maxStorageBufferBytes: 1_000_000_000,
       wasmHeapBudget: 1_000_000_000,
+      ...(failureDomainId !== undefined ? { failureDomainId } : {}),
       stability: { keepalive: false, visible: false, uptimeMs: stabilityScore * 1000 },
       loadedStages: loadedStages.map((s) => ({
         modelId: MODEL,
@@ -236,6 +240,131 @@ test('communalHostClaim: jitterMs is deterministic for the same selfPeerId (no M
   const a = communalHostClaim({ roster: [], selfPeerId: 'self', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 5 });
   const b = communalHostClaim({ roster: [], selfPeerId: 'self', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 5 });
   assert.equal(a.jitterMs, b.jitterMs);
+});
+
+// ── Failure-domain-aware replication counting (colocated-tab fix) ───────
+//
+// The catastrophic gap: two same-origin tabs on one machine each join the
+// mesh as an independent peer, but share ONE failure domain — counting
+// them as two independent redundant copies defeats the warm-spare design.
+// These tests prove `communalHostClaim` counts DISTINCT `failureDomainId`s
+// for replication/spare-cap purposes, not distinct peerIds, while still
+// treating each peer WITHOUT an explicit domain as its own (back-compat).
+
+test('communalHostClaim: a segment covered ONLY by same-domain peers still reads as under-replicated — self (a real distinct domain) becomes a spare even though the PEER count already looks saturated', () => {
+  // hostA + hostB share failureDomainId 'fd-machine-A' and BOTH cover the
+  // exact same segment (colocated tabs); hostC is a genuinely distinct
+  // domain also covering it. 3 PEERS total, but only 2 DISTINCT DOMAINS
+  // (fd-machine-A, fd-hostC) — DEFAULT_MAX_SPARES_PER_SEGMENT=2 means the
+  // segment should still welcome a 3rd real domain. Old peer-count logic
+  // (candidates.length=3, already >= maxSparesPerSegment+1=3) would wrongly
+  // treat this as fully spare-saturated and refuse.
+  assert.equal(DEFAULT_MAX_SPARES_PER_SEGMENT, 2);
+  const roster = [
+    makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-machine-A'),
+    makePeer('hostB', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-machine-A'),
+    makePeer('hostC', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-hostC'),
+  ];
+  const result = communalHostClaim({
+    roster,
+    selfPeerId: 'self',
+    modelId: MODEL,
+    totalLayers: TOTAL_LAYERS,
+    driverLayers: DRIVER_LAYERS,
+    selfCapacityLayers: 100,
+    selfFailureDomainId: 'fd-self',
+  });
+  assert.deepEqual(result.claim, { layerStart: 2, layerEnd: 28, includeOutput: true });
+  assert.match(result.reason, /warm spare/);
+});
+
+test('communalHostClaim: a segment covered by 2 DISTINCT domains is NOT offered as a spare target once at the cap (matches peer-count behavior when domains == peers)', () => {
+  // hostA and hostB are genuinely distinct domains covering the same
+  // segment — 2 peers, 2 domains. With DEFAULT_MAX_SPARES_PER_SEGMENT=2
+  // (primary + 2 spares = 3 domains allowed), self joining as a 3rd
+  // distinct domain is still welcome (this is the "matches old behavior
+  // when nobody is colocated" sanity check, not the fix itself).
+  const roster = [
+    makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-A'),
+    makePeer('hostB', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-B'),
+  ];
+  const result = communalHostClaim({
+    roster,
+    selfPeerId: 'self',
+    modelId: MODEL,
+    totalLayers: TOTAL_LAYERS,
+    driverLayers: DRIVER_LAYERS,
+    selfCapacityLayers: 100,
+    selfFailureDomainId: 'fd-self',
+  });
+  assert.deepEqual(result.claim, { layerStart: 2, layerEnd: 28, includeOutput: true });
+});
+
+test('communalHostClaim: self already holding a spare stays put when its OWN domain already appears once — joining again would not add a distinct domain', () => {
+  // self currently holds [2,28) with domain 'fd-self'; hostA (a SIBLING
+  // tab, same domain) also covers it, and there's no gap elsewhere (this
+  // segment is the whole communal span). PEER-count still governs the
+  // essentiality/yield dispatch (see communalAssembly.ts's NOTE) — 2
+  // peers means this isn't the "sole coverer" branch, but with no gap
+  // anywhere else there's nothing to yield FOR, so self keeps regardless
+  // of the tie-break ("legitimate duplicate/spare ... — keeping"). The
+  // domain-aware accounting this test actually exercises is upstream of
+  // that: it's what stops a THIRD, genuinely-distinct-domain peer from
+  // seeing this segment as already spare-saturated (covered by the
+  // paired test above) — this test pins the colocated pair's OWN claim
+  // stays stable in the meantime (no thrash).
+  const roster = [makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], 1000, 'fd-self')];
+  const result = communalHostClaim({
+    roster,
+    selfPeerId: 'self',
+    modelId: MODEL,
+    totalLayers: TOTAL_LAYERS,
+    driverLayers: DRIVER_LAYERS,
+    selfCapacityLayers: 100,
+    selfCurrentClaim: { layerStart: 2, layerEnd: 28, includeOutput: true },
+    selfFailureDomainId: 'fd-self',
+  });
+  assert.deepEqual(result.claim, { layerStart: 2, layerEnd: 28, includeOutput: true });
+  assert.equal(result.yieldCurrent, false);
+});
+
+test('communalHostClaim: a colocated (same-domain) duplicate is NOT flagged as "sole coverer" reasoning — peer-existence still governs essentiality/yield, independent of domain', () => {
+  // Two same-domain peers (self + hostA, sibling tabs) both cover [2,10)
+  // while a REAL gap [10,28) exists elsewhere. Peer-count still triggers
+  // the "genuine duplicate, consider yielding" path (yielding to refill a
+  // real gap is valuable regardless of whether the duplicate happens to
+  // be same-domain) — domain-counting must not suppress that by
+  // misclassifying this as "sole coverer, always stay".
+  const roster = [makePeer('hostA', [{ layerStart: 2, layerEnd: 10 }], 1000, 'fd-self')];
+  const result = communalHostClaim({
+    roster,
+    selfPeerId: 'self',
+    modelId: MODEL,
+    totalLayers: TOTAL_LAYERS,
+    driverLayers: DRIVER_LAYERS,
+    selfCapacityLayers: 100,
+    selfCurrentClaim: { layerStart: 2, layerEnd: 10, includeOutput: false },
+    selfFailureDomainId: 'fd-self',
+  });
+  assert.notEqual(result.reason, 'sole coverer of this segment — essential, keeping as-is');
+});
+
+test('communalHostClaim: missing failureDomainId on either side -> each peer is its own domain (back-compat), no different from pre-fix peer-counting', () => {
+  const roster = [
+    makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }]), // no failureDomainId
+    makePeer('hostB', [{ layerStart: 2, layerEnd: 28, includeOutput: true }]), // no failureDomainId
+    makePeer('hostC', [{ layerStart: 2, layerEnd: 28, includeOutput: true }]), // no failureDomainId
+  ];
+  // 3 distinct (peerId-derived) domains already at DEFAULT_MAX_SPARES_PER_SEGMENT+1 — no room for self.
+  const result = communalHostClaim({
+    roster,
+    selfPeerId: 'self', // selfFailureDomainId omitted -> defaults to selfPeerId
+    modelId: MODEL,
+    totalLayers: TOTAL_LAYERS,
+    driverLayers: DRIVER_LAYERS,
+    selfCapacityLayers: 100,
+  });
+  assert.equal(result.claim, null);
 });
 
 // ── Convergence property tests (simulation) ──────────────────────────────

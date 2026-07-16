@@ -98,6 +98,27 @@ export interface MeshPeerCap {
      * adapter limits are often approximate/unavailable — falls back to
      * `maxStorageBufferBytes` in the planner's capacity calc when absent). */
     vramBytes?: number;
+    /**
+     * Failure-domain identity — "this peer, on this browser profile, on
+     * this machine" (see `@unstable-legion/react`'s `colocation.ts`).
+     * Same-origin tabs of the SAME browser profile mint and persist the
+     * SAME id (localStorage-backed, stable across restarts); tabs of a
+     * different profile or a different machine get a different one.
+     * Additive/optional so an older peer (or one predating this field)
+     * simply omits it — `communalTopology.ts`/`communalAssembly.ts` treat
+     * an absent id as "this peer is its own domain" (its `peerId` doubles
+     * as the domain id), never crashing or miscounting on old data.
+     *
+     * WHY this exists: two Trystero peers (two tabs) sharing one physical
+     * machine still show up as two independent roster entries — without
+     * this field, the communal replication/warm-spare logic would count
+     * them as two INDEPENDENT failure domains and consider a segment
+     * "replicated" once both cover it, even though one dead machine takes
+     * both out simultaneously. Every redundancy/replication count in
+     * `communalAssembly.ts` must count DISTINCT `failureDomainId`s, not
+     * distinct peerIds.
+     */
+    failureDomainId?: string;
     /** WebGPU `maxStorageBufferBindingSize` (or equivalent) — a hard
      * per-binding ceiling independent of total VRAM. */
     maxStorageBufferBytes: number;

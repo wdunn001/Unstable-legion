@@ -196,6 +196,15 @@ export interface UseStageHostOptions {
    */
   standingLedger?: StandingLedger;
   /**
+   * Additive cap field (see `@unstable-legion/core`'s `types.ts` doc
+   * comment) — "this peer, on this browser profile, on this machine".
+   * Passed straight through to `buildStageHostCap`. Cheap defense-in-depth
+   * for the mesh-side distinct-domain accounting; the primary fix for
+   * co-located tabs is the leader/follower split in `useCommunalHost.ts`
+   * (only one tab per origin ever calls this hook with `enabled: true`).
+   */
+  failureDomainId?: string;
+  /**
    * M3 follow-up (the documented "forced session termination after
    * teardown grace" gap) — pass a NEW object identity (e.g. `{ reason,
    * nonce: Date.now() }`) to immediately free EVERY session currently
@@ -499,6 +508,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         cachedFragments,
         sessionCapacityRef.current,
         suppressAdvertiseRef.current ? [] : loadedStagesRef.current,
+        opts.failureDomainId,
       );
       setStageHostCap(cap);
       peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
@@ -511,7 +521,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       republishNowRef.current = () => undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs]);
+  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId]);
 
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
