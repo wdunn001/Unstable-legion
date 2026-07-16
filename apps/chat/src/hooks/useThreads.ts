@@ -39,6 +39,9 @@ export interface UseThreadsHandle {
   /** Overwrite a message's content in-place (streaming updates) — does
    * NOT persist by itself; call `flushActiveThread` to save. */
   updateMessageContent: (messageId: string, content: string) => void;
+  /** Replace a message's tool-activity trace (TOOL-NODES chips) — same
+   * in-memory-until-flush semantics as `updateMessageContent`. */
+  setMessageToolTrace: (messageId: string, toolTrace: readonly string[]) => void;
   /** Mark a message as having recovered from a mid-stream host death. */
   markReconnected: (messageId: string) => void;
   /** Persist the current in-memory active thread to IndexedDB. */
@@ -164,6 +167,17 @@ export function useThreads(): UseThreadsHandle {
     [withActiveThread],
   );
 
+  const setMessageToolTrace = useCallback(
+    (messageId: string, toolTrace: readonly string[]) => {
+      withActiveThread((t) => ({
+        ...t,
+        messages: t.messages.map((m) => (m.id === messageId ? { ...m, toolTrace: [...toolTrace] } : m)),
+        updatedAt: Date.now(),
+      }));
+    },
+    [withActiveThread],
+  );
+
   const markReconnected = useCallback(
     (messageId: string) => {
       withActiveThread((t) => ({
@@ -192,6 +206,7 @@ export function useThreads(): UseThreadsHandle {
     deleteThread: deleteThreadFn,
     appendMessage,
     updateMessageContent,
+    setMessageToolTrace,
     markReconnected,
     flushActiveThread,
   };

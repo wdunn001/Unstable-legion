@@ -41,6 +41,52 @@ const SYSTEM_PROMPT =
   'You are a helpful assistant running on Legion, a communal mesh of browser peers. ' +
   'Answer the user directly and concisely.';
 
+/** The subset of `MeshToolDescriptor` the prompt needs — kept structural so
+ * chatPrompt stays dependency-free of @unstable-legion/core. */
+export interface PromptToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Readonly<Record<string, unknown>>;
+}
+
+/** One completed tool round inside the CURRENT exchange: the assistant turn
+ * that emitted the `<tool_call>` (kept raw — Qwen3's template folds prior
+ * tool-calling assistant turns verbatim) and the tool response JSON to fold
+ * back as a `<tool_response>` user turn. */
+export interface ToolRound {
+  assistantText: string;
+  /** JSON payload string (NOT wrapped) — buildPrompt adds the
+   * `<tool_response>` envelope per Qwen3's template. */
+  toolResponse: string;
+}
+
+export interface BuildPromptOptions {
+  maxTurns?: number;
+  /** Advertise these functions in the system turn (Qwen3 `<tools>` block).
+   * Omit/empty -> no tools section, the model never emits `<tool_call>`. */
+  tools?: readonly PromptToolSpec[];
+  /** Completed tool rounds of the exchange being continued — folded after
+   * the new user turn as assistant `<tool_call>` + user `<tool_response>`
+   * pairs, so the model resumes exactly where the tool call paused it. */
+  rounds?: readonly ToolRound[];
+}
+
+/** Qwen3's own chat-template wording for function declarations — the model
+ * was trained on THIS exact framing, so we reproduce it rather than invent
+ * our own (see Qwen/Qwen3-8B tokenizer_config.json chat_template). */
+function toolsSection(tools: readonly PromptToolSpec[]): string {
+  const lines = tools.map((t) =>
+    JSON.stringify({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } }),
+  );
+  return (
+    '\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\n' +
+    'You are provided with function signatures within <tools></tools> XML tags:\n' +
+    `<tools>\n${lines.join('\n')}\n</tools>\n\n` +
+    'For each function call, return a json object with function name and arguments within ' +
+    '<tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
+  );
+}
+
 /**
  * Drops `<think>...</think>` blocks from a prior assistant turn before
  * folding it back into context — Qwen3's own template strips reasoning
@@ -51,7 +97,12 @@ function stripThink(content: string): string {
   return content.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^<think>[\s\S]*/g, '').trim();
 }
 
-export function buildPrompt(history: readonly ChatMessage[], newUserText: string, maxTurns = DEFAULT_MAX_TURNS): string {
+export function buildPrompt(
+  history: readonly ChatMessage[],
+  newUserText: string,
+  opts: BuildPromptOptions = {},
+): string {
+  const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   // Only completed turns (a message with actual content) count toward
   // the transcript — an empty in-flight assistant placeholder from a
   // still-streaming prior turn would otherwise inject a blank
@@ -59,7 +110,8 @@ export function buildPrompt(history: readonly ChatMessage[], newUserText: string
   const completed = history.filter((m) => m.content.trim().length > 0);
   const recent = completed.slice(-maxTurns * 2);
 
-  const parts: string[] = [`<|im_start|>system\n${SYSTEM_PROMPT}<|im_end|>`];
+  const system = SYSTEM_PROMPT + (opts.tools && opts.tools.length > 0 ? toolsSection(opts.tools) : '');
+  const parts: string[] = [`<|im_start|>system\n${system}<|im_end|>`];
   for (const m of recent) {
     const role = m.role === 'user' ? 'user' : 'assistant';
     const content = role === 'assistant' ? stripThink(m.content) : m.content;
@@ -67,6 +119,14 @@ export function buildPrompt(history: readonly ChatMessage[], newUserText: string
     parts.push(`<|im_start|>${role}\n${content}<|im_end|>`);
   }
   parts.push(`<|im_start|>user\n${newUserText}<|im_end|>`);
+  // Completed tool rounds of THIS exchange: assistant turn (raw — includes
+  // its <tool_call> block) then the tool result as a `<tool_response>` user
+  // turn, exactly how Qwen3's template renders role:"tool" messages.
+  for (const round of opts.rounds ?? []) {
+    const assistantText = round.assistantText.trim();
+    if (assistantText.length > 0) parts.push(`<|im_start|>assistant\n${assistantText}<|im_end|>`);
+    parts.push(`<|im_start|>user\n<tool_response>\n${round.toolResponse}\n</tool_response><|im_end|>`);
+  }
   parts.push('<|im_start|>assistant\n<think>\n\n</think>\n\n');
   return parts.join('\n');
 }

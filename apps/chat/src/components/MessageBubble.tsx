@@ -14,6 +14,15 @@ export function MessageBubble(props: MessageBubbleProps) {
   return (
     <div className={`msg-row ${isUser ? 'msg-row-user' : 'msg-row-assistant'}`}>
       <div className={`msg-bubble ${isUser ? 'msg-bubble-user' : 'msg-bubble-assistant'}`}>
+        {!isUser && message.toolTrace && message.toolTrace.length > 0 && (
+          <div className="msg-tool-trace" title="Tool calls the mesh served while producing this reply.">
+            {message.toolTrace.map((line, i) => (
+              <span key={i} className="msg-tool-chip">
+                🔧 {line}
+              </span>
+            ))}
+          </div>
+        )}
         {isUser ? (
           <p className="msg-plain">{message.content}</p>
         ) : (

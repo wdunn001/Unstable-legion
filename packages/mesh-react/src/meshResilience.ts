@@ -139,7 +139,10 @@ export type MeshTelemetryEvent =
   | { name: 'chat_started'; props: { modelId: string } }
   | { name: 'chat_failed'; props: { reason: string } }
   | { name: 'chat_replan'; props: { restartCount: number } }
-  | { name: 'stage_worker_crashed'; props: { where: string; reason: string } };
+  | { name: 'stage_worker_crashed'; props: { where: string; reason: string } }
+  // TOOL-NODES: one per tool round-trip the chat driver ran — status only
+  // (`ok`/`error`/`timeout`/`no-provider`), never the args or result.
+  | { name: 'tool_round_trip'; props: { tool: string; status: string; tried: number } };
 
 export type MeshTelemetryEventName = MeshTelemetryEvent['name'];
 

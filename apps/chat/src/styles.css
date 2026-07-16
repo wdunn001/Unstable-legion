@@ -882,6 +882,86 @@ code {
   cursor: pointer;
 }
 
+/* ── Tool contributions (TOOL-NODES) ─────────────────────────────── */
+.tool-contrib-sub {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tool-contrib-builtins {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.tool-contrib-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tool-contrib-name {
+  font-family: inherit;
+}
+.tool-contrib-mcp-attach {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tool-contrib-mcp-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.tool-contrib-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.tool-contrib-mcp-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.tool-contrib-mcp-status.tool-contrib-mcp-attached {
+  color: var(--accent);
+}
+.tool-contrib-mcp-status.tool-contrib-mcp-error {
+  color: var(--warn);
+}
+.tool-contrib-served {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Tool trace chips above an assistant reply. */
+.msg-tool-trace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.msg-tool-chip {
+  font-size: 11px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 2px;
+}
+
 /* ── Trust interstitial (modal) ───────────────────────────────────── */
 .modal-scrim {
   position: fixed;

@@ -5,6 +5,8 @@ import { TopologyMap } from './TopologyMap.js';
 import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
 import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingConsentBanner.js';
+import { ToolContributionPanel } from './ToolContributionPanel.js';
+import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
 import type { CapacityView, LeaderboardEntry, StandingView, TopologySegmentView } from '../viewmodels/meshViewModels.js';
 
 export interface MeshSidebarProps {
@@ -16,6 +18,7 @@ export interface MeshSidebarProps {
   consentBanner: HostingConsentBannerProps;
   audioKeepalive: AudioKeepaliveHandle;
   showAudioKeepalive: boolean;
+  toolContribution: UseToolContributionHandle;
 }
 
 export function MeshSidebar(props: MeshSidebarProps) {
@@ -31,6 +34,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
       <CapacityMeter capacity={props.capacity} />
       {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
       <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} />
+      <ToolContributionPanel tools={props.toolContribution} />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />
     </aside>

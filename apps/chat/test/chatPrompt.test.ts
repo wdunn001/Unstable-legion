@@ -46,7 +46,7 @@ test('buildPrompt: bounds to the last maxTurns pairs', () => {
     history.push(msg('user', `q${i}`));
     history.push(msg('assistant', `a${i}`));
   }
-  const prompt = buildPrompt(history, 'final', 2);
+  const prompt = buildPrompt(history, 'final', { maxTurns: 2 });
   // Only the last 2 turns (4 messages) should survive.
   assert.ok(!prompt.includes('q7'));
   assert.ok(prompt.includes('<|im_start|>user\nq8<|im_end|>'));
@@ -71,4 +71,37 @@ test('buildPrompt: an assistant turn that was ONLY a think block is dropped enti
   const history = [msg('user', 'hi'), msg('assistant', '<think>\nonly reasoning\n</think>')];
   const prompt = buildPrompt(history, 'next');
   assert.equal(prompt.match(/<\|im_start\|>assistant\n/g)?.length, 1, 'only the final cue');
+});
+
+test('buildPrompt: tools render as a Qwen3 <tools> block in the system turn', () => {
+  const tools = [
+    { name: 'current_time', description: 'Wall clock.', inputSchema: { type: 'object', properties: {} } },
+  ];
+  const prompt = buildPrompt([], 'what time is it?', { tools });
+  const systemEnd = prompt.indexOf('<|im_end|>');
+  const system = prompt.slice(0, systemEnd);
+  assert.ok(system.includes('<tools>'), 'tools open tag in system turn');
+  assert.ok(system.includes('"name":"current_time"'), 'declares the function');
+  assert.ok(system.includes('<tool_call></tool_call>'), 'instructs the call format');
+});
+
+test('buildPrompt: no tools -> no tools section at all', () => {
+  const prompt = buildPrompt([], 'hello');
+  assert.ok(!prompt.includes('<tools>'));
+  assert.ok(!prompt.includes('# Tools'));
+});
+
+test('buildPrompt: completed rounds fold as assistant <tool_call> + user <tool_response> pairs', () => {
+  const rounds = [
+    {
+      assistantText: '<tool_call>\n{"name": "current_time", "arguments": {}}\n</tool_call>',
+      toolResponse: '{"iso":"2026-07-16T12:00:00Z"}',
+    },
+  ];
+  const prompt = buildPrompt([], 'what time is it?', { rounds });
+  const idxUser = prompt.indexOf('<|im_start|>user\nwhat time is it?<|im_end|>');
+  const idxCall = prompt.indexOf('<|im_start|>assistant\n<tool_call>');
+  const idxResponse = prompt.indexOf('<|im_start|>user\n<tool_response>\n{"iso":"2026-07-16T12:00:00Z"}\n</tool_response><|im_end|>');
+  assert.ok(idxUser >= 0 && idxCall > idxUser && idxResponse > idxCall, 'user -> tool_call -> tool_response in order');
+  assert.ok(prompt.endsWith('<|im_start|>assistant\n<think>\n\n</think>\n\n'), 'ends with a fresh assistant cue');
 });

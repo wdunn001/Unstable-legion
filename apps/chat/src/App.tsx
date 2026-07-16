@@ -26,11 +26,18 @@ import {
   useCommunalHost,
   useMeshContext,
   useMeshRoster,
+  useMeshTools,
   usePersona,
   type MeshPeerCap,
   type MeshProviderProps,
 } from '@unstable-legion/react';
-import { buildCommunalTopology } from '@unstable-legion/core';
+import {
+  buildCommunalTopology,
+  findPeersByTool,
+  firstToolCall,
+  newCallId,
+  runToolRoundTrip,
+} from '@unstable-legion/core';
 import { JoinScreen } from './components/JoinScreen.js';
 import { ConversationList } from './components/ConversationList.js';
 import { ChatPane } from './components/ChatPane.js';
@@ -40,6 +47,8 @@ import { TrustInterstitial } from './components/TrustInterstitial.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { useThreads } from './hooks/useThreads.js';
 import { useHostingConsent } from './hooks/useHostingConsent.js';
+import { useToolContribution, type UseToolContributionHandle } from './hooks/useToolContribution.js';
+import { MAX_TOOL_ROUNDS, buildToolResponsePayload, collectMeshTools, stripToolMarkup } from './toolChat.js';
 import { useGpuDetection } from './hooks/useGpuDetection.js';
 import { useTheme, type UseThemeHandle } from './hooks/useTheme.js';
 import { resolveChatModelConfig } from './chatModelSource.js';
@@ -105,6 +114,10 @@ export function App() {
   // Applies to every screen (join or joined) — the theme toggle needs to
   // work before a nick is even chosen, not just once inside the Dashboard.
   const theme = useTheme();
+  // TOOL-NODES: registry + opt-ins live ABOVE MeshProvider because the
+  // advertised descriptor list is part of the cap — the provider
+  // re-broadcasts on cap change, so toggling a tool propagates live.
+  const toolContribution = useToolContribution();
 
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
@@ -115,9 +128,9 @@ export function App() {
       available: true,
       skills: [],
       systemPromptSummary: 'Unstable Legion communal chat client',
-      tools: [],
+      tools: [...toolContribution.descriptors],
     };
-  }, [persona.nick, modelConfig.modelId]);
+  }, [persona.nick, modelConfig.modelId, toolContribution.descriptors]);
 
   if (!joined || !cap) {
     return (
@@ -138,7 +151,14 @@ export function App() {
 
   return (
     <MeshProvider joinRoom={joinRoom} selfId={selfId} trysteroConfig={TRYSTERO_CONFIG} roomId={ROOM_ID} cap={cap}>
-      <Dashboard nick={persona.nick} onChangeNick={() => setJoined(false)} baseCap={cap} modelConfig={modelConfig} theme={theme} />
+      <Dashboard
+        nick={persona.nick}
+        onChangeNick={() => setJoined(false)}
+        baseCap={cap}
+        modelConfig={modelConfig}
+        theme={theme}
+        toolContribution={toolContribution}
+      />
     </MeshProvider>
   );
 }
@@ -149,6 +169,7 @@ function Dashboard(props: {
   baseCap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
   modelConfig: ReturnType<typeof resolveChatModelConfig>;
   theme: UseThemeHandle;
+  toolContribution: UseToolContributionHandle;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
@@ -279,6 +300,14 @@ function Dashboard(props: {
 
   const threads = useThreads();
 
+  // ── TOOL-NODES wiring ─────────────────────────────────────────────
+  // Serve inbound tool calls this tab opted in to (docs/TOOL-NODES.md).
+  const { toolContribution } = props;
+  useMeshTools({ registry: toolContribution.registry, optedIn: toolContribution.optedIn });
+  // Tools the MODEL may call: the union advertised across the live
+  // roster (self included — a solo tab can consume its own contribution).
+  const meshTools = useMemo(() => collectMeshTools(roster), [roster]);
+
   // ── Mesh sidebar view-models ──────────────────────────────────────
   const topology = useMemo(
     () =>
@@ -344,32 +373,140 @@ function Dashboard(props: {
   // ── Streaming wiring ───────────────────────────────────────────────
   const [streamingMessageId, setStreamingMessageId] = useState<string | undefined>(undefined);
 
+  // TOOL-NODES: per-exchange multi-round state. One "exchange" = one user
+  // message; each round is generate → (tool call detected) → mesh
+  // round-trip → re-prefill-and-continue via a fresh chat.start() carrying
+  // the completed rounds (see chatPrompt's `rounds`). Ref, not state — the
+  // status effect below mutates it mid-flight without re-render churn.
+  const exchangeRef = useRef<{
+    userText: string;
+    baseMessages: readonly import('./db/threadStore.js').ChatMessage[];
+    rounds: { assistantText: string; toolResponse: string }[];
+    assistantId: string;
+    trace: string[];
+    toolLoopBusy: boolean;
+    cancelled: boolean;
+  } | null>(null);
+
   const doSend = useCallback(
     (text: string) => {
-      const prompt = buildPrompt(threads.activeThread?.messages ?? [], text);
+      const baseMessages = threads.activeThread?.messages ?? [];
+      const prompt = buildPrompt(baseMessages, text, { tools: meshTools });
       threads.appendMessage('user', text);
       const assistantId = threads.appendMessage('assistant', '');
+      exchangeRef.current = {
+        userText: text,
+        baseMessages,
+        rounds: [],
+        assistantId,
+        trace: [],
+        toolLoopBusy: false,
+        cancelled: false,
+      };
       setStreamingMessageId(assistantId);
       void chat.start(prompt, { maxDecodeTokens: 256 });
     },
-    [threads, chat],
+    [threads, chat, meshTools],
   );
 
   useEffect(() => {
     if (!streamingMessageId) return;
-    threads.updateMessageContent(streamingMessageId, chat.text);
+    threads.updateMessageContent(streamingMessageId, stripToolMarkup(chat.text));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.text, streamingMessageId]);
 
+  /** One tool round: route the call (mesh peer, or self-serve when this
+   * tab is the only advertiser), fold the response, resume generation. */
+  const runToolRound = useCallback(
+    async (call: { name: string; args: Readonly<Record<string, unknown>>; raw: string }, assistantText: string) => {
+      const ex = exchangeRef.current;
+      if (!ex || !peer) return;
+      const traceIdx = ex.trace.push(`${call.name} → calling…`) - 1;
+      threads.setMessageToolTrace(ex.assistantId, ex.trace);
+      try {
+        const rosterSnapshot = peer.roster.snapshot();
+        const remoteProviders = findPeersByTool(rosterSnapshot, call.name, { excludePeerId: peer.selfId });
+        let payload: string;
+        if (remoteProviders.length > 0) {
+          const rt = await runToolRoundTrip({
+            peer,
+            roster: rosterSnapshot,
+            call: { name: call.name, args: call.args },
+            timeoutMs: 20_000,
+            priorityScore,
+            standingLedger,
+            });
+          payload = buildToolResponsePayload(call.name, rt.result, rt.error);
+          const nick = rt.providerPeerId ? (nickOf(rt.providerPeerId) ?? rt.providerPeerId.slice(0, 6)) : undefined;
+          ex.trace[traceIdx] = `${call.name} → ${rt.status}${nick ? ` · served by @${nick}` : ''}`;
+          telemetry.trackEvent({ name: 'tool_round_trip', props: { tool: call.name, status: rt.status, tried: rt.triedPeerIds.length } });
+        } else if (toolContribution.optedIn.includes(call.name)) {
+          // Self-serve: no other peer advertises it but this tab does —
+          // dispatch locally through the same registry the mesh path uses.
+          const result = await toolContribution.registry.dispatch(
+            { v: 1, ts: Date.now(), callId: newCallId(), toolName: call.name, args: call.args },
+            toolContribution.optedIn,
+          );
+          payload = buildToolResponsePayload(call.name, result);
+          ex.trace[traceIdx] = `${call.name} → ${result.status} · served locally`;
+          telemetry.trackEvent({ name: 'tool_round_trip', props: { tool: call.name, status: result.status, tried: 0 } });
+        } else {
+          payload = buildToolResponsePayload(call.name, undefined, `no peer currently advertises tool "${call.name}"`);
+          ex.trace[traceIdx] = `${call.name} → no provider`;
+        }
+        threads.setMessageToolTrace(ex.assistantId, ex.trace);
+        ex.rounds.push({ assistantText, toolResponse: payload });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        ex.trace[traceIdx] = `${call.name} → error`;
+        threads.setMessageToolTrace(ex.assistantId, ex.trace);
+        ex.rounds.push({ assistantText, toolResponse: buildToolResponsePayload(call.name, undefined, reason) });
+      } finally {
+        ex.toolLoopBusy = false;
+      }
+      if (ex.cancelled) {
+        finalizeExchange();
+        return;
+      }
+      const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds });
+      void chat.start(prompt, { maxDecodeTokens: 256 });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [peer, threads, chat, meshTools, priorityScore, standingLedger, toolContribution, telemetry],
+  );
+
+  const finalizeExchange = useCallback(() => {
+    const ex = exchangeRef.current;
+    if (ex) {
+      threads.updateMessageContent(ex.assistantId, stripToolMarkup(chat.text));
+      if (ex.trace.length > 0) threads.setMessageToolTrace(ex.assistantId, ex.trace);
+    }
+    if (streamingMessageId && chat.restartCount > 0) threads.markReconnected(streamingMessageId);
+    void threads.flushActiveThread();
+    exchangeRef.current = null;
+    setStreamingMessageId(undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads, chat.text, chat.restartCount, streamingMessageId]);
+
   useEffect(() => {
     if (!streamingMessageId) return;
-    if (chat.status.phase === 'finished' || chat.status.phase === 'aborted' || chat.status.phase === 'error') {
-      if (chat.restartCount > 0) threads.markReconnected(streamingMessageId);
-      void threads.flushActiveThread();
-      setStreamingMessageId(undefined);
+    const ex = exchangeRef.current;
+    if (ex?.toolLoopBusy) return; // a round-trip owns the lifecycle right now
+    if (chat.status.phase === 'finished') {
+      // Tool round? Only when the mesh (or self) can actually serve it,
+      // the round budget isn't spent, and the user hasn't stopped us.
+      const call = ex && !ex.cancelled && ex.rounds.length < MAX_TOOL_ROUNDS ? firstToolCall(chat.text) : null;
+      if (call && ex) {
+        ex.toolLoopBusy = true;
+        void runToolRound(call, chat.text);
+        return;
+      }
+      finalizeExchange();
+    } else if (chat.status.phase === 'aborted' || chat.status.phase === 'error') {
+      finalizeExchange();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.status, chat.restartCount, streamingMessageId]);
+  }, [chat.status, chat.text, streamingMessageId, runToolRound, finalizeExchange]);
 
   function handleSend(text: string) {
     if (needsTrustAck(ackedHostKey, currentPlanHostKey)) {
@@ -470,7 +607,12 @@ function Dashboard(props: {
           capacity={capacity}
           notice={chatNotice}
           onSend={handleSend}
-          onStop={() => chat.abort('user stopped')}
+          onStop={() => {
+            // A stop during a tool round-trip must also stop the loop from
+            // resuming generation once the round-trip settles.
+            if (exchangeRef.current) exchangeRef.current.cancelled = true;
+            chat.abort('user stopped');
+          }}
         />
         <MeshSidebar
           capacity={capacity}
@@ -507,6 +649,7 @@ function Dashboard(props: {
           }}
           audioKeepalive={audioKeepalive}
           showAudioKeepalive={hostingConsent.consent === 'accepted'}
+          toolContribution={toolContribution}
         />
       </div>
       {trustModal && <TrustInterstitial isHostSetChange={ackedHostKey !== null} onAcknowledge={handleAcknowledge} />}
