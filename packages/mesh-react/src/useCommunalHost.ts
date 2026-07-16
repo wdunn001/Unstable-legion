@@ -61,6 +61,12 @@ import { useMeshRoster } from './useMeshRoster.js';
 import { useStageHost, type UseStageHostSession, type UseStageHostHandle } from './useStageHost.js';
 import { sanitizeWasmHeapBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import {
+  createColocationCoordinator,
+  getOrCreateFailureDomainId,
+  type ColocationCoordinatorHandle,
+  type ColocationCoordinatorOptions,
+} from './colocation.js';
 import type { StageWorkerLog } from './stageWorkerClient.js';
 import type { PriorityScoreFn } from './stageSessionAdmission.js';
 import {
@@ -141,6 +147,23 @@ export interface UseCommunalHostOptions {
    * surfaces an error. Omit to disable telemetry entirely. */
   telemetry?: MeshTelemetrySink;
   log?: StageWorkerLog;
+  /**
+   * Same-origin tab colocation (see `colocation.ts`'s module doc) —
+   * collapses hosting to exactly ONE tab per browser profile per machine.
+   * Default `true`. Set `false` to opt this consumer OUT and restore the
+   * pre-fix "every enabled tab hosts independently" behavior (e.g. a host
+   * embedding this hook in a context where each mount is deliberately its
+   * OWN origin/profile, or a test harness that wants the old shape).
+   */
+  colocationEnabled?: boolean;
+  /** Override the failure-domain id this peer advertises (mainly for
+   * tests). Default: `getOrCreateFailureDomainId()` (localStorage-backed,
+   * stable per browser profile). */
+  failureDomainId?: string;
+  /** Injectable coordinator factory (tests pin a fake BroadcastChannel/
+   * LockManager via `ColocationCoordinatorOptions`, or replace the whole
+   * coordinator). Default `createColocationCoordinator`. */
+  createColocationCoordinator?: (opts?: ColocationCoordinatorOptions) => ColocationCoordinatorHandle;
 }
 
 export type CommunalHostPhase = 'idle' | 'loading' | 'active' | 'draining' | 'retrying' | 'error';
@@ -176,6 +199,22 @@ export interface UseCommunalHostHandle {
 const DEFAULT_REASSEMBLY_MS = 5000;
 const DEFAULT_GRACE_MS = 30_000;
 const DEFAULT_GIVE_UP_LABEL_AFTER = 4;
+
+/** Cheap, synchronous, side-effect-free mirror of
+ * `colocation.ts#createColocationCoordinator`'s own `supported` check —
+ * used ONLY to seed `isLeader`'s initial state so a tab that WILL end up
+ * a follower never renders even one frame as "leader" (which could
+ * otherwise kick off a spurious preload before the real coordinator's
+ * async lock resolution corrects it). When this guesses `true` (locks/
+ * BroadcastChannel look present), the real coordinator settles the
+ * authoritative answer moments later via `onLeaderChange`. */
+function colocationLikelySupported(): boolean {
+  return (
+    typeof BroadcastChannel !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    typeof navigator.locks?.request === 'function'
+  );
+}
 
 async function probeOpfsQuotaBytes(override?: number): Promise<number> {
   if (override !== undefined) return override;
@@ -270,12 +309,61 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     reassemblyIntervalMs = DEFAULT_REASSEMBLY_MS,
     priorityScore,
     opfsQuotaBytesOverride,
+    colocationEnabled = true,
     log = () => undefined,
   } = opts;
 
   const roster = useMeshRoster();
   const rosterRef = useRef<readonly MeshRosterEntry[]>(roster);
   rosterRef.current = roster;
+
+  // ── Same-origin tab colocation — one shared host per browser profile ──
+  // (see colocation.ts's module doc). `isLeader` seeds "true" whenever
+  // colocation is off/unsupported (every enabled tab hosts independently,
+  // today's pre-fix behavior) and otherwise seeds via a synchronous guess
+  // that matches the coordinator's own settled answer (see
+  // `colocationLikelySupported`'s doc comment) so a tab that will end up
+  // a follower never renders even one frame as leader.
+  const [failureDomainId] = useState<string | undefined>(() => opts.failureDomainId ?? getOrCreateFailureDomainId());
+  const [isLeader, setIsLeader] = useState<boolean>(() => !colocationEnabled || !colocationLikelySupported());
+  const coordinatorRef = useRef<ColocationCoordinatorHandle | null>(null);
+  const [, bumpSharedStatusTick] = useState(0);
+
+  useEffect(() => {
+    if (!colocationEnabled || !enabled) {
+      // Colocation off, or hosting itself not consented-to: never compete
+      // for the leader lock (a declined tab holding it would starve any
+      // sibling tab that DOES consent — see this hook's PR doc), and no
+      // coordinator exists to follow either. `isLeader: true` here just
+      // means "not a follower of anyone" — the actual GPU/mesh work stays
+      // gated on `hostingActive` (`enabled && isLeader`) regardless, so a
+      // declined tab still does nothing; it just reports its own
+      // (idle) local state instead of mirroring a sibling's.
+      setIsLeader(true);
+      return;
+    }
+    const factory = opts.createColocationCoordinator ?? createColocationCoordinator;
+    const coordinator = factory();
+    coordinatorRef.current = coordinator;
+    setIsLeader(coordinator.isLeader());
+    const unsubLeader = coordinator.onLeaderChange(setIsLeader);
+    const unsubStatus = coordinator.onStatusChange(() => bumpSharedStatusTick((n) => n + 1));
+    return () => {
+      unsubLeader();
+      unsubStatus();
+      coordinator.close();
+      coordinatorRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colocationEnabled, enabled]);
+
+  // The actual GPU-worker/OPFS/mesh-advertise loop runs ONLY on the
+  // elected leader tab (or on every tab when colocation is off/
+  // unsupported, in which case `isLeader` is unconditionally true) —
+  // this is the structural fix for "N same-origin tabs = N independent
+  // hosting attempts": non-leader tabs simply never enable `useStageHost`
+  // or the assembly-loop effect below.
+  const hostingActive = enabled && isLeader;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -408,8 +496,15 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   }, []);
 
   // ── The host object this hook drives (owns admission/serving/decode) ──
+  // `enabled: hostingActive` (not the raw `enabled` prop) is the actual
+  // fix for colocated tabs: a follower tab still mounts this hook (so its
+  // own WebGPU feature-detect / support probe still runs, harmlessly),
+  // but never gets its GPU worker started or its `cap.stageHost`
+  // advertised — `useStageHost` already treats `enabled: false` as "stop
+  // advertising, tear nothing new down" (see that hook's "Publish cap"
+  // effect).
   const host: UseStageHostHandle = useStageHost({
-    enabled,
+    enabled: hostingActive,
     peer,
     baseCap: opts.baseCap,
     createStageWorker,
@@ -421,6 +516,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     suppressAdvertise,
     forceDisconnect,
     onLifecycle: handleLifecycle,
+    failureDomainId,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;
@@ -428,8 +524,12 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   hostSessionCountRef.current = hostSessionCount;
 
   // ── Assembly loop ─────────────────────────────────────────────────────
+  // Runs ONLY on the elected leader tab (`hostingActive`) — a follower
+  // never computes a claim, never preloads, never advertises. See
+  // colocation.ts's module doc for why: N same-origin tabs must collapse
+  // to exactly one hosting attempt, not one per tab.
   useEffect(() => {
-    if (!enabled || !peer || !supportState.ok || !limits) return;
+    if (!hostingActive || !peer || !supportState.ok || !limits) return;
     // Captured into a local `const` so the nested `tick` closure retains
     // the non-null narrowing (TS doesn't extend narrowing of an outer
     // `useState` value across a nested function declaration boundary).
@@ -457,6 +557,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
             wasmHeapBudget: sanitizeWasmHeapBudget(safeLimits.maxStorageBufferBindingSize),
             stability: { keepalive: !!opts.keepaliveEnabled, visible: typeof document === 'undefined' || document.visibilityState === 'visible', uptimeMs: 0 },
           }),
+          selfFailureDomainId: failureDomainId,
           priorityScore: priorityScoreRef.current,
         });
         // Log the decision ONLY when it actually changed — the assembly
@@ -557,6 +658,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           driverLayers,
           selfCapacityLayers,
           selfCurrentClaim: claimRef.current ?? null,
+          selfFailureDomainId: failureDomainId,
           priorityScore: priorityScoreRef.current,
         });
         if (!recheck.claim || cancelled) return;
@@ -624,11 +726,16 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // within `issuePreload` would tear the effect down mid-`await`,
     // cancelling the retry it was issuing. The interval alone drives the
     // cadence; the loop only decides intent (useStageHost owns resources).
+    // `hostingActive` (not `isLeader` alone) is the dep — a demotion
+    // (leadership lost) must tear this loop down exactly like `enabled`
+    // going false always has, so a freshly-demoted tab stops ticking
+    // immediately rather than continuing to compute claims it'll never
+    // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!hostingActive) {
       setClaim(undefined);
       setPreloadStage(null);
       setSuppressAdvertise(false);
@@ -638,7 +745,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       retryRef.current = null;
       lastDecisionKeyRef.current = '';
     }
-  }, [enabled]);
+  }, [hostingActive]);
 
   useEffect(() => {
     if (phase === 'loading' && host.active && host.stageHostCap?.loadedStages?.length) setPhase('active');
@@ -657,6 +764,52 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         nextAttemptInSec: retryCountdownSec(errorState.nextAttemptAtMs, Date.now()),
       })
     : undefined;
+
+  // ── Leader -> followers status relay ──────────────────────────────────
+  // Publishes on every render where something a follower cares about
+  // changed. `coordinatorRef.current?.publishStatus` itself no-ops when
+  // called by a non-leader (see colocation.ts), so this stays correct
+  // even for the render(s) right after a demotion.
+  useEffect(() => {
+    if (!hostingActive) return;
+    coordinatorRef.current?.publishStatus({
+      phase,
+      claim,
+      active: host.active && phase === 'active',
+      sessionCount: host.sessions.length,
+      tokensDecoded: host.tokensDecoded,
+      maxSessions: host.maxSessions,
+      queueLength: host.queueLength,
+      errorMessage,
+      retrying: !!errorState?.retrying,
+      retryAttempt: errorState?.attempt ?? 0,
+      ts: Date.now(),
+    });
+  }, [hostingActive, phase, claim, host.active, host.sessions.length, host.tokensDecoded, host.maxSessions, host.queueLength, errorMessage, errorState]);
+
+  // ── Follower view — mirror the leader's relayed status instead of this
+  // tab's own (intentionally idle) local state. `bumpSharedStatusTick`
+  // (subscribed above) forces this to re-render whenever a fresh status
+  // arrives even though `coordinatorRef.current` itself isn't state. ────
+  if (!isLeader && colocationEnabled) {
+    const shared = coordinatorRef.current?.latestStatus();
+    return {
+      supported: supportState.ok,
+      unsupportedReason: supportState.reason,
+      phase: (shared?.phase as CommunalHostPhase | undefined) ?? 'idle',
+      claim: shared?.claim,
+      active: shared?.active ?? false,
+      sessions: [], // per-session driver detail isn't relayed — see SharedHostStatus's doc comment
+      tokensDecoded: shared?.tokensDecoded ?? 0,
+      maxSessions: shared?.maxSessions ?? 0,
+      queueLength: shared?.queueLength ?? 0,
+      lastError: shared?.errorMessage,
+      errorMessage: shared?.errorMessage,
+      retrying: shared?.retrying ?? false,
+      nextRetryAtMs: undefined,
+      retryAttempt: shared?.retryAttempt ?? 0,
+    };
+  }
 
   return {
     supported: supportState.ok,

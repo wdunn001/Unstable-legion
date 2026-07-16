@@ -95,6 +95,36 @@ export interface CommunalHostStageAd {
    * `BuildCommunalTopologyOptions.rttByPeerId` — e.g. from a ping cache.
    * Undefined = unknown, ranked as if worst (Infinity). */
   rttMs?: number;
+  /** Denormalized from the advertising peer's `cap.stageHost.
+   * failureDomainId` (see `types.ts`'s doc comment) — undefined for a
+   * peer that predates the field or didn't set one. Use `adFailureDomainId`
+   * rather than this field directly: it applies the "absent -> own peerId"
+   * fallback every caller needs. */
+  failureDomainId?: string;
+}
+
+/** "This ad's failure domain" — its explicit `failureDomainId` when
+ * present, else its own `peerId` (back-compat: a peer that never opted
+ * into colocation coordination is, by definition, its own independent
+ * failure domain — see `types.ts`'s doc comment on the field). ALWAYS use
+ * this instead of reading `.failureDomainId` directly so every caller
+ * applies the same fallback. */
+export function adFailureDomainId(ad: Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>): string {
+  return ad.failureDomainId ?? ad.peerId;
+}
+
+/** Distinct failure-domain ids represented among `candidates` — the
+ * REPLICATION-correct count for "how many independent copies of this
+ * segment exist" (see `communalAssembly.ts`'s doc comment: two co-located
+ * tabs covering the same segment must count as ONE, not two). */
+export function distinctFailureDomainIds(candidates: readonly Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>[]): Set<string> {
+  return new Set(candidates.map(adFailureDomainId));
+}
+
+/** `distinctFailureDomainIds(candidates).size` — the common case callers
+ * actually want (they only need the count, not the set itself). */
+export function distinctFailureDomainCount(candidates: readonly Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>[]): number {
+  return distinctFailureDomainIds(candidates).size;
 }
 
 export interface CommunalSegment {
@@ -165,6 +195,7 @@ function toAd(
     headroom: Math.max(0, stage.maxSessions - stage.activeSessions),
     stabilityScore: entry.stageHost ? hostStabilityScore(entry.stageHost as StageHostCap) : 0,
     rttMs: rttByPeerId?.[entry.peerId],
+    failureDomainId: entry.stageHost?.failureDomainId,
   };
 }
 

@@ -58,7 +58,7 @@
  * a `deterministicHash(selfPeerId)`-derived spread term keeps
  * equally-stable peers from claiming in perfect lockstep.
  */
-import { deterministicHash, buildCommunalTopology, type CommunalSegment } from './communalTopology.js';
+import { deterministicHash, buildCommunalTopology, distinctFailureDomainCount, adFailureDomainId, type CommunalSegment } from './communalTopology.js';
 import type { MeshRosterEntry } from './types.js';
 
 export const DEFAULT_MAX_SPARES_PER_SEGMENT = 2;
@@ -93,6 +93,18 @@ export interface CommunalHostClaimInput {
    * tie-break and the jitter formula. Default 0 (least preferred/fastest
    * jitter-independent stability contribution). */
   selfStabilityScore?: number;
+  /**
+   * Self's own `cap.stageHost.failureDomainId` (see `types.ts`'s doc
+   * comment) — "this peer, on this browser profile, on this machine".
+   * Every replication/redundancy count in this module (sole-coverer
+   * check, spare-cap check, becoming-a-spare check) counts DISTINCT
+   * failure domains among a segment's candidates, NOT distinct peerIds —
+   * two co-located tabs covering the identical segment are ONE real
+   * failure domain, not two, and must never be treated as making that
+   * segment "replicated". Defaults to `selfPeerId` (back-compat: a peer
+   * that never opted into colocation coordination is its own domain).
+   */
+  selfFailureDomainId?: string;
   /** Same injected-hook idiom as `stageSessionAdmission.ts`. Default pure
    * FIFO / no preference (`() => 0`) until M4. */
   priorityScore?: CommunalPriorityScoreFn;
@@ -133,7 +145,13 @@ function sameRange(a: CommunalClaimRange | null | undefined, b: { layerStart: nu
  * real stability score for RANKING (not just topology membership) pass
  * it separately and splice it in (see the yield check above), so this
  * placeholder never leaks into a scoring decision. */
-function syntheticRosterEntry(peerId: string, modelId: string, claim: CommunalClaimRange, maxSessions = 1): MeshRosterEntry {
+function syntheticRosterEntry(
+  peerId: string,
+  modelId: string,
+  claim: CommunalClaimRange,
+  maxSessions = 1,
+  failureDomainId?: string,
+): MeshRosterEntry {
   return {
     v: 1,
     ts: Date.now(),
@@ -148,6 +166,7 @@ function syntheticRosterEntry(peerId: string, modelId: string, claim: CommunalCl
     stageHost: {
       maxStorageBufferBytes: 1,
       wasmHeapBudget: 1,
+      ...(failureDomainId !== undefined ? { failureDomainId } : {}),
       loadedStages: [
         {
           modelId,
@@ -195,6 +214,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     selfCapacityLayers,
     selfCurrentClaim = null,
     selfStabilityScore = 0,
+    selfFailureDomainId = selfPeerId,
     priorityScore = () => 0,
     maxSparesPerSegment = DEFAULT_MAX_SPARES_PER_SEGMENT,
     jitterBaseMs = DEFAULT_JITTER_BASE_MS,
@@ -238,12 +258,27 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
       layerEnd: selfCurrentClaim.layerEnd,
       stabilityScore: selfStabilityScore,
     };
-    const fullRoster = [...othersRoster, syntheticRosterEntry(selfPeerId, modelId, selfCurrentClaim)];
+    const fullRoster = [...othersRoster, syntheticRosterEntry(selfPeerId, modelId, selfCurrentClaim, 1, selfFailureDomainId)];
     const fullTopology = buildCommunalTopology(fullRoster, { modelId, totalLayers, driverLayers });
     const wonSegment: CommunalSegment | undefined = fullTopology.segments.find(
       (s) => sameRange(selfCurrentClaim, s) && s.candidates.some((c) => c.peerId === selfPeerId),
     );
     if (wonSegment) {
+      // NOTE: this dispatch (sole coverer vs genuine duplicate) is
+      // deliberately PEER-count based, not domain-count based — it
+      // answers "would removing me reopen a gap RIGHT NOW", which is a
+      // peer-existence fact independent of failure-domain identity: if
+      // ANOTHER peer (same domain or not) already covers this exact
+      // range, self isn't structurally essential, and — critically — the
+      // "genuine duplicate" branch below is what lets a WASTEFUL overlap
+      // (including a same-domain colocated duplicate) yield to go refill
+      // a real gap elsewhere, which is valuable regardless of domain.
+      // Domain-counting is applied instead where it belongs: the
+      // "already-legitimate spare" and "become a fresh spare" checks
+      // further below, which decide whether a segment counts as
+      // adequately REPLICATED for maxSparesPerSegment purposes (see this
+      // module's/types.ts's doc comments — that's the actual fix for the
+      // catastrophic colocated-tab redundancy-accounting gap).
       if (wonSegment.candidates.length === 1) {
         // Sole coverer of a real, frontier-walk-winning segment —
         // essential, stays put. BUT: if self has unused capacity
@@ -288,12 +323,15 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
         }
         return { claim: selfCurrentClaim, jitterMs, yieldCurrent: false, reason: 'sole coverer of this segment — essential, keeping as-is' };
       }
-      // A genuine duplicate (>1 candidate at the SAME exact range) — only
-      // a problem when a gap exists elsewhere in the mesh (wasted
-      // capacity while something else goes unserved); otherwise it's a
-      // legitimate warm spare and self should keep it regardless of the
-      // tie-break (moving would just relocate the SAME redundancy, not
-      // reduce it).
+      // A genuine duplicate (>1 DISTINCT FAILURE DOMAIN at the SAME exact
+      // range) — only a problem when a gap exists elsewhere in the mesh
+      // (wasted capacity while something else goes unserved); otherwise
+      // it's a legitimate warm spare and self should keep it regardless
+      // of the tie-break (moving would just relocate the SAME redundancy,
+      // not reduce it). The yield tie-break itself stays PEER-level (it
+      // decides which specific tab backs off, not which domain) —
+      // domain-counting only governs whether this is "genuinely
+      // redundant" in the first place.
       if (othersTopology.gaps.length > 0) {
         const ranked = rankForYield([...wonSegment.candidates.filter((c) => c.peerId !== selfPeerId), selfAd], priorityScore);
         if (ranked[0]!.peerId !== selfPeerId) {
@@ -323,24 +361,44 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     return { claim, jitterMs, yieldCurrent: false, reason: `claiming lowest gap [${layerStart},${layerEnd})` };
   }
 
+  // `othersTopology` (built from `othersRoster`, self excluded) never
+  // contains self's own ad — a segment's candidate list there can only
+  // gain SELF's domain by self joining it. `domainCountIncludingSelf`
+  // computes "how many distinct failure domains would this segment have
+  // if self joined/stayed", crediting self's domain only once even if a
+  // co-located sibling already covers the exact same range (that's the
+  // whole point: self joining a segment its OWN domain already covers
+  // adds ZERO real redundancy, so it must not read as "made progress
+  // toward maxSparesPerSegment").
+  const domainCountIncludingSelf = (candidates: CommunalSegment['candidates']): number =>
+    candidates.some((c) => adFailureDomainId(c) === selfFailureDomainId)
+      ? distinctFailureDomainCount(candidates)
+      : distinctFailureDomainCount(candidates) + 1;
+
   // No gap. Already an exact-range holder of a covered segment that isn't
-  // over-replicated? Keep as-is (no thrash).
+  // over-replicated (by DISTINCT DOMAIN count)? Keep as-is (no thrash).
   if (selfCurrentClaim) {
     const matchingSegment = othersTopology.segments.find((s) => sameRange(selfCurrentClaim, s));
-    if (matchingSegment && matchingSegment.candidates.length + 1 <= maxSparesPerSegment + 1) {
+    if (matchingSegment && domainCountIncludingSelf(matchingSegment.candidates) <= maxSparesPerSegment + 1) {
       return { claim: selfCurrentClaim, jitterMs, yieldCurrent: false, reason: 'no gap; keeping current claim as an already-legitimate primary/spare' };
     }
   }
 
   // Consider becoming a fresh spare of the neediest under-replicated
-  // segment self can actually fit.
+  // segment self can actually fit — "under-replicated" and "neediest"
+  // both measured by DISTINCT FAILURE DOMAIN count, not candidate count,
+  // so a segment already covered by two co-located (same-domain) tabs
+  // still reads as needing a real second domain, not skipped as
+  // "already has 2 candidates".
   const spareCandidates = othersTopology.segments
-    .filter((s) => s.candidates.length < maxSparesPerSegment + 1)
+    .filter((s) => domainCountIncludingSelf(s.candidates) <= maxSparesPerSegment + 1)
     .filter((s) => s.layerEnd - s.layerStart <= selfCapacityLayers)
     .filter((s) => !sameRange(selfCurrentClaim, s)); // already handled above, but stay defensive
   if (spareCandidates.length > 0) {
     spareCandidates.sort((a, b) => {
-      if (a.candidates.length !== b.candidates.length) return a.candidates.length - b.candidates.length;
+      const da = distinctFailureDomainCount(a.candidates);
+      const db = distinctFailureDomainCount(b.candidates);
+      if (da !== db) return da - db;
       return a.layerStart - b.layerStart;
     });
     const target = spareCandidates[0]!;

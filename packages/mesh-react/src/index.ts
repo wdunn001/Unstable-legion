@@ -161,6 +161,15 @@ export {
 } from './stageSessionAdmission.js';
 export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
 
+// ── Same-origin tab colocation — one shared host per browser profile ──
+export {
+  getOrCreateFailureDomainId,
+  createColocationCoordinator,
+  type SharedHostStatus,
+  type ColocationCoordinatorOptions,
+  type ColocationCoordinatorHandle,
+} from './colocation.js';
+
 // ── M3: communal pipeline — self-assembly host loop ─────────────────
 export {
   useCommunalHost,

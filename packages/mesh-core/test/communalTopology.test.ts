@@ -10,6 +10,9 @@ import {
   planCommunalRoute,
   communalAttachOrder,
   deterministicHash,
+  adFailureDomainId,
+  distinctFailureDomainIds,
+  distinctFailureDomainCount,
 } from '../src/communalTopology.ts';
 import type { MeshRosterEntry } from '../src/types.ts';
 
@@ -30,6 +33,7 @@ function makePeer(
     epoch?: number;
   }[],
   stability?: { keepalive?: boolean; visible?: boolean; uptimeMs?: number },
+  failureDomainId?: string,
 ): MeshRosterEntry {
   return {
     v: 1,
@@ -45,6 +49,7 @@ function makePeer(
     stageHost: {
       maxStorageBufferBytes: 1_000_000_000,
       wasmHeapBudget: 1_000_000_000,
+      ...(failureDomainId !== undefined ? { failureDomainId } : {}),
       stability: { keepalive: false, visible: true, uptimeMs: 0, ...stability },
       loadedStages: loadedStages.map((s) => ({
         modelId: s.modelId ?? MODEL,
@@ -130,6 +135,46 @@ test('buildCommunalTopology: duplicate (spare) ads on the same exact range becom
   assert.equal(topo.segments[0]!.candidates.length, 2);
   // seats = sum of headroom across BOTH candidates of the one segment: 4 + 2 = 6
   assert.equal(topo.seats, 6);
+});
+
+// ── failureDomainId propagation + domain-counting helpers ───────────────
+
+test('buildCommunalTopology: candidate ads carry the advertising peer\'s failureDomainId through to the segment', () => {
+  const roster = [
+    makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], undefined, 'fd-machine-1'),
+    makePeer('hostB', [{ layerStart: 2, layerEnd: 28, includeOutput: true }], undefined, 'fd-machine-1'),
+  ];
+  const topo = buildCommunalTopology(roster, { modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS });
+  assert.equal(topo.segments.length, 1);
+  const candidates = topo.segments[0]!.candidates;
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates[0]!.failureDomainId, 'fd-machine-1');
+  assert.equal(candidates[1]!.failureDomainId, 'fd-machine-1');
+});
+
+test('adFailureDomainId: explicit id wins; absent -> falls back to peerId', () => {
+  assert.equal(adFailureDomainId({ peerId: 'p1', failureDomainId: 'fd-x' }), 'fd-x');
+  assert.equal(adFailureDomainId({ peerId: 'p1', failureDomainId: undefined }), 'p1');
+});
+
+test('distinctFailureDomainIds / distinctFailureDomainCount: two same-origin (same-domain) candidates count as ONE domain; two distinct domains count as TWO', () => {
+  const colocated = [
+    { peerId: 'tabA', failureDomainId: 'fd-machine-1' },
+    { peerId: 'tabB', failureDomainId: 'fd-machine-1' },
+  ];
+  assert.equal(distinctFailureDomainCount(colocated), 1);
+  assert.deepEqual([...distinctFailureDomainIds(colocated)], ['fd-machine-1']);
+
+  const distinct = [
+    { peerId: 'tabA', failureDomainId: 'fd-machine-1' },
+    { peerId: 'tabB', failureDomainId: 'fd-machine-2' },
+  ];
+  assert.equal(distinctFailureDomainCount(distinct), 2);
+});
+
+test('distinctFailureDomainCount: missing failureDomainId -> each peer is its own domain (back-compat)', () => {
+  const noDomainIds = [{ peerId: 'p1', failureDomainId: undefined }, { peerId: 'p2', failureDomainId: undefined }];
+  assert.equal(distinctFailureDomainCount(noDomainIds), 2);
 });
 
 test('buildCommunalTopology: staggered partial overlap resolves via furthest-reach greedy walk, no crash', () => {
