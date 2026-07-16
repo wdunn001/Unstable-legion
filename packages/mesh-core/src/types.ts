@@ -141,7 +141,49 @@ export interface MeshPeerCap {
     /** Sessions currently occupying a lane, for roster-level "how full is
      * this host" display. Absent = no session ever opened yet. */
     activeSessions?: number;
+    /**
+     * M3 — communal pipeline: every stage this peer currently has LOADED
+     * and warm (never advertised before `warmUpStageWorker` completes —
+     * the C3 cold-shader lesson). A peer with `activeSessions === 0` can
+     * still have entries here (a loaded-but-idle stage — see M3's
+     * "no idle-unload v1" teardown rule: staying advertised is the point).
+     * Absent/empty = this peer hasn't loaded any stage yet, or predates
+     * M3. `communalTopology.ts`'s `buildCommunalTopology` is the sole
+     * consumer that turns a roster's union of these into a coverage map —
+     * nothing else in mesh-core reads this field directly.
+     */
+    loadedStages?: readonly MeshLoadedStage[];
   };
+}
+
+/**
+ * One entry in `MeshPeerCap.stageHost.loadedStages` (M3). Deliberately a
+ * peer-local fact ("what I have loaded"), not a claim about the mesh's
+ * overall coverage — `communalTopology.ts` unions these across the roster
+ * to compute coverage/gaps/seats.
+ */
+export interface MeshLoadedStage {
+  modelId: string;
+  /** Inclusive start layer of this loaded stage. */
+  layerStart: number;
+  /** Exclusive end layer of this loaded stage. */
+  layerEnd: number;
+  includeEmbeddings: boolean;
+  includeOutput: boolean;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16';
+  /** Lane ceiling committed at load time (see `chooseMaxSessions`). */
+  maxSessions: number;
+  /** Sessions currently occupying a lane on THIS stage. */
+  activeSessions: number;
+  /**
+   * Monotonic counter, bumped every time this peer (re)loads a stage
+   * (including reloading the SAME layer range) — lets a consumer detect
+   * "this is a fresh load of the same range" vs stale cap data during a
+   * fast reload, without needing wall-clock comparisons across peers
+   * with unsynced clocks.
+   */
+  epoch: number;
 }
 
 // ── cm: chat-message frame ─────────────────────────────────────────────────

@@ -33,6 +33,7 @@
 export {
   MESH_PROTOCOL_VERSION,
   type MeshChatMessage,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type MeshRosterEntry,
   type MeshToolCall,
@@ -43,6 +44,7 @@ export {
 
 export {
   isMeshChatMessage,
+  isMeshLoadedStage,
   isMeshPeerCap,
   isMeshToolCall,
   isMeshToolFrame,
@@ -123,6 +125,8 @@ export {
 // ── Phase C: driver-side stage-session orchestrator ──────────────────
 export {
   runDriverStageSession,
+  runCommunalDriverSession,
+  computeReplanJitterMs,
   type DriverStageHooks,
   type StageOrchestratorTimeouts,
   type StageOrchestratorPeer,
@@ -132,7 +136,35 @@ export {
   type StageOrchestratorListener,
   type StageSessionResult,
   type StageSessionHandle,
+  type CommunalRoute,
+  type CommunalRouteFn,
+  type CommunalDriverSessionOptions,
 } from './stageOrchestrator.js';
+
+// ── M3: communal pipeline coverage/assembly (pure) ────────────────────
+export {
+  buildCommunalTopology,
+  planCommunalRoute,
+  communalAttachOrder,
+  collectCommunalAds,
+  deterministicHash,
+  type CommunalHostStageAd,
+  type CommunalSegment,
+  type CommunalGap,
+  type CommunalTopology,
+  type BuildCommunalTopologyRequest,
+  type BuildCommunalTopologyOptions,
+  type PlanCommunalRouteOptions,
+} from './communalTopology.js';
+export {
+  communalHostClaim,
+  DEFAULT_MAX_SPARES_PER_SEGMENT,
+  DEFAULT_JITTER_BASE_MS,
+  type CommunalPriorityScoreFn,
+  type CommunalClaimRange,
+  type CommunalHostClaimInput,
+  type CommunalHostClaimResult,
+} from './communalAssembly.js';
 
 // ── Codec frame plumbing (the primary path — Codec frames over WebRTC) ──
 export {

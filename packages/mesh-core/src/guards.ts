@@ -10,6 +10,7 @@
 import {
   MESH_PROTOCOL_VERSION,
   type MeshChatMessage,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type MeshToolCall,
   type MeshToolDescriptor,
@@ -80,6 +81,26 @@ export function isStageHostCap(x: unknown): x is NonNullable<MeshPeerCap['stageH
   }
   if (x.maxSessions !== undefined && (typeof x.maxSessions !== 'number' || x.maxSessions <= 0)) return false;
   if (x.activeSessions !== undefined && (typeof x.activeSessions !== 'number' || x.activeSessions < 0)) return false;
+  if (x.loadedStages !== undefined) {
+    if (!Array.isArray(x.loadedStages)) return false;
+    if (!x.loadedStages.every(isMeshLoadedStage)) return false;
+  }
+  return true;
+}
+
+/** Runtime guard for one `MeshPeerCap.stageHost.loadedStages[]` entry (M3). */
+export function isMeshLoadedStage(x: unknown): x is MeshLoadedStage {
+  if (!isRecord(x)) return false;
+  if (typeof x.modelId !== 'string' || !x.modelId) return false;
+  if (!Number.isInteger(x.layerStart) || (x.layerStart as number) < 0) return false;
+  if (!Number.isInteger(x.layerEnd) || (x.layerEnd as number) <= (x.layerStart as number)) return false;
+  if (typeof x.includeEmbeddings !== 'boolean') return false;
+  if (typeof x.includeOutput !== 'boolean') return false;
+  if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
+  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
+  if (!Number.isInteger(x.maxSessions) || (x.maxSessions as number) <= 0) return false;
+  if (!Number.isInteger(x.activeSessions) || (x.activeSessions as number) < 0) return false;
+  if (!Number.isInteger(x.epoch) || (x.epoch as number) < 0) return false;
   return true;
 }
 
