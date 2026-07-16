@@ -15,6 +15,14 @@
 
 export const STAGE_MODEL_ID = 'qwen3-0.6b-q8_0';
 export const STAGE_TOTAL_LAYERS = 28;
+/** Layers the DRIVER always hosts locally in the communal (M3/M4) pipeline —
+ * the communal claim/coverage space every host and driver agrees on is
+ * `[STAGE_DRIVER_LAYERS, STAGE_TOTAL_LAYERS)`. Centralized here (rather than
+ * each communal call site hardcoding the same magic number) because a
+ * mismatch between what a driver hosts locally and what
+ * `communalHostClaim` anchors its ranges against would silently corrupt
+ * coverage — see `communalTopology.ts`'s frontier-walk doc comment. */
+export const STAGE_DRIVER_LAYERS = 2;
 export const STAGE_CTX_SIZE = 512;
 /** Approximate per-layer weight bytes for qwen3-0.6b-q8_0 (SLICING.md)  —
  * used by the planner when a real per-layer manifest isn't available. */

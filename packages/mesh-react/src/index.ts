@@ -170,9 +170,17 @@ export {
   type UseCommunalHostHandle,
   type CommunalHostPhase,
 } from './useCommunalHost.js';
+// ── M3/M4 close-out: the driver-side communal chat caller ────────────
+export {
+  useCommunalChat,
+  type UseCommunalChatOptions,
+  type UseCommunalChatHandle,
+  type CommunalChatStatus,
+} from './useCommunalChat.js';
 export {
   STAGE_MODEL_ID,
   STAGE_TOTAL_LAYERS,
+  STAGE_DRIVER_LAYERS,
   STAGE_CTX_SIZE,
   STAGE_AVG_LAYER_BYTES,
   STAGE_N_EMBD,
@@ -221,6 +229,25 @@ export type {
   MergeRelayUrlsOptions,
   DeviceCompat,
   DeviceCompatTier,
+} from '@unstable-legion/core';
+// M4: contribution economy — re-exported so consumers don't need a
+// separate `@unstable-legion/core` import just to construct/bind a ledger.
+export {
+  StandingLedger,
+  createStandingLedger,
+  bindPriorityScore,
+  defaultNoiseSource,
+  DEFAULT_STANDING_CONFIG,
+  DEFAULT_HALF_LIFE_MS,
+  DEFAULT_NEWCOMER_FLOOR,
+  DEFAULT_LOWEST_LANE,
+  DEFAULT_NOISE_AMPLITUDE,
+  DEFAULT_NOISE_BUCKET_MS,
+  type StandingConfig,
+  type NoiseSource,
+  type RecordServiceInput,
+  type RecordConsumptionInput,
+  type StandingSnapshot,
 } from '@unstable-legion/core';
 export {
   ToolRegistry,

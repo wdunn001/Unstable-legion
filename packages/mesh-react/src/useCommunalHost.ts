@@ -54,6 +54,7 @@ import {
   type MeshPeerCap,
   type MeshRosterEntry,
   type Peer,
+  type StandingLedger,
 } from '@unstable-legion/core';
 import { fragmentsForRange, manifestTiesEmbeddings, parseLayerPackageManifest, type LayerPackageManifest } from '@unstable-legion/stage-runtime';
 import { useMeshRoster } from './useMeshRoster.js';
@@ -101,6 +102,10 @@ export interface UseCommunalHostOptions {
   keepaliveEnabled?: boolean;
   desiredMaxSessions?: number;
   priorityScore?: PriorityScoreFn;
+  /** M4 — forwarded verbatim to `useStageHost`'s `standingLedger` option
+   * (consumption telemetry on every session free) — see that hook's doc
+   * comment and `docs/ECONOMY.md`. */
+  standingLedger?: StandingLedger;
   /** How often to recompute `communalHostClaim` against the live roster.
    * Default 5000. */
   reassemblyIntervalMs?: number;
@@ -238,6 +243,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const [phase, setPhase] = useState<CommunalHostPhase>('idle');
   const [preloadStage, setPreloadStage] = useState<Parameters<typeof useStageHost>[0]['preloadStage']>(null);
   const [suppressAdvertise, setSuppressAdvertise] = useState(false);
+  const [forceDisconnect, setForceDisconnect] = useState<{ reason: string; nonce: number } | null>(null);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
 
   const claimRef = useRef<CommunalClaimRange | undefined>(undefined);
@@ -277,8 +283,10 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     keepaliveEnabled: opts.keepaliveEnabled,
     desiredMaxSessions: opts.desiredMaxSessions,
     priorityScore,
+    standingLedger: opts.standingLedger,
     preloadStage,
     suppressAdvertise,
+    forceDisconnect,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;
@@ -326,13 +334,39 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           }
           const drained = hostSessionCount === 0;
           const graceElapsed = Date.now() - (drainStartedAtRef.current ?? Date.now()) > DEFAULT_GRACE_MS;
-          if (drained || graceElapsed) {
-            log(`[communal-host] drain complete (drained=${drained} graceElapsed=${graceElapsed}) — releasing claim`);
+          // NOTE: deliberately an if/else-if, not `drained || graceElapsed`
+          // combined into one branch — firing `setForceDisconnect(...)` AND
+          // `setForceDisconnect(null)` in the SAME synchronous tick would
+          // let the later call silently cancel the former (React batches
+          // same-tick state updates; only the last write survives) and the
+          // forced disconnect would never actually reach `useStageHost`.
+          // Requesting a forced disconnect and releasing the claim must be
+          // temporally separate: request it once grace expires, then wait
+          // for a LATER tick (once `hostSessionCount` actually reflects the
+          // resulting `freeSession` calls) to observe `drained` and release.
+          if (drained) {
+            log(`[communal-host] drain complete — releasing claim`);
             setClaim(undefined);
             setPreloadStage(null);
             setSuppressAdvertise(false);
+            setForceDisconnect(null);
             drainStartedAtRef.current = undefined;
             setPhase('idle');
+          } else if (graceElapsed) {
+            // M3 follow-up (the previously-documented "no forced
+            // termination after grace" gap): the drain window expired and
+            // sessions are STILL attached — natural drain isn't going to
+            // finish on its own (a long-running or stuck decode loop on
+            // the driver side), so force them closed now rather than
+            // leaving the lane pinned forever. Safe/bounded: every freed
+            // session notifies its driver via `stage.stop`, which
+            // `runCommunalDriverSession`/`runDriverStageSession` both
+            // already treat as "host requested stop" -> instant replan.
+            // Idempotent to repeat every tick until `hostSessionCount`
+            // catches up and `drained` goes true above (`useStageHost`'s
+            // `forceDisconnectAll` no-ops on an already-empty session map).
+            log(`[communal-host] drain grace (${DEFAULT_GRACE_MS}ms) expired with ${hostSessionCount} session(s) still attached — forcing disconnect`);
+            setForceDisconnect({ reason: 'communal teardown: drain grace expired', nonce: Date.now() });
           }
           return;
         }
@@ -423,6 +457,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       setClaim(undefined);
       setPreloadStage(null);
       setSuppressAdvertise(false);
+      setForceDisconnect(null);
       setPhase('idle');
     }
   }, [enabled]);

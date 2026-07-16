@@ -106,8 +106,10 @@ export interface UseStagePipelineHandle {
 const DEFAULT_LOCK_NAME = 'unstable-legion-stage-driver-leader-v1';
 const DEFAULT_MAX_DECODE_TOKENS = 64;
 
-/** Try to acquire the driver-leader lock without blocking. Returns null on miss. */
-function acquireLeaderLock(lockName: string): Promise<{ release: () => void } | null> {
+/** Try to acquire the driver-leader lock without blocking. Returns null on
+ * miss. Exported so `useCommunalChat.ts` reuses the exact same "one driver
+ * session per tab" idiom instead of re-implementing it. */
+export function acquireLeaderLock(lockName: string): Promise<{ release: () => void } | null> {
   if (typeof navigator === 'undefined' || !navigator.locks) {
     return Promise.resolve({ release: () => undefined });
   }

@@ -80,6 +80,7 @@ import {
   type MeshPeerCap,
   type Peer,
   type StageControlMessageFor,
+  type StandingLedger,
 } from '@unstable-legion/core';
 import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
@@ -180,6 +181,33 @@ export interface UseStageHostOptions {
    * existing sessions already in flight keep running undisturbed.
    */
   suppressAdvertise?: boolean;
+  /**
+   * M4 — this host's own contribution-economy ledger. When supplied,
+   * every session free (`freeSession`, regardless of WHY — natural
+   * finish, abort, idle-evict, forced disconnect) feeds
+   * `standingLedger.recordConsumption({consumerPeerId: driverPeerId, ...},
+   * now)` for the driver that occupied the lane — the "host directly
+   * witnesses a driver's resource consumption" half of the economy (see
+   * `docs/ECONOMY.md`). Deliberately NOT gated on completion (matches
+   * `recordConsumption`'s own contract — a peer that aborted mid-stream
+   * still occupied the lane for however long it lasted). Omit to skip
+   * telemetry entirely.
+   */
+  standingLedger?: StandingLedger;
+  /**
+   * M3 follow-up (the documented "forced session termination after
+   * teardown grace" gap) — pass a NEW object identity (e.g. `{ reason,
+   * nonce: Date.now() }`) to immediately free EVERY session currently
+   * occupying a lane on this host, notifying each driver via `stage.stop`.
+   * Same "new identity only when you actually want the action to fire"
+   * discipline as `preloadStage` — a stable identity is a no-op after the
+   * first fire (bridged via a ref-watched effect, never added to the
+   * "answer" effect's own dependency array, for the exact reason
+   * `DEBUG-CASEFILE.md` documents for `log`/`preloadStage`). `null`/
+   * undefined = never force-disconnect (the pre-this-milestone default:
+   * teardown only ever waited out natural drain).
+   */
+  forceDisconnect?: { reason: string; nonce: number } | null;
   log?: StageWorkerLog;
 }
 
@@ -332,6 +360,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   logRef.current = log;
   const priorityScoreRef = useRef<PriorityScoreFn>(opts.priorityScore ?? (() => 0));
   priorityScoreRef.current = opts.priorityScore ?? (() => 0);
+  // M4 — read fresh inside `freeSession` without making the "answer"
+  // effect depend on the ledger's identity (same ref-read idiom as
+  // `priorityScoreRef`/`baseCapRef`).
+  const standingLedgerRef = useRef<StandingLedger | undefined>(opts.standingLedger);
+  standingLedgerRef.current = opts.standingLedger;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -371,6 +404,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // `republishNowRef` (two independent effects, one triggers the other
   // without becoming a dependency of it).
   const preloadRequestRef = useRef<(req: NonNullable<UseStageHostOptions['preloadStage']>) => void>(() => undefined);
+  // M3 follow-up — bridge from the "force-disconnect watcher" effect
+  // (below) into the "answer" effect's `forceDisconnectAll`, same
+  // ref-bridge pattern as `preloadRequestRef`/`republishNowRef`.
+  const forceDisconnectRequestRef = useRef<(reason: string) => void>(() => undefined);
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
@@ -758,11 +795,49 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       syncPublicState();
       await workerClient?.sessionFree(sessionId).catch(() => undefined);
       log(`[stage-host] session FREED sessionId=${sessionId} reason=${reason} active=${hostSessions.size}/${driverMaxSessions}`);
+      // M4 — the host directly witnessed this driver occupying a lane for
+      // [createdAt, now), regardless of why the session ended (natural
+      // finish, abort, idle-evict, forced disconnect) — recordConsumption
+      // is deliberately NOT gated on completion (see standing.ts's doc
+      // comment: resource use is debited, not a reward withheld).
+      const ledger = standingLedgerRef.current;
+      if (ledger) {
+        const now = Date.now();
+        ledger.recordConsumption(
+          {
+            consumerPeerId: state.driverPeerId,
+            layersConsumed: state.layerEnd - state.layerStart,
+            framesConsumed: state.decodedCount,
+            consumingMs: Math.max(0, now - state.createdAt),
+          },
+          now,
+        );
+      }
       if (notifyDriver) {
         await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), state.driverPeerId).catch(() => undefined);
       }
       await admitNextQueued();
     }
+
+    /**
+     * M3 follow-up — genuinely FORCE every currently-attached session
+     * closed (not just stop advertising / wait for natural drain). Used by
+     * `useCommunalHost.ts` once its 30s teardown grace expires with
+     * sessions still attached — the previously-documented gap ("no
+     * imperative to terminate lingering sessions after grace"). Reuses
+     * `freeSession` verbatim (same worker-lane release + telemetry +
+     * driver notification), just applied to every session at once instead
+     * of one at a time in response to a wire event.
+     */
+    async function forceDisconnectAll(reason: string): Promise<void> {
+      const ids = [...hostSessions.keys()];
+      if (ids.length === 0) return;
+      log(`[stage-host] force-disconnecting ${ids.length} session(s): ${reason}`);
+      for (const sessionId of ids) {
+        await freeSession(sessionId, reason, true);
+      }
+    }
+    forceDisconnectRequestRef.current = forceDisconnectAll;
 
     async function handleLegacyLoad(msg: StageControlMessageFor<'stage.load'>, peerId: string): Promise<void> {
       log(`[stage-host] stage.load from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
@@ -933,6 +1008,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       unsubTool();
       unsubFrame();
       preloadRequestRef.current = () => undefined;
+      forceDisconnectRequestRef.current = () => undefined;
       void disposeWorker();
     };
     // `log` deliberately excluded — see logRef above; this effect must not
@@ -959,6 +1035,20 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     void preloadRequestRef.current(req);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, opts.preloadStage]);
+
+  // ── M3 follow-up: force-disconnect watcher — bridges
+  // `opts.forceDisconnect` changes into the "answer" effect's
+  // `forceDisconnectAll` via `forceDisconnectRequestRef`, WITHOUT making
+  // the answer effect itself depend on it (same bridge shape as the
+  // preload watcher above). Caller passes a NEW object identity only when
+  // it actually wants a forced disconnect to fire. ──────────────────────
+  useEffect(() => {
+    if (!enabled) return;
+    const req = opts.forceDisconnect;
+    if (!req) return;
+    void forceDisconnectRequestRef.current(req.reason);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, opts.forceDisconnect]);
 
   const tokensDecoded = sessions.reduce((sum, s) => sum + s.decodedCount, 0);
 
