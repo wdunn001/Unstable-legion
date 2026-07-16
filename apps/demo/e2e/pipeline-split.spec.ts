@@ -16,7 +16,7 @@ test('pipeline-split: driver plans a 2-stage split across 2 stage hosts and stre
   const { driver, hostA, hostB, hostASelfId, hostBSelfId } = await setupThreePeerMesh(context, room);
 
   // ── Run the split pipeline from the driver's UI ─────────────────────
-  await driver.locator('.sp-prompt').fill('Name three colors.');
+  await driver.locator('.stage-pipeline-prompt').fill('Name three colors.');
   await driver.locator('.sp-run-row button', { hasText: 'run split inference' }).click();
 
   // ── Plan assertion: local stage 0 + exactly one remote stage; the

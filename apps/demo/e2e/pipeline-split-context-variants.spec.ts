@@ -25,7 +25,7 @@ const GATE_TIMEOUT_MS = 15 * 60 * 1000;
 async function runVariant(context: import('@playwright/test').BrowserContext, room: string, opts: PeerMeshOptions): Promise<void> {
   const { driver, hosts } = await setupPeerMesh(context, room, opts);
 
-  await driver.locator('.sp-prompt').fill('Name three colors.');
+  await driver.locator('.stage-pipeline-prompt').fill('Name three colors.');
   await driver.locator('.sp-run-row button', { hasText: 'run split inference' }).click();
 
   await expect

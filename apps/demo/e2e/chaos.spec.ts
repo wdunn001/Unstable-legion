@@ -20,7 +20,7 @@ test('chaos: killing the active remote stage host mid-decode triggers exactly on
   // tokens (see StagePipelinePanel.tsx) — no UI control to raise it, but
   // 64 is generous enough for a real mid-decode kill window given actual
   // per-token latency.
-  await driver.locator('.sp-prompt').fill('Describe a rainy afternoon in a small coastal town.');
+  await driver.locator('.stage-pipeline-prompt').fill('Describe a rainy afternoon in a small coastal town.');
   await driver.locator('.sp-run-row button', { hasText: 'run split inference' }).click();
 
   await expect

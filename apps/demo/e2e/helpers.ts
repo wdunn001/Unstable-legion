@@ -57,9 +57,12 @@ export function wirePageLogging(page: Page, label: string): void {
   });
 }
 
-/** Navigate to the demo with an isolated room + nick, join via PersonaForm. */
-export async function joinDemo(page: Page, roomId: string, nick: string): Promise<void> {
-  await page.goto(`/?room=${encodeURIComponent(roomId)}&nochat=1`);
+/** Navigate to the demo with an isolated room + nick, join via PersonaForm.
+ * `extraQuery` appends additional `&key=value` query params (e.g.
+ * `&spreadWidth=1` — see communal.spec.ts) without disturbing every
+ * existing 3-arg call site. */
+export async function joinDemo(page: Page, roomId: string, nick: string, extraQuery = ''): Promise<void> {
+  await page.goto(`/?room=${encodeURIComponent(roomId)}&nochat=1${extraQuery}`);
   await page.locator('#ul-nick').fill(nick);
   await page.locator('button[type="submit"]').click();
   await page.locator('.ul-app').waitFor({ state: 'visible', timeout: 30_000 });
@@ -67,7 +70,7 @@ export async function joinDemo(page: Page, roomId: string, nick: string): Promis
 
 /** Toggle this page's "host stages" checkbox in the StagePipelinePanel. */
 export async function setHostingEnabled(page: Page, enabled: boolean): Promise<void> {
-  const checkbox = page.locator('.sp-host-toggle input[type="checkbox"]');
+  const checkbox = page.locator('.stage-host-toggle input[type="checkbox"]');
   const isChecked = await checkbox.isChecked();
   if (isChecked !== enabled) await checkbox.click();
 }
@@ -114,7 +117,7 @@ export async function readStageDebug(page: Page): Promise<DebugStageSnapshot> {
  * completion, so callers can kick off two drivers back-to-back and poll
  * both concurrently (see multi-session-host.spec.ts). */
 export async function runSplitInference(page: Page, prompt: string): Promise<void> {
-  await page.locator('.sp-prompt').fill(prompt);
+  await page.locator('.stage-pipeline-prompt').fill(prompt);
   await page.locator('.sp-run-row button', { hasText: 'run split inference' }).click();
 }
 
@@ -274,4 +277,102 @@ export async function setupThreePeerMesh(context: BrowserContext, room: string):
   ).toPass({ timeout: 30_000, intervals: [500, 1000, 2000] });
 
   return { driver, hostA, hostB, hostASelfId, hostBSelfId };
+}
+
+// ── M3/M4 communal pipeline helpers (communal.spec.ts) ──────────────────
+
+/** Toggle this page's "contribute to communal pipeline" checkbox in
+ * `CommunalHostPanel` — distinct from `setHostingEnabled` (the LEGACY
+ * `StagePipelinePanel` toggle), which now renders alongside it on every
+ * page (see `stage-host-toggle` vs `communal-host-toggle`). */
+export async function setCommunalHostEnabled(page: Page, enabled: boolean): Promise<void> {
+  const checkbox = page.locator('.communal-host-toggle input[type="checkbox"]');
+  const isChecked = await checkbox.isChecked();
+  if (isChecked !== enabled) await checkbox.click();
+}
+
+/** Wait until `window.__legionCommunal.communal.active` is true (claimed
+ * stage loaded, warmed, and advertised). */
+export async function waitForCommunalHostActive(page: Page, timeoutMs = 8 * 60_000): Promise<void> {
+  await page.waitForFunction(
+    () => (window as unknown as { __legionCommunal?: { communal?: { active?: boolean } } }).__legionCommunal?.communal?.active === true,
+    undefined,
+    { timeout: timeoutMs, polling: 500 },
+  );
+}
+
+export interface DebugCommunalLoadedStage {
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  includeOutput?: boolean;
+  activeSessions?: number;
+  maxSessions?: number;
+}
+
+export interface DebugCommunalSnapshot {
+  selfId?: string;
+  roster?: { peerId: string; loadedStages: DebugCommunalLoadedStage[] }[];
+  communal?: {
+    supported: boolean;
+    unsupportedReason?: string;
+    phase: string;
+    claim?: { layerStart: number; layerEnd: number; includeOutput: boolean };
+    active: boolean;
+    sessions: { sessionId: string; driverPeerId: string; layerStart: number; layerEnd: number; decodedCount: number }[];
+    tokensDecoded: number;
+    maxSessions: number;
+    queueLength: number;
+    lastError?: string;
+  };
+}
+
+export async function readCommunalDebug(page: Page): Promise<DebugCommunalSnapshot> {
+  return page.evaluate(() => (window as unknown as { __legionCommunal?: DebugCommunalSnapshot }).__legionCommunal ?? {});
+}
+
+export interface DebugCommunalChatSnapshot {
+  selfId?: string;
+  status?: { phase: string; error?: string; reason?: string };
+  plan?: {
+    stages: { stageIndex: number; peerId: string; layerStart: number; layerEnd: number; isFinal: boolean }[];
+    hotSparePeerId?: string;
+  };
+  tokens?: number[];
+  text?: string;
+  restartCount?: number;
+  readyStageIndexes?: number[];
+}
+
+export async function readCommunalChatDebug(page: Page): Promise<DebugCommunalChatSnapshot> {
+  return page.evaluate(() => (window as unknown as { __legionCommunalChat?: DebugCommunalChatSnapshot }).__legionCommunalChat ?? {});
+}
+
+/** Fill the prompt box and click "run communal chat" — does not await
+ * completion (same non-blocking idiom as `runSplitInference`, so two
+ * drivers can be kicked off back-to-back for genuine concurrency). */
+export async function runCommunalChat(page: Page, prompt: string): Promise<void> {
+  await page.locator('.communal-chat-prompt').fill(prompt);
+  await page.locator('.communal-chat-run').click();
+}
+
+/** Poll a driver page's communal-chat `status.phase` until it reaches
+ * 'finished'. Same abort/error-surfacing idiom as `waitForPipelineFinished`. */
+export async function waitForCommunalChatFinished(page: Page, label: string, timeoutMs = 10 * 60_000): Promise<DebugCommunalChatSnapshot> {
+  await expect
+    .poll(
+      async () => {
+        const d = await readCommunalChatDebug(page);
+        const s = d.status;
+        if (s?.phase === 'aborted' || s?.phase === 'error') {
+          // eslint-disable-next-line no-console
+          console.log(`[test] ${label} terminal status=${JSON.stringify(s)} tokens=${d.tokens?.length ?? 0} restarts=${d.restartCount ?? 0}`);
+          return s.phase === 'aborted' ? `aborted: ${JSON.stringify(s)}` : `error: ${JSON.stringify(s)}`;
+        }
+        return s?.phase;
+      },
+      { timeout: timeoutMs, message: `${label} communal chat should reach finished` },
+    )
+    .toBe('finished');
+  return readCommunalChatDebug(page);
 }
