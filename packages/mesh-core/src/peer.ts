@@ -19,6 +19,7 @@ import {
   isMeshToolFrame,
 } from './guards.js';
 import { Roster } from './roster.js';
+import { installIceDiagnostics } from './iceDiagnostics.js';
 import {
   type MeshChatMessage,
   type MeshPeerCap,
@@ -195,6 +196,11 @@ export function splitPeerTarget(peers: string | string[] | undefined, selfId: st
 export function joinMesh(opts: PeerOptions): Peer {
   const { joinRoom, selfId, trysteroConfig, roomId, cap: initialCap } = opts;
   const heartbeatMs = opts.heartbeatMs ?? 30_000;
+
+  // Observe every WebRTC connection attempt (incl. ones that never
+  // complete — invisible to trystero's own API); see iceDiagnostics.ts.
+  // Must run BEFORE joinRoom constructs any RTCPeerConnection.
+  installIceDiagnostics();
 
   const room = joinRoom(trysteroConfig, roomId, {
     onJoinError: (d) => {

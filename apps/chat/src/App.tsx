@@ -572,6 +572,13 @@ function Dashboard(props: {
 
   const busy = chat.status.phase === 'planning' || chat.status.phase === 'starting' || chat.status.phase === 'running';
   const remoteCount = peer ? roster.filter((r) => r.peerId !== peer.selfId).length : 0;
+  // ICE observability (mesh-core's iceDiagnostics, installed by joinMesh):
+  // distinguishes "nobody else is here" from "someone is TRYING to reach us
+  // and ICE can't complete" — the silent face of a broken TURN path. Read
+  // fresh each render; the 2s dashboard tick keeps it live.
+  const iceSummary = (globalThis as { __legionIce?: { snapshot: () => { connecting: number; failed: number; lastError?: string } } })
+    .__legionIce?.snapshot();
+  const iceConnecting = remoteCount === 0 && (iceSummary?.connecting ?? 0) > 0 ? iceSummary!.connecting : 0;
 
   useEffect(() => {
     (window as unknown as { __legionChat?: unknown }).__legionChat = {
@@ -592,6 +599,8 @@ function Dashboard(props: {
       hostingRetryAttempt: communal.retryAttempt,
       chatNotice: chatNotice?.message,
       telemetryEnabled: telemetry.enabled,
+      remoteCount,
+      ice: iceSummary,
     };
   }, [
     peer,
@@ -627,7 +636,12 @@ function Dashboard(props: {
         <span className="app-header-sep">·</span>
         <span className="app-nick">@{props.nick}</span>
         <span className="app-header-sep">·</span>
-        <span className={`app-mesh-pill ${remoteCount > 0 ? 'app-mesh-ok' : 'app-mesh-cold'}`}>mesh: {remoteCount} remote</span>
+        <span
+          className={`app-mesh-pill ${remoteCount > 0 ? 'app-mesh-ok' : 'app-mesh-cold'}`}
+          title={iceConnecting > 0 ? 'A peer is trying to connect but WebRTC has not completed — often a TURN/firewall issue.' : undefined}
+        >
+          {iceConnecting > 0 ? `mesh: connecting (${iceConnecting})…` : `mesh: ${remoteCount} remote`}
+        </span>
         <span className="app-header-spacer" />
         <TrustBadge />
         <ThemeToggle theme={props.theme.theme} onToggle={props.theme.toggle} />

@@ -5,12 +5,24 @@
 # the host's port range. Bridge networking adds a NAT layer that
 # defeats the whole point of running a TURN server.
 #
-# Router config (manual one-time step):
-#   UDP 3478          → 192.168.1.198:3478
-#   UDP 49152-49200   → 192.168.1.198:49152-49200
+# Router config (manual one-time step, router at 192.168.1.3):
+#   UDP 3478          → 192.168.1.198:3478   (TURN)
+#   TCP 3478          → 192.168.1.198:3478   (TURN over TCP — ?transport=tcp)
+#   TCP 5349          → 192.168.1.198:5349   (TURNS / TLS — turns:...:5349)
+#   UDP 49152-49200   → 192.168.1.198:49152-49200 (relay leg)
 #
-# Verify after deploy with the public reachability test:
+# TLS certs: the `certs` docker volume is nginx-proxy acme-companion's
+# store (flat legion.codecai.net.crt/.key). acme renews in place but
+# coturn reads certs only at startup — add a weekly restart on the host:
+#   (crontab) 0 4 * * 1 docker restart legion-coturn
+# `user: "0:0"`: acme writes the .key root-readable only; the official
+# image's default unprivileged user can't open it.
+#
+# Verify after deploy with the public reachability test (run OFF-LAN —
+# hairpin through the consumer router does not work, see
+# docs/TURN-RELIABILITY.md):
 #   turnutils_uclient -v -u legion -w <password> legion.codecai.net
+#   turnutils_uclient -v -S -p 5349 -u legion -w <password> legion.codecai.net
 
 services:
   coturn:
@@ -18,6 +30,12 @@ services:
     container_name: legion-coturn
     restart: unless-stopped
     network_mode: host
+    user: "0:0"
     volumes:
       - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - certs:/certs:ro
     command: ["-c", "/etc/coturn/turnserver.conf"]
+
+volumes:
+  certs:
+    external: true

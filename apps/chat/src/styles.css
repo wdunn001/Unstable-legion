@@ -332,19 +332,6 @@ code {
   overflow: hidden;
 }
 
-@media (max-width: 900px) {
-  .app-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-  }
-  .conversation-sidebar,
-  .mesh-sidebar {
-    border: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 220px;
-  }
-}
-
 /* ── Conversation list ───────────────────────────────────────────── */
 .conversation-sidebar {
   border-right: 1px solid var(--border);
@@ -1060,3 +1047,117 @@ code {
 .chat-notice-message {
   flex: 1 1 auto;
 }
+
+/* Narrow desktop: keep all three columns, just slimmer chrome. The real
+ * mobile treatment (collapse strips) lives in the 720px block below. */
+@media (max-width: 900px) {
+  .app-body {
+    grid-template-columns: 220px minmax(0, 1fr) 280px;
+  }
+}
+
+/* ── Mobile (≤720px): chat-first single column with collapse strips ──
+ * ConversationList collapses to a "▸ Chats (N)" strip on top; MeshSidebar
+ * collapses to a "▸ <model readiness>" strip under the chat (a status bar
+ * above the composer's row). Same breakpoint + collapse semantics as
+ * mesh-react's MeshRosterPanel / apps/demo. The .sidebar-toggle strips are
+ * rendered unconditionally by the components and hidden on desktop. */
+.sidebar-toggle {
+  display: none;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-toggle-spacer {
+  flex: 1;
+}
+.sidebar-toggle-action {
+  padding: 0 10px;
+  font-weight: bold;
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    /* Newer mobile browsers: track the ACTUAL visible height as the URL
+     * bar collapses/expands, instead of the static 100% (which leaves the
+     * composer hidden behind iOS Safari's bottom chrome). */
+    height: 100dvh;
+  }
+  .app-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .sidebar-toggle {
+    display: flex;
+  }
+
+  .conversation-sidebar {
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0;
+    overflow: visible;
+  }
+  .conversation-list {
+    padding: 0;
+  }
+  .conversation-list-body {
+    max-height: 50vh;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .conversation-list-body-collapsed {
+    display: none;
+  }
+
+  .mesh-sidebar {
+    border: none;
+    border-top: 1px solid var(--border);
+    padding: 0;
+    max-height: 50vh;
+  }
+  .mesh-sidebar > :not(.sidebar-toggle) {
+    margin: 0 8px 8px;
+  }
+  .mesh-sidebar-collapsed {
+    overflow: hidden;
+  }
+  .mesh-sidebar-collapsed > :not(.sidebar-toggle) {
+    display: none;
+  }
+
+  /* Header: wrap to two lines, drop the decorative separators + trust
+   * badge (the trust interstitial flow still gates sends), ellipsize the
+   * model pill so it can't force overflow. */
+  .app-header {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .app-header-sep,
+  .trust-badge {
+    display: none;
+  }
+  .app-model-pill {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* iOS zooms the page on focus of any input under 16px — same fix the
+   * demo composer ships. */
+  .composer-input,
+  .join-nick-input {
+    font-size: 16px;
+  }
+}
+

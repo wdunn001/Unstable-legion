@@ -1,17 +1,38 @@
 # coturn config for legion.codecai.net's mesh.
 #
-# Plain TURN only (no TLS) — browsers accept `turn:` from HTTPS pages.
-# If we later need TURNs (TLS), we can mount the existing Let's Encrypt
-# fullchain.pem + privkey.pem from the nginx-proxy acme-companion vol.
+# Transport matrix (mobile-carrier hardening, 2026-07-16 — carriers and
+# strict firewalls routinely drop UDP 3478, which used to be the ONLY
+# path; a phone then never completes ICE and silently shows "0 remote"):
+#   turn:  UDP 3478   — primary (lowest latency)
+#   turn:  TCP 3478   — coturn always listened on TCP; the client URL
+#                       `?transport=tcp` + a router TCP forward enable it
+#   turns: TCP 5349   — TLS, the "looks like HTTPS" path that survives
+#                       UDP-hostile networks; cert = the same Let's
+#                       Encrypt pair nginx-proxy's acme-companion issues
+#                       for legion.codecai.net (mounted read-only at
+#                       /certs from the `certs` docker volume — flat
+#                       <domain>.crt/<domain>.key layout).
+#   Relay leg stays UDP 49152-49200 (no-tcp-relay below only disables
+#   TCP for the RELAY leg, not client<->server).
+#
+# CERT RENEWAL: acme-companion renews ~every 60 days in-place; coturn
+# only reads the files at startup. The compose file's docs prescribe a
+# weekly `docker restart legion-coturn` cron on the host.
 #
 # Static credentials: simpler than the time-limited HMAC scheme, fine
 # for a single-tenant deploy. Rotate by editing turnserver.conf and
-# the matching env vars on the bridge + demo, then `docker compose up`.
+# VITE_TURN_CREDENTIAL in /storage/unstable-legion/.env, then rebuild
+# the app (verify-turn-baked.sh) and `docker restart legion-coturn`.
 
 # Bind to all interfaces; advertise the public IP in relay candidates.
 listening-ip=0.0.0.0
 external-ip=96.38.108.201
 listening-port=3478
+
+# TLS listener (turns: — see transport matrix above).
+tls-listening-port=5349
+cert=/certs/legion.codecai.net.crt
+pkey=/certs/legion.codecai.net.key
 
 # Long-term credential mechanism (username/password).
 lt-cred-mech
@@ -26,12 +47,13 @@ min-port=49152
 max-port=49200
 
 # Disable everything we don't need (CLI, prometheus, multitenancy).
+# no-tls REMOVED (turns:5349 above); DTLS stays off — no `turns:` UDP
+# URL is published, TLS-over-TCP is the fallback that matters.
 no-cli
-no-tls
 no-dtls
 
 # Stay on UDP for the relay traffic; TCP relays are slower and only
-# help with extreme firewalls.
+# help with extreme firewalls. (Client<->server TCP/TLS is unaffected.)
 no-tcp-relay
 
 # Don't allow loopback / private-network relays — closes the SSRF /

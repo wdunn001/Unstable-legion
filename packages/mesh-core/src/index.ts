@@ -332,6 +332,14 @@ export {
   type RunToolRoundTripOptions,
 } from './toolLoop.js';
 
+// ── ICE diagnostics (installed automatically by joinMesh; exported for
+// tests / non-mesh consumers) ────────────────────────────────────────
+export {
+  installIceDiagnostics,
+  type IceDiagSummary,
+  type IceConnectionRecord,
+} from './iceDiagnostics.js';
+
 // ── Optional: Codec-over-WebRTC advanced path ──────────────────────
 //
 // HELLO/READY handshake + stream-id multiplexing + MTU chunking, for
