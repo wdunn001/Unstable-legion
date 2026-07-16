@@ -520,7 +520,15 @@ function Dashboard(props: {
         void runToolRound(call, chat.text);
         return;
       }
-      finalizeExchange();
+      // TEXT-SETTLE RACE: `chat.text` comes from an ASYNC detokenize that
+      // lands AFTER status flips to finished — finalizing on first look
+      // ran before a trailing <tool_call> block was complete, silently
+      // skipping the round (live-test symptom #2 of this loop: blank
+      // reply, no trace chip). Finalize only after the text has been
+      // stable for a beat; any text update re-runs this effect, clears
+      // the timer via cleanup, and re-checks for a tool call above.
+      const timer = setTimeout(() => finalizeExchange(), 400);
+      return () => clearTimeout(timer);
     } else if (chat.status.phase === 'aborted' || chat.status.phase === 'error') {
       finalizeExchange();
     }
