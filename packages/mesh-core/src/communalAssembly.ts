@@ -70,6 +70,14 @@ export interface CommunalClaimRange {
   layerStart: number;
   layerEnd: number;
   includeOutput: boolean;
+  /** OPTIONAL-STAGE0 (thin drivers): true iff this claim starts at layer 0
+   * and therefore owns the model's embeddings — an isFirst communal host.
+   * Absent/false is the ordinary body-host case (`layerStart >= driverLayers`,
+   * embeddings live on the driver's own local stage 0). Derived from
+   * `layerStart === 0`; `useStageHost` reports the same `isFirst` from its
+   * loaded stage's `layerStart === 0`, so this stays consistent with what
+   * the worker actually loaded. */
+  includeEmbeddings?: boolean;
 }
 
 export interface CommunalHostClaimInput {
@@ -81,6 +89,15 @@ export interface CommunalHostClaimInput {
   modelId: string;
   totalLayers: number;
   driverLayers: number;
+  /** OPTIONAL-STAGE0: the lowest layer self is willing to claim from — the
+   * start of the coverage space this host assembles against. Defaults to
+   * `driverLayers` (the capable-driver regime — the driver hosts `[0,
+   * driverLayers)` locally, so the mesh only needs `[driverLayers,
+   * totalLayers)`). A host that has opted in to SUPPORTING thin drivers
+   * passes `0`: it then gap-fills from layer 0, so its lowest claim owns the
+   * embeddings (`includeEmbeddings`) and gives no-GPU peers a remote first
+   * stage. See `docs/OPTIONAL-STAGE0.md`. */
+  firstLayer?: number;
   /** How many communal layers self's capacity budget can hold — the
    * caller derives this from its own wasmHeapBudget/avgLayerBytes (or an
    * OPFS-quota-aware figure — `useCommunalHost.ts`'s concern, not this
@@ -172,7 +189,7 @@ function syntheticRosterEntry(
           modelId,
           layerStart: claim.layerStart,
           layerEnd: claim.layerEnd,
-          includeEmbeddings: false,
+          includeEmbeddings: claim.includeEmbeddings ?? claim.layerStart === 0,
           includeOutput: claim.includeOutput,
           ctxSize: 1,
           wireDtype: 'f32',
@@ -211,6 +228,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     modelId,
     totalLayers,
     driverLayers,
+    firstLayer = driverLayers,
     selfCapacityLayers,
     selfCurrentClaim = null,
     selfStabilityScore = 0,
@@ -232,7 +250,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     };
   }
 
-  const othersTopology = buildCommunalTopology(othersRoster, { modelId, totalLayers, driverLayers });
+  const othersTopology = buildCommunalTopology(othersRoster, { modelId, totalLayers, driverLayers, communalStart: firstLayer });
 
   // ── "Am I essential where I already am?" — the anti-thundering-herd
   // check. Computed against the FULL topology (self's own ad included via
@@ -259,7 +277,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
       stabilityScore: selfStabilityScore,
     };
     const fullRoster = [...othersRoster, syntheticRosterEntry(selfPeerId, modelId, selfCurrentClaim, 1, selfFailureDomainId)];
-    const fullTopology = buildCommunalTopology(fullRoster, { modelId, totalLayers, driverLayers });
+    const fullTopology = buildCommunalTopology(fullRoster, { modelId, totalLayers, driverLayers, communalStart: firstLayer });
     const wonSegment: CommunalSegment | undefined = fullTopology.segments.find(
       (s) => sameRange(selfCurrentClaim, s) && s.candidates.some((c) => c.peerId === selfPeerId),
     );
@@ -312,12 +330,12 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
           );
           if (rightGap) {
             const newEnd = Math.min(selfCurrentClaim.layerEnd + spareCapacity, rightGap.layerEnd);
-            const claim: CommunalClaimRange = { layerStart: selfCurrentClaim.layerStart, layerEnd: newEnd, includeOutput: newEnd === totalLayers };
+            const claim: CommunalClaimRange = { layerStart: selfCurrentClaim.layerStart, layerEnd: newEnd, includeOutput: newEnd === totalLayers, ...(selfCurrentClaim.layerStart === 0 ? { includeEmbeddings: true } : {}) };
             return { claim, jitterMs, yieldCurrent: false, reason: `sole coverer with spare capacity — extending right into the adjacent gap up to ${newEnd}` };
           }
           if (leftGap) {
             const newStart = Math.max(selfCurrentClaim.layerStart - spareCapacity, leftGap.layerStart);
-            const claim: CommunalClaimRange = { layerStart: newStart, layerEnd: selfCurrentClaim.layerEnd, includeOutput: selfCurrentClaim.includeOutput };
+            const claim: CommunalClaimRange = { layerStart: newStart, layerEnd: selfCurrentClaim.layerEnd, includeOutput: selfCurrentClaim.includeOutput, ...(newStart === 0 ? { includeEmbeddings: true } : {}) };
             return { claim, jitterMs, yieldCurrent: false, reason: `sole coverer with spare capacity — extending left into the adjacent gap down to ${newStart}` };
           }
         }
@@ -354,7 +372,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     if (layerEnd <= layerStart) {
       return { claim: null, jitterMs, yieldCurrent: false, reason: 'capacity too small to make progress on the lowest gap' };
     }
-    const claim: CommunalClaimRange = { layerStart, layerEnd, includeOutput: layerEnd === totalLayers };
+    const claim: CommunalClaimRange = { layerStart, layerEnd, includeOutput: layerEnd === totalLayers, ...(layerStart === 0 ? { includeEmbeddings: true } : {}) };
     if (sameRange(selfCurrentClaim, claim) && selfCurrentClaim!.includeOutput === claim.includeOutput) {
       return { claim: selfCurrentClaim, jitterMs, yieldCurrent: false, reason: 'already claiming this exact gap-filling range' };
     }
@@ -402,7 +420,7 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
       return a.layerStart - b.layerStart;
     });
     const target = spareCandidates[0]!;
-    const claim: CommunalClaimRange = { layerStart: target.layerStart, layerEnd: target.layerEnd, includeOutput: target.layerEnd === totalLayers };
+    const claim: CommunalClaimRange = { layerStart: target.layerStart, layerEnd: target.layerEnd, includeOutput: target.layerEnd === totalLayers, ...(target.layerStart === 0 ? { includeEmbeddings: true } : {}) };
     return { claim, jitterMs, yieldCurrent: false, reason: `becoming a warm spare for [${target.layerStart},${target.layerEnd})` };
   }
 

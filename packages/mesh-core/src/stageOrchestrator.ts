@@ -613,6 +613,20 @@ export interface CommunalDriverSessionOptions {
    * replan-jitter formula (higher priority -> shorter jitter -> recovers
    * first). Default `() => 0` until M4. */
   priorityScore?: (peerId: string) => number;
+  /**
+   * OPTIONAL-STAGE0 (thin drivers): when `true`, this driver hosts NO stage
+   * locally — the route's FIRST remote stage is an isFirst host `[0, X)`
+   * that owns the embeddings and prefills from the token-ids carried in the
+   * activation-frame `tokens` sideband (see `docs/OPTIONAL-STAGE0.md`). The
+   * orchestrator therefore never asks `localHooks` for a real boundary
+   * activation — it ships a zero-filled placeholder activation of the right
+   * shape (the isFirst host ignores it and embeds from `tokens`), and skips
+   * the local KV `reset`. `localHooks.tokenize`/`detokenize`/`nEmbd` are
+   * still used (all CPU, no WebGPU); `prefill`/`decode`/`reset` are NOT
+   * invoked. This is a MODE FLAG on the SAME session state machine, not a
+   * forked function — churn/replan/attach-order all behave identically.
+   * Default `false`. */
+  thinDriver?: boolean;
 }
 
 /**
@@ -656,6 +670,26 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   const queueWaitMs = opts.queueWaitMs ?? 30_000;
   const replanJitterMs = opts.replanJitterMs ?? 1500;
   const priorityScore = opts.priorityScore ?? (() => 0);
+  const thinDriver = opts.thinDriver ?? false;
+
+  // OPTIONAL-STAGE0: in thin mode the local hooks never touch a stage-0
+  // worker — `prefill`/`decode` return a zero-filled activation of the wire
+  // shape the isFirst remote host expects but IGNORES (it embeds from the
+  // frame's `tokens` sideband instead), and `reset` is a no-op (no local KV
+  // to drop). `tokenize`/`detokenize`/`nEmbd` pass through unchanged. This is
+  // the whole of the "mode flag, not a function fork": the rest of the
+  // session machine below is byte-for-byte the capable-driver path.
+  const nEmbd = opts.localHooks.nEmbd;
+  const hooks: DriverStageHooks = thinDriver
+    ? {
+        nEmbd,
+        tokenize: (text) => opts.localHooks.tokenize(text),
+        detokenize: (tokens) => opts.localHooks.detokenize(tokens),
+        reset: async () => {},
+        prefill: async (tokens) => ({ activation: new Float32Array(Math.max(1, tokens.length) * nEmbd) }),
+        decode: async () => ({ activation: new Float32Array(nEmbd) }),
+      }
+    : opts.localHooks;
 
   const emitter = makeEmitter();
   let route = opts.route;
@@ -845,7 +879,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: attached.peerId });
       winner = attached;
     }
-    await opts.localHooks.reset();
+    await hooks.reset();
     // winner is defined: remoteStages.length > 0 was checked above, and
     // attachOneStage either returns or throws (never leaves it unset).
     encoder = winner!.encoder;
@@ -906,7 +940,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       for (let i = 0; i < history.length; i += CHUNK) {
         const chunk = history.slice(i, i + CHUNK);
         const positions = chunk.map((_, j) => i + j);
-        const { activation } = await opts.localHooks.prefill(chunk, positions);
+        const { activation } = await hooks.prefill(chunk, positions);
         lastActivation = activation;
       }
       const frame = encoder!.encodeFrame(lastActivation!, { seq: 0, posStart: 0, tokens: history, done: false });
@@ -927,7 +961,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       const last = generatedTokens[generatedTokens.length - 1];
       if (last === undefined) return;
       try {
-        const { activation } = await opts.localHooks.decode(last);
+        const { activation } = await hooks.decode(last);
         const posStart = promptTokens.length + generatedTokens.length - 1;
         const frame = encoder!.encodeFrame(activation, {
           seq,
@@ -976,10 +1010,10 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
 
   void (async () => {
     try {
-      promptTokens = await opts.localHooks.tokenize(opts.prompt);
+      promptTokens = await hooks.tokenize(opts.prompt);
       await startCommunalSession(route);
       const positions = promptTokens.map((_, i) => i);
-      const { activation } = await opts.localHooks.prefill(promptTokens, positions);
+      const { activation } = await hooks.prefill(promptTokens, positions);
       const frame = encoder!.encodeFrame(activation, { seq: 0, posStart: 0, tokens: promptTokens, done: false });
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);

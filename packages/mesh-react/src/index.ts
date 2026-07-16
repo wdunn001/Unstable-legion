@@ -161,7 +161,7 @@ export {
   type ExpireResult,
   type PopResult,
 } from './stageSessionAdmission.js';
-export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
+export { detectWebGpuLimits, isThinDriver, USABLE_STAGE_HOST_MIN_BYTES, type WebGpuLimitsResult } from './webgpuLimits.js';
 
 // ── Same-origin tab colocation — one shared host per browser profile ──
 export {

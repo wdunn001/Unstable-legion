@@ -113,6 +113,15 @@ export interface UseCommunalHostOptions {
   /** Layers the driver always hosts locally — the communal claim space is
    * `[driverLayers, totalLayers)`. */
   driverLayers: number;
+  /**
+   * OPTIONAL-STAGE0 — when true, this host contributes to the THIN-driver
+   * regime: it claims over `[0, totalLayers)` instead of `[driverLayers,
+   * totalLayers)`, so its lowest claim owns the model's embeddings (an
+   * isFirst communal host) and gives no-GPU peers a remote first stage. The
+   * loaded stage's `layerStart === 0` makes `useStageHost` report
+   * `isFirst`/`includeEmbeddings` automatically. Off by default (the
+   * capable-driver body-host regime). See `docs/OPTIONAL-STAGE0.md`. */
+  supportThinDrivers?: boolean;
   ctxSize: number;
   wireDtype: 'f32' | 'f16';
   /** Layer-package manifest URL (Phase C artifact slicing —
@@ -409,6 +418,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     modelId,
     totalLayers,
     driverLayers,
+    supportThinDrivers = false,
     ctxSize,
     wireDtype,
     manifestUrl,
@@ -687,6 +697,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           modelId,
           totalLayers,
           driverLayers,
+          firstLayer: supportThinDrivers ? 0 : driverLayers,
           selfCapacityLayers,
           selfCurrentClaim: claimRef.current ?? null,
           selfStabilityScore: hostStabilityScore({
@@ -814,6 +825,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           modelId,
           totalLayers,
           driverLayers,
+          firstLayer: supportThinDrivers ? 0 : driverLayers,
           selfCapacityLayers,
           selfCurrentClaim: claimRef.current ?? null,
           selfFailureDomainId: failureDomainId,
@@ -890,7 +902,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // immediately rather than continuing to compute claims it'll never
     // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, supportThinDrivers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
 
   useEffect(() => {
     if (!hostingActive) {

@@ -5,13 +5,18 @@
  * this component renders the SAME paragraphs verbatim
  * (`trustStatement.ts`), never a paraphrase.
  */
-import { TRUST_STATEMENT_PARAGRAPHS } from '../trustStatement.js';
+import { TRUST_STATEMENT_PARAGRAPHS, THIN_DRIVER_TRUST_ADDENDUM } from '../trustStatement.js';
 
 export interface TrustInterstitialProps {
   /** True when this is a re-prompt because the host set serving this
    * chat changed, not the very first message. Changes the framing from
    * "before you begin" to "your hosts changed". */
   isHostSetChange: boolean;
+  /** OPTIONAL-STAGE0 — true when THIS device is a thin driver (no local
+   * stage; ships raw token-ids to a remote isFirst host). Shows the
+   * `THIN_DRIVER_TRUST_ADDENDUM` — the stricter privacy notice — verbatim.
+   * See `docs/OPTIONAL-STAGE0.md` / `docs/TRUST.md`. */
+  thinDriver?: boolean;
   onAcknowledge: () => void;
 }
 
@@ -30,6 +35,11 @@ export function TrustInterstitial(props: TrustInterstitialProps) {
         {TRUST_STATEMENT_PARAGRAPHS.map((p, i) => (
           <p key={i}>{p}</p>
         ))}
+        {props.thinDriver && (
+          <p className="trust-interstitial-thin" role="note">
+            <strong>{THIN_DRIVER_TRUST_ADDENDUM}</strong>
+          </p>
+        )}
         <button type="button" className="btn btn-primary trust-interstitial-ack" onClick={props.onAcknowledge}>
           I understand — continue
         </button>

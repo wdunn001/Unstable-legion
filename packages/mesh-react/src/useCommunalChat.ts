@@ -54,6 +54,7 @@ import {
   buildCommunalTopology,
   communalAttachOrder,
   planCommunalRoute,
+  planThinDriverRoute,
   runCommunalDriverSession,
   type CommunalRoute,
   type CommunalRouteFn,
@@ -117,6 +118,33 @@ export interface UseCommunalChatOptions {
    * doc comment's "M4" section. Omit to skip telemetry entirely (pure
    * FCFS/no-standing behavior, same as before M4 wiring). */
   standingLedger?: StandingLedger;
+  /**
+   * OPTIONAL-STAGE0 — run as a THIN driver: host NO local stage-0 worker
+   * (this device has no usable WebGPU — see `webgpuLimits.ts`'s `isThinDriver`),
+   * route the FIRST stage to a remote isFirst communal host, and ship
+   * token-ids over the wire. Requires `thinTokenizer` for the CPU-only
+   * tokenize/detokenize a thin device still does locally. When false (the
+   * default), the ordinary capable-driver path runs: local stage 0 +
+   * `planCommunalRoute`. See `docs/OPTIONAL-STAGE0.md`.
+   *
+   * TRUST: in thin mode your RAW TOKEN IDS (trivially your prompt text)
+   * leave the device to the remote first stage — strictly weaker privacy
+   * than the capable path, where embeddings are computed locally first. The
+   * app MUST surface this (see `docs/TRUST.md` + the apps/chat trust UI).
+   */
+  thinDriver?: boolean;
+  /**
+   * CPU-only tokenizer for thin mode (wasm, no WebGPU). Required when
+   * `thinDriver` is true. `nEmbd` must match the mesh's model so the
+   * zero-activation wire frames the orchestrator ships are the right shape.
+   * The demo supplies a tokenizer-only stage worker (no GPU stage loaded);
+   * omitting it in thin mode is an error surfaced at `start()`. */
+  thinTokenizer?: {
+    nEmbd: number;
+    tokenize: (text: string, addSpecial?: boolean) => Promise<number[]>;
+    detokenize: (tokens: readonly number[]) => Promise<string>;
+    dispose?: () => Promise<void> | void;
+  };
   /** Forwarded to `runCommunalDriverSession`. See `useStagePipeline`'s
    * identical option for why the defaults below are generous (cold WebGPU
    * shader compilation on a communal host's first real dispatch). */
@@ -175,6 +203,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     spreadWidth = 3,
     priorityScore = () => 0,
     standingLedger,
+    thinDriver = false,
+    thinTokenizer,
     timeouts,
     queueWaitMs,
     replanJitterMs,
@@ -237,64 +267,104 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
        * "cheap to call on every roster change"). */
       function buildRoute(excludePeerIds: readonly string[]): CommunalRoute | null {
         const roster = peer!.roster.snapshot();
-        const topology = buildCommunalTopology(roster, { modelId, totalLayers, driverLayers }, { excludePeerIds });
-        const routePlan = planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype });
+        // Thin drivers cover [0, totalLayers) and need a remote isFirst host;
+        // capable drivers cover [driverLayers, totalLayers) and host [0,
+        // driverLayers) locally. The `communalStart` + planner differ; the
+        // attach-order/candidate shape is identical.
+        const topology = buildCommunalTopology(
+          roster,
+          { modelId, totalLayers, driverLayers, ...(thinDriver ? { communalStart: 0 } : {}) },
+          { excludePeerIds },
+        );
+        const routePlan = thinDriver
+          ? planThinDriverRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype })
+          : planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype });
         if (!routePlan) return null;
         const attachOrder = communalAttachOrder(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth });
         return { plan: routePlan, attachOrder };
       }
 
       try {
-        const gpu = await detectWebGpuLimits();
-        if (!gpu.ok) throw new Error(gpu.reason ?? 'WebGPU unavailable for local stage-0');
+        // Capable drivers need usable WebGPU for the local stage 0. A THIN
+        // driver deliberately has none — it hosts no stage and relies on a
+        // remote isFirst host (see `docs/OPTIONAL-STAGE0.md`), so the WebGPU
+        // gate is skipped and a CPU-only tokenizer is required instead.
+        if (!thinDriver) {
+          const gpu = await detectWebGpuLimits();
+          if (!gpu.ok) throw new Error(gpu.reason ?? 'WebGPU unavailable for local stage-0');
+        } else if (!thinTokenizer) {
+          throw new Error('thinDriver mode requires a `thinTokenizer` (CPU-only tokenize/detokenize)');
+        }
 
         const initialRoute = buildRoute([]);
         if (!initialRoute) {
           throw new Error(
-            'no feasible communal route — mesh coverage has a gap, or no communal hosts have advertised loadedStages yet',
+            thinDriver
+              ? 'no feasible THIN communal route — no remote isFirst host covers [0, X) with embeddings yet (a thin driver needs one to host its first stage)'
+              : 'no feasible communal route — mesh coverage has a gap, or no communal hosts have advertised loadedStages yet',
           );
         }
         setPlan(initialRoute.plan);
         setStatus({ phase: 'starting' });
         log(
-          `[communal-chat] route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
+          `[communal-chat] ${thinDriver ? 'THIN ' : ''}route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
         );
 
-        // Resolve stage-0's shards from the SAME per-layer manifest the
-        // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
-        // the monolithic `full.gguf` fallback. This keeps every stage on one
-        // model: a stage-0 loaded from a different artifact than the sharded
-        // package emits wrong-width activations the remote stage rejects
-        // ("activation input payload is N bytes, expected M"). Model-agnostic
-        // — widths/fragments come from the manifest. Falls back to
-        // `stageShardUrls()` only when no manifest is set (the test model).
-        const { plan: stage0Plan } = await resolveCommunalShardPlan(
-          { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
-          {
-            manifestUrl,
-            fallbackShardUrls: stageShardUrls,
-            includeEmbeddings: true,
-            opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
-          },
-        );
-        const localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
-        await localWorker.load(
-          {
-            modelId,
-            layerStart: 0,
-            layerEnd: driverLayers,
-            totalLayers,
-            shardUrls: stage0Plan.shardUrls,
-            shardHashes: stage0Plan.shardHashes,
-            shardBytes: stage0Plan.shardBytes,
-            ctxSize,
-          },
-          { useMemoryShardStore: stage0Plan.useMemoryShardStore },
-        );
-        log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
-        await warmUpStageWorker(localWorker, log);
-        log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
-        localWorkerRef.current = localWorker;
+        // The local CPU work a driver always does — tokenize/detokenize. In
+        // capable mode this is the loaded stage-0 worker; in thin mode it's
+        // the injected CPU tokenizer (no GPU stage loaded at all).
+        let localWorker: StageWorkerClient | null = null;
+        if (!thinDriver) {
+          // Resolve stage-0's shards from the SAME per-layer manifest the
+          // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
+          // the monolithic `full.gguf` fallback. This keeps every stage on one
+          // model: a stage-0 loaded from a different artifact than the sharded
+          // package emits wrong-width activations the remote stage rejects
+          // ("activation input payload is N bytes, expected M"). Model-agnostic
+          // — widths/fragments come from the manifest. Falls back to
+          // `stageShardUrls()` only when no manifest is set (the test model).
+          const { plan: stage0Plan } = await resolveCommunalShardPlan(
+            { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+            {
+              manifestUrl,
+              fallbackShardUrls: stageShardUrls,
+              includeEmbeddings: true,
+              opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+            },
+          );
+          localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
+          await localWorker.load(
+            {
+              modelId,
+              layerStart: 0,
+              layerEnd: driverLayers,
+              totalLayers,
+              shardUrls: stage0Plan.shardUrls,
+              shardHashes: stage0Plan.shardHashes,
+              shardBytes: stage0Plan.shardBytes,
+              ctxSize,
+            },
+            { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+          );
+          log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
+          await warmUpStageWorker(localWorker, log);
+          log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
+          localWorkerRef.current = localWorker;
+        } else {
+          log(`[communal-chat] ${elapsed()} thin driver — no local stage, CPU tokenizer only (nEmbd=${thinTokenizer!.nEmbd})`);
+        }
+
+        const tokenizer = thinDriver
+          ? {
+              nEmbd: thinTokenizer!.nEmbd,
+              tokenize: (t: string) => thinTokenizer!.tokenize(t, true),
+              detokenize: (toks: readonly number[]) => thinTokenizer!.detokenize(toks),
+            }
+          : {
+              nEmbd: localWorker!.nEmbd,
+              tokenize: (t: string) => localWorker!.tokenize(t, true),
+              detokenize: (toks: readonly number[]) => localWorker!.detokenize([...toks]),
+            };
 
         // ── M4 telemetry bookkeeping — per ATTACHED segment (reset on
         // every planCreated/replan), not per whole chat: a replan means a
@@ -346,12 +416,18 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           modelId,
           prompt,
           maxDecodeTokens: startOpts?.maxDecodeTokens ?? defaultMaxDecodeTokens,
+          thinDriver,
           localHooks: {
-            nEmbd: localWorker.nEmbd,
-            tokenize: (t) => localWorker.tokenize(t, true),
-            detokenize: (toks) => localWorker.detokenize([...toks]),
-            reset: () => localWorker.reset(),
+            nEmbd: tokenizer.nEmbd,
+            tokenize: (t) => tokenizer.tokenize(t),
+            detokenize: (toks) => tokenizer.detokenize(toks),
+            // In thin mode the orchestrator never calls reset/prefill/decode
+            // (it synthesizes zero-activation frames and the remote isFirst
+            // host embeds from the token sideband) — these stubs exist only
+            // to satisfy the `DriverStageHooks` shape and must never run.
+            reset: () => (localWorker ? localWorker.reset() : Promise.resolve()),
             prefill: async (toks, positions) => {
+              if (!localWorker) throw new Error('thin driver: local prefill must not be called');
               log(`[communal-chat] ${elapsed()} local prefill start (tokens=${toks.length})`);
               const res = await localWorker.prefill([...toks], [...positions]);
               log(`[communal-chat] ${elapsed()} local prefill done`);
@@ -359,6 +435,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               return { activation: new Float32Array(res.activation.payload) };
             },
             decode: async (token) => {
+              if (!localWorker) throw new Error('thin driver: local decode must not be called');
               const res = await localWorker.decode(token);
               if (!res.activation) throw new Error('local stage-0 decode produced no activation');
               return { activation: new Float32Array(res.activation.payload) };
@@ -415,8 +492,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               segmentTokenCount += 1;
               const { generatedTokens } = handle.tokenHistory();
               setTokens(generatedTokens);
-              void localWorker
-                .detokenize([...generatedTokens])
+              void Promise.resolve(tokenizer.detokenize(generatedTokens))
                 .then(setText)
                 .catch(() => undefined);
               break;
@@ -468,6 +544,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       spreadWidth,
       priorityScore,
       standingLedger,
+      thinDriver,
+      thinTokenizer,
       timeouts,
       queueWaitMs,
       replanJitterMs,

@@ -99,6 +99,33 @@ function deriveGpuName(
   return webglRenderer;
 }
 
+/**
+ * OPTIONAL-STAGE0 — the minimum WebGPU `maxStorageBufferBindingSize` a
+ * device needs before it can usefully host EVEN stage 0 (embeddings + the
+ * first `driverLayers` layers of the smallest deployed model). Below this, a
+ * device is a "thin driver": it can still tokenize/detokenize on the CPU
+ * (wasm, no GPU) and drive a chat, but it must route its first stage to a
+ * remote isFirst host. The floor is deliberately conservative — one storage
+ * buffer binding must hold a stage-0 weight slab; ~128 MiB is the empirical
+ * lower bound for the q8_0 demo model's stage-0 slice. See
+ * `docs/OPTIONAL-STAGE0.md`. */
+export const USABLE_STAGE_HOST_MIN_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Classify a `detectWebGpuLimits()` result as a THIN driver (can't host any
+ * stage) vs. a capable one. Thin iff WebGPU is absent/unusable OR the
+ * adapter's `maxStorageBufferBindingSize` is below `USABLE_STAGE_HOST_MIN_BYTES`.
+ * A thin driver hosts NO local stage-0 worker and relies on a remote isFirst
+ * communal host (see `useCommunalChat`'s `thinDriver` mode). Pure — no probe,
+ * so a caller can classify a cached result without re-hitting the adapter. */
+export function isThinDriver(
+  result: WebGpuLimitsResult,
+  minBytes: number = USABLE_STAGE_HOST_MIN_BYTES,
+): boolean {
+  if (!result.ok || !result.limits) return true;
+  return result.limits.maxStorageBufferBindingSize < minBytes;
+}
+
 export async function detectWebGpuLimits(): Promise<WebGpuLimitsResult> {
   if (typeof navigator === 'undefined') return { ok: false, reason: 'no navigator (non-browser context)' };
   // @ts-expect-error — navigator.gpu lib.dom coverage varies by TS lib target

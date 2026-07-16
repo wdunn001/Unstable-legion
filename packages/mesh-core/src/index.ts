@@ -151,6 +151,9 @@ export {
   adFailureDomainId,
   distinctFailureDomainIds,
   distinctFailureDomainCount,
+  // OPTIONAL-STAGE0 (thin drivers)
+  planThinDriverRoute,
+  thinDriverFirstStageCovered,
   type CommunalHostStageAd,
   type CommunalSegment,
   type CommunalGap,
@@ -305,12 +308,29 @@ export {
   DEFAULT_LOWEST_LANE,
   DEFAULT_NOISE_AMPLITUDE,
   DEFAULT_NOISE_BUCKET_MS,
+  DEFAULT_TOOL_SERVICE_CREDIT,
+  DEFAULT_TOOL_CONSUME_DEBIT,
   type StandingConfig,
   type NoiseSource,
   type RecordServiceInput,
   type RecordConsumptionInput,
+  type RecordToolServiceInput,
+  type RecordToolConsumptionInput,
   type StandingSnapshot,
 } from './standing.js';
+
+// ── TOOL-NODES: agentic tool-use in the communal chat loop ──────────────
+export {
+  parseToolCalls,
+  firstToolCall,
+  buildToolResultBlock,
+  runToolRoundTrip,
+  type ParsedToolCall,
+  type ToolRoundTripPeer,
+  type ToolRoundTripStatus,
+  type ToolRoundTripResult,
+  type RunToolRoundTripOptions,
+} from './toolLoop.js';
 
 // ── Optional: Codec-over-WebRTC advanced path ──────────────────────
 //
