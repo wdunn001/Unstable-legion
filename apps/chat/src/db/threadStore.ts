@@ -28,6 +28,12 @@ export interface ChatMessage {
    * (the raw tool exchange re-enters context via chatPrompt's `rounds`
    * during the exchange, and is summarized by the final text after). */
   toolTrace?: string[];
+  /** Decode throughput of this assistant message's generation, in tokens
+   * per second (first generated token → last; see useCommunalChat's
+   * `ChatGenTiming`). Rendered as a small metric badge under the message.
+   * Undefined for user messages and for generations too short to measure
+   * (fewer than 2 tokens). */
+  tokPerSec?: number;
 }
 
 export interface ChatThread {

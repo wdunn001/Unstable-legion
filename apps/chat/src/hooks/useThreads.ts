@@ -44,6 +44,9 @@ export interface UseThreadsHandle {
   setMessageToolTrace: (messageId: string, toolTrace: readonly string[]) => void;
   /** Mark a message as having recovered from a mid-stream host death. */
   markReconnected: (messageId: string) => void;
+  /** Record a message's decode throughput (tok/s) for the metric badge —
+   * same in-memory-until-flush semantics as `updateMessageContent`. */
+  setMessageTokPerSec: (messageId: string, tokPerSec: number) => void;
   /** Persist the current in-memory active thread to IndexedDB. */
   flushActiveThread: () => Promise<void>;
 }
@@ -188,6 +191,17 @@ export function useThreads(): UseThreadsHandle {
     [withActiveThread],
   );
 
+  const setMessageTokPerSec = useCallback(
+    (messageId: string, tokPerSec: number) => {
+      withActiveThread((t) => ({
+        ...t,
+        messages: t.messages.map((m) => (m.id === messageId ? { ...m, tokPerSec } : m)),
+        updatedAt: Date.now(),
+      }));
+    },
+    [withActiveThread],
+  );
+
   const flushActiveThread = useCallback(async () => {
     const id = activeThreadIdRef.current;
     const thread = threadsRef.current.find((t) => t.id === id);
@@ -208,6 +222,7 @@ export function useThreads(): UseThreadsHandle {
     updateMessageContent,
     setMessageToolTrace,
     markReconnected,
+    setMessageTokPerSec,
     flushActiveThread,
   };
 }

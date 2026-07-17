@@ -192,7 +192,7 @@ function syntheticRosterEntry(
           includeEmbeddings: claim.includeEmbeddings ?? claim.layerStart === 0,
           includeOutput: claim.includeOutput,
           ctxSize: 1,
-          wireDtype: 'f32',
+          wireDtype: 'i8',
           maxSessions,
           activeSessions: 0,
           epoch: 0,

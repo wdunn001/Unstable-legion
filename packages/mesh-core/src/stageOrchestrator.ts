@@ -30,9 +30,9 @@
  * implemented here; that's explicitly out of scope for this pass.
  */
 import {
-  createActivationWireEncoder,
-  type ActivationWireEncoder,
-} from '@unstable-legion/stage-runtime';
+  createLegionActivationWireEncoder,
+  type LegionActivationWireEncoder,
+} from './activationWireCodec.js';
 import { PendingToolCallTracker } from './tools.js';
 import {
   decodeStageControl,
@@ -138,7 +138,7 @@ export interface DriverStageSessionOptions {
   modelId: string;
   prompt: string;
   maxDecodeTokens: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   localHooks: DriverStageHooks;
   replan: ReplanFn;
   /** manifestUrl/shardUrls to send in stage.load for each remote stage —
@@ -308,7 +308,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
   const generatedTokens: number[] = [];
   let aborted = false;
   let abortReason: string | undefined;
-  let encoder: ActivationWireEncoder | undefined;
+  let encoder: LegionActivationWireEncoder | undefined;
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
@@ -470,7 +470,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
     await preflightAll(p);
     await loadDownstreamFirst(p);
     await opts.localHooks.reset();
-    encoder = createActivationWireEncoder({
+    encoder = createLegionActivationWireEncoder({
       modelId: opts.modelId,
       stageIndex: 0,
       nEmbd: opts.localHooks.nEmbd,
@@ -814,7 +814,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   const generatedTokens: number[] = [];
   let aborted = false;
   let abortReason: string | undefined;
-  let encoder: ActivationWireEncoder | undefined;
+  let encoder: LegionActivationWireEncoder | undefined;
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
@@ -917,11 +917,11 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
 
   interface Attached {
     peerId: string;
-    wireDtype: 'f32' | 'f16';
+    wireDtype: 'f32' | 'f16' | 'i8';
     nEmbd: number;
     isFirst: boolean;
     isFinal: boolean;
-    encoder: ActivationWireEncoder;
+    encoder: LegionActivationWireEncoder;
   }
 
   /** Attach to one remote stage: preflight ping -> `stage.session.open`
@@ -946,7 +946,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           continue;
         }
 
-        const candEncoder = createActivationWireEncoder({
+        const candEncoder = createLegionActivationWireEncoder({
           modelId: opts.modelId,
           stageIndex: 0,
           nEmbd: opts.localHooks.nEmbd,

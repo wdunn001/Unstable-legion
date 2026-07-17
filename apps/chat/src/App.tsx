@@ -36,6 +36,7 @@ import {
   firstToolCall,
   newCallId,
   runToolRoundTrip,
+  type JoinRoomFn,
 } from '@unstable-legion/core';
 import { JoinScreen } from './components/JoinScreen.js';
 import { ConversationList } from './components/ConversationList.js';
@@ -171,7 +172,18 @@ export function App() {
   }
 
   return (
-    <MeshProvider joinRoom={joinRoom} selfId={selfId} trysteroConfig={TRYSTERO_CONFIG} roomId={ROOM_ID} cap={cap}>
+    <MeshProvider
+      /* Pre-existing type mismatch between @trystero-p2p's own JoinRoomConfig
+       * (requires a statically-known `appId`) and mesh-core's looser
+       * JoinRoomFn (config: Record<string, unknown>) — unrelated to the
+       * wireDtype/i8 work in this pass; TRYSTERO_CONFIG always supplies
+       * `appId` at runtime, so this cast changes no behavior. */
+      joinRoom={joinRoom as unknown as JoinRoomFn}
+      selfId={selfId}
+      trysteroConfig={TRYSTERO_CONFIG}
+      roomId={ROOM_ID}
+      cap={cap}
+    >
       <Dashboard
         nick={persona.nick}
         onChangeNick={() => setJoined(false)}
@@ -525,13 +537,18 @@ function Dashboard(props: {
     if (ex) {
       threads.updateMessageContent(ex.assistantId, stripToolMarkup(chat.text));
       if (ex.trace.length > 0) threads.setMessageToolTrace(ex.assistantId, ex.trace);
+      // Decode-speed badge (tok/s) — only when the generation was long
+      // enough to measure an inter-token rate (see ChatGenTiming).
+      if (chat.lastTiming?.tokPerSec !== undefined) {
+        threads.setMessageTokPerSec(ex.assistantId, chat.lastTiming.tokPerSec);
+      }
     }
     if (streamingMessageId && chat.restartCount > 0) threads.markReconnected(streamingMessageId);
     void threads.flushActiveThread();
     exchangeRef.current = null;
     setStreamingMessageId(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threads, chat.text, chat.restartCount, streamingMessageId]);
+  }, [threads, chat.text, chat.restartCount, chat.lastTiming, streamingMessageId]);
 
   useEffect(() => {
     if (!streamingMessageId) return;

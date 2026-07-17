@@ -48,7 +48,7 @@ export interface StageLoadPayload {
    * see SLICING.md §2). */
   manifestUrl?: string;
   shardUrls?: readonly string[];
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   ctxSize: number;
 }
 
@@ -136,7 +136,7 @@ export interface StageSessionOpenPayload {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   /** Base64 of `ActivationWireEncoder.headerBytes()` — the once-per-stream
    * activation-wire header this session's `sf` frames will be decoded
    * against. Sent up front (not as the first `sf` frame) precisely so a
@@ -294,7 +294,7 @@ export function isStageLoadPayload(x: unknown): x is StageLoadPayload {
   if (x.manifestUrl === undefined && x.shardUrls === undefined) return false;
   if (x.manifestUrl !== undefined && typeof x.manifestUrl !== 'string') return false;
   if (x.shardUrls !== undefined && !isStringArr(x.shardUrls)) return false;
-  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
+  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16' && x.wireDtype !== 'i8') return false;
   if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
   return true;
 }
@@ -367,7 +367,7 @@ export function isStageSessionOpenPayload(x: unknown): x is StageSessionOpenPayl
   if (!Number.isInteger(x.layerEnd) || (x.layerEnd as number) <= (x.layerStart as number)) return false;
   if (!Number.isInteger(x.totalLayers) || (x.totalLayers as number) < (x.layerEnd as number)) return false;
   if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
-  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
+  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16' && x.wireDtype !== 'i8') return false;
   // wireHeader is now optional (a hop ≥2 omits it — see the field doc); when
   // present it must still be a non-empty base64 string.
   if (x.wireHeader !== undefined && (typeof x.wireHeader !== 'string' || !x.wireHeader)) return false;

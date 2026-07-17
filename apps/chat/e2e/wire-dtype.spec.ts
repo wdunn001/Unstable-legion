@@ -140,3 +140,81 @@ test('wire-dtype A/B: f32 (control) vs f16 token exactness across 5 prompts', as
   }
   console.log(`[wire-dtype] SUMMARY: ${anyDiverged ? 'at least one prompt diverged between f32 and f16 — see RESULT lines above' : 'all 5 prompts token-exact between f32 and f16'}`);
 });
+
+/**
+ * i8 quality gate — the int8 activation wire (activationWireI8.ts) is a
+ * LOSSY per-token abs-max quantization, so unlike f16 it is NOT expected to
+ * be token-exact. Transformer hidden states carry massive-activation outlier
+ * channels that dominate a per-row abs-max and can crush the remaining dims'
+ * int8 resolution; whether that measurably harms greedy decode is exactly
+ * what this A/B measures on a REAL model (not the synthetic unit tests). We
+ * assert COMPLETION (i8 must produce a real generation) and report, per
+ * prompt, the first-divergence index + how far into the sequence i8 tracks
+ * f32 — a high divergence index (i8 matches f32 for many tokens before, if
+ * ever, drifting) is the signal that i8 is safe to default to. NOTE: this
+ * runs the 0.6b test model; the production 8B's outlier statistics differ,
+ * so a clean result here is necessary-but-not-sufficient — final 8B sign-off
+ * is a live `?wireDtype=f32` A/B on the real deployment.
+ */
+test('wire-dtype quality: f32 (control) vs i8 divergence across 5 prompts', async ({ context }) => {
+  test.setTimeout(GATE_TIMEOUT_MS);
+  const browser = context.browser();
+  if (!browser) throw new Error('requires a browser-backed context');
+
+  async function runDtype(dtype: 'f32' | 'i8'): Promise<PromptRun[]> {
+    const room = `chat-wiredtype-${dtype}-${Date.now().toString(36)}`;
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    wirePageLogging(page, `solo-${dtype}`);
+    await joinChat(page, room, `solo-${dtype}`, `&wireDtype=${dtype}`);
+    await acceptHosting(page);
+    await waitForHostingActive(page, 8 * 60_000);
+    await waitForCapacityReady(page, 3 * 60_000);
+    console.log(`[wire-dtype] ${dtype}: solo tab self-hosting, capacity ready`);
+    const runs = await runPromptSet(page, dtype);
+    await page.close().catch(() => undefined);
+    await ctx.close().catch(() => undefined);
+    return runs;
+  }
+
+  const f32Runs = await runDtype('f32');
+  const i8Runs = await runDtype('i8');
+
+  let exactCount = 0;
+  const divergeIndices: number[] = [];
+  for (let i = 0; i < PROMPTS.length; i++) {
+    const a = f32Runs[i]!.tokens;
+    const b = i8Runs[i]!.tokens;
+    const minLen = Math.min(a.length, b.length);
+    let divergeAt = -1;
+    for (let j = 0; j < minLen; j++) {
+      if (a[j] !== b[j]) {
+        divergeAt = j;
+        break;
+      }
+    }
+    if (divergeAt === -1 && a.length !== b.length) divergeAt = minLen;
+
+    const promptPreview = PROMPTS[i]!.slice(0, 48).replace(/\s+/g, ' ');
+    if (divergeAt === -1) {
+      exactCount++;
+      console.log(`[wire-dtype] i8 RESULT prompt${i} "${promptPreview}…": TOKEN-EXACT (${a.length} tokens)`);
+    } else {
+      divergeIndices.push(divergeAt);
+      const pct = a.length > 0 ? ((divergeAt / a.length) * 100).toFixed(0) : '0';
+      console.log(
+        `[wire-dtype] i8 RESULT prompt${i} "${promptPreview}…": diverges at token ${divergeAt}/${a.length} (${pct}% in) ` +
+          `(f32 len=${a.length}, i8 len=${b.length}, f32[${divergeAt}]=${a[divergeAt]}, i8[${divergeAt}]=${b[divergeAt]})`,
+      );
+    }
+
+    expect(a.length, `f32 run for prompt${i} produced no tokens`).toBeGreaterThan(0);
+    expect(b.length, `i8 run for prompt${i} produced no tokens`).toBeGreaterThan(0);
+  }
+  const avgDiverge = divergeIndices.length ? (divergeIndices.reduce((s, v) => s + v, 0) / divergeIndices.length).toFixed(1) : 'n/a';
+  console.log(
+    `[wire-dtype] i8 SUMMARY: ${exactCount}/${PROMPTS.length} token-exact vs f32; ` +
+      `of the ${divergeIndices.length} that diverged, mean first-divergence token index = ${avgDiverge}. ` +
+      'Read the RESULT lines above with the generated text to judge coherence — token divergence alone is expected for a lossy wire.',
+  );
+});

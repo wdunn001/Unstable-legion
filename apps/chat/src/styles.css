@@ -524,6 +524,17 @@ code {
   gap: 4px;
 }
 
+.msg-tokrate {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--chip-fg);
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Composer ─────────────────────────────────────────────────────── */
 .composer {
   border-top: 1px solid var(--border);

@@ -29,7 +29,8 @@
  *   7. Designate a hot spare when an eligible extra host exists
  *      (CHAOS.md Layer 3).
  */
-import { splitLayerRangesWeighted, activationBytes, type LayerRange } from '@unstable-legion/stage-runtime';
+import { splitLayerRangesWeighted, type LayerRange } from '@unstable-legion/stage-runtime';
+import { legionActivationBytes } from './activationWireCodec.js';
 import type { MeshRosterEntry } from './types.js';
 
 // ── Input shapes ─────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ export interface PlanPipelineOptions {
    * when replanning. */
   excludePeerIds?: readonly string[];
   /** Wire dtype used for the per-token hop-cost estimate. Default 'f16'. */
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   /** Designate a hot spare when an eligible extra host exists. Default true. */
   wantHotSpare?: boolean;
   /** Consider `available === false` peers too. Default false (skip them). */
@@ -431,7 +432,7 @@ export function planPipeline(
     }
 
     const perTokenHopBytes =
-      stages.length > 1 ? activationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
+      stages.length > 1 ? legionActivationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
 
     const selectedIds = new Set(stages.map((s) => s.peerId));
     const unselectedPeerIds = eligible.filter((h) => !selectedIds.has(h.peerId)).map((h) => h.peerId);

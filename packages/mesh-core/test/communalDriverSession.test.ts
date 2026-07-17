@@ -19,6 +19,7 @@ import {
   type StageControlMessage,
 } from '../src/stageControl.ts';
 import { decodeStageFrameEnvelope } from '../src/stageFrameEnvelope.ts';
+import { createLegionActivationWireDecoder } from '../src/activationWireCodec.ts';
 import type { CommunalHostStageAd } from '../src/communalTopology.ts';
 import type { MeshToolFrame } from '../src/types.ts';
 import type { StagePlan } from '../src/stagePlanner.ts';
@@ -504,7 +505,7 @@ test('communal session: external abort() cleanly finishes with partial history i
 
 // ── 3-stage relay: the multi-host bug this whole change fixes ─────────────
 
-function route3For(hostA: string, hostB: string): CommunalRoute {
+function route3For(hostA: string, hostB: string, wireDtype: 'f32' | 'f16' | 'i8' = 'f32'): CommunalRoute {
   // local[0,2) -> hostA[2,5) (relay) -> hostB[5,8) (final)
   const plan: StagePlan = {
     modelId: 'm',
@@ -520,8 +521,8 @@ function route3For(hostA: string, hostB: string): CommunalRoute {
   return {
     plan,
     attachOrder: new Map([
-      [1, [makeAd(hostA, { layerStart: 2, layerEnd: 5, includeOutput: false })]],
-      [2, [makeAd(hostB, { layerStart: 5, layerEnd: 8, includeOutput: true })]],
+      [1, [makeAd(hostA, { layerStart: 2, layerEnd: 5, includeOutput: false, wireDtype })]],
+      [2, [makeAd(hostB, { layerStart: 5, layerEnd: 8, includeOutput: true, wireDtype })]],
     ]),
   };
 }
@@ -579,6 +580,62 @@ test('communal 3-stage relay: driver opens each hop with correct stageIndex/isFi
   assert.ok(driverFrames.length > 0);
   // The driver's own sends all target hostA; hostB only ever receives via the
   // relay forward (which re-enters sendStageFrame, also recorded).
+  const firstFrame = mesh.sentFrames[0]!;
+  assert.equal(firstFrame.target, 'hostA', 'the first sf must go to stage 1, not the final stage');
+});
+
+// ── Same 3-stage relay, wireDtype='i8' — proves the i8 dispatch swap
+//    (createLegionActivationWireEncoder/Decoder, see stageOrchestrator.ts's
+//    attachOneStage) didn't regress the relay itself: dtype propagates
+//    through the plan/candidate ads into the session-open payload AND the
+//    stage-1 wire header the driver actually builds and sends. ─────────────
+
+test('communal 3-stage relay: wireDtype=i8 propagates through the plan/opens and the driver builds an i8 encoder/header', async () => {
+  const mesh = createMockMesh('driver');
+  mesh.hosts.set('hostA', makeFakeSessionHost('hostA', { isFinal: false, forwardTo: 'hostB' }));
+  mesh.hosts.set('hostB', makeFakeSessionHost('hostB', { isFinal: true }));
+
+  const handle = runCommunalDriverSession({
+    peer: mesh.peer,
+    route: route3For('hostA', 'hostB', 'i8'),
+    modelId: 'm',
+    prompt: 'hi there',
+    maxDecodeTokens: 3,
+    localHooks: makeMockLocalHooks(),
+    replanRoute: () => null,
+    timeouts: FAST_TIMEOUTS,
+  });
+  const result = await handle.result();
+
+  // The session still completes end-to-end over the i8 wire route.
+  assert.equal(result.aborted, false, `aborted: ${result.abortReason}`);
+  assert.equal(mesh.hosts.get('hostA')!.opensReceived, 1);
+  assert.equal(mesh.hosts.get('hostB')!.opensReceived, 1);
+
+  const opens = mesh.sentTool
+    .map((s) => decodeStageControl(s.frame))
+    .filter((d): d is NonNullable<typeof d> => d?.kind === 'stage.session.open')
+    .map((d) => (d as { payload: import('../src/stageControl.ts').StageSessionOpenPayload }).payload);
+  const openA = opens.find((p) => p.layerStart === 2)!;
+  const openB = opens.find((p) => p.layerStart === 5)!;
+
+  // Both opens carry the candidate ad's wireDtype (cand.wireDtype at
+  // stageOrchestrator.ts's attachOneStage) through to the wire payload.
+  assert.equal(openA.wireDtype, 'i8');
+  assert.equal(openB.wireDtype, 'i8');
+
+  // Stage 1's wireHeader is the driver's OWN encoder header (built by
+  // createLegionActivationWireEncoder({ dtype: cand.wireDtype, ... })) —
+  // decoding it through the dispatcher (header-based, no hint) must land
+  // on the i8 codec, proving the dispatch swap actually took effect (not
+  // silently still constructing an f32/f16 encoder).
+  assert.ok(openA.wireHeader, 'stage 1 must carry the driver-encoder header');
+  const headerBytes = Buffer.from(openA.wireHeader!, 'base64');
+  const dec = createLegionActivationWireDecoder(headerBytes);
+  assert.equal(dec.dtype, 'i8');
+  assert.equal(dec.nEmbd, 8); // makeMockLocalHooks()'s default nEmbd
+
+  // Frames still relay end to end over the i8 route.
   const firstFrame = mesh.sentFrames[0]!;
   assert.equal(firstFrame.target, 'hostA', 'the first sf must go to stage 1, not the final stage');
 });

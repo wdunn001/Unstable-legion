@@ -54,8 +54,9 @@ import {
   type StageHostCap,
   type StagePipelineRequest,
   type StagePlan,
+  legionActivationBytes,
 } from '@unstable-legion/core';
-import { activationBytes, splitLayerRangesWeighted } from '@unstable-legion/stage-runtime';
+import { splitLayerRangesWeighted } from '@unstable-legion/stage-runtime';
 
 // ── Local capability → stageHost cap ────────────────────────────────────
 
@@ -261,7 +262,7 @@ function rangeBytes(req: StagePipelineRequest, layerStart: number, layerEnd: num
 }
 
 export interface PlanPipelineForDriverOptions extends PlanPipelineOptions {
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
 }
 
 /**
@@ -341,7 +342,7 @@ export function planPipelineForDriver(
 
   const stages = [localStage, ...remoteStages];
   const wireDtype = opts.wireDtype ?? 'f16';
-  const perTokenHopBytes = stages.length > 1 ? activationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
+  const perTokenHopBytes = stages.length > 1 ? legionActivationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
 
   return {
     modelId: req.modelId,

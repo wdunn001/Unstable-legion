@@ -103,7 +103,7 @@ export interface UseCommunalChatOptions {
   manifestUrl?: string | readonly string[];
   nEmbd?: number;
   ctxSize?: number;
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   defaultMaxDecodeTokens?: number;
   leaderLockName?: string;
   /** Forwarded to `planCommunalRoute`/`communalAttachOrder` — see that
@@ -200,12 +200,35 @@ export interface StageLoadProgressView {
   phase?: 'downloading' | 'opening' | 'warming';
 }
 
+/** Decode-speed metric for the most recent (or in-flight) generation —
+ * powers the per-response tok/s badge. `tokPerSec` is the DECODE rate
+ * (first generated token → last), which is what a user perceives as
+ * "speed" and excludes the one-time load/prefill/TTFT wait; `ttftMs` is
+ * that wait (session start → first token) surfaced separately. Undefined
+ * until the first token of a generation arrives. */
+export interface ChatGenTiming {
+  /** Generated tokens counted for this metric. */
+  tokenCount: number;
+  /** Wall-clock from first generated token to last (ms). 0 for a 1-token
+   * generation (no interval to measure). */
+  decodeMs: number;
+  /** Decode throughput: `(tokenCount - 1) / (decodeMs/1000)` — the
+   * inter-token rate. Undefined when fewer than 2 tokens (no interval). */
+  tokPerSec?: number;
+  /** Time-to-first-token: session start → first generated token (ms). */
+  ttftMs: number;
+}
+
 export interface UseCommunalChatHandle {
   status: CommunalChatStatus;
   plan?: CommunalRoute['plan'];
   tokens: readonly number[];
   text: string;
   restartCount: number;
+  /** Decode-speed of the latest generation (see `ChatGenTiming`). Reset to
+   * undefined when a new generation starts; set on the first token and
+   * finalized at `finished`. */
+  lastTiming?: ChatGenTiming;
   /** Live stage-load progress while the pipeline assembles — drives the
    * chat waiting-state's "shard 24/36 · 2.6/4.4 GB" line. Undefined once
    * assembled (cleared on the first token) or before any load begins. */
@@ -244,7 +267,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     manifestUrl,
     nEmbd = STAGE_N_EMBD,
     ctxSize = STAGE_CTX_SIZE,
-    wireDtype = 'f32',
+    wireDtype = 'i8',
     defaultMaxDecodeTokens = DEFAULT_MAX_DECODE_TOKENS,
     leaderLockName = DEFAULT_LOCK_NAME,
     spreadWidth = 3,
@@ -266,6 +289,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   const [restartCount, setRestartCount] = useState(0);
   const [readyStageIndexes, setReadyStageIndexes] = useState<readonly number[]>([]);
   const [loadProgress, setLoadProgress] = useState<StageLoadProgressView | undefined>(undefined);
+  const [lastTiming, setLastTiming] = useState<ChatGenTiming | undefined>(undefined);
 
   const lockRef = useRef<{ release: () => void } | null>(null);
   const localWorkerRef = useRef<StageWorkerClient | null>(null);
@@ -308,6 +332,15 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
 
       const t0 = Date.now();
       const elapsed = () => `+${Date.now() - t0}ms`;
+
+      // Decode-speed metric (see ChatGenTiming / the tok/s badge). Spans the
+      // WHOLE generation (across any replan) — first generated token to last
+      // — so a replan's re-prefill pause honestly shows up as lower tok/s
+      // rather than being hidden. `t0` is the session-start anchor for TTFT.
+      let genFirstTokenAt = 0;
+      let genLastTokenAt = 0;
+      let genTokenCount = 0;
+      setLastTiming(undefined);
 
       /** Build (or rebuild, for a replan) a `CommunalRoute` from the LIVE
        * roster — pure read, no I/O, cheap enough to call fresh every time
@@ -554,6 +587,10 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'token': {
               segmentTokenCount += 1;
+              const tokAt = Date.now();
+              if (genFirstTokenAt === 0) genFirstTokenAt = tokAt;
+              genLastTokenAt = tokAt;
+              genTokenCount += 1;
               setLoadProgress(undefined); // assembled + generating — no more load line
               const { generatedTokens } = handle.tokenHistory();
               setTokens(generatedTokens);
@@ -574,6 +611,15 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'finished': {
               recordSegmentTelemetry(true);
+              if (genFirstTokenAt > 0) {
+                const decodeMs = Math.max(0, genLastTokenAt - genFirstTokenAt);
+                setLastTiming({
+                  tokenCount: genTokenCount,
+                  decodeMs,
+                  tokPerSec: genTokenCount > 1 && decodeMs > 0 ? (genTokenCount - 1) / (decodeMs / 1000) : undefined,
+                  ttftMs: Math.max(0, genFirstTokenAt - t0),
+                });
+              }
               setStatus((prev) => (prev.phase === 'aborted' ? prev : { phase: 'finished' }));
               break;
             }
@@ -633,5 +679,5 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
 
   const isRunning = useCallback(() => runningRef.current, []);
 
-  return { status, plan, tokens, text, restartCount, readyStageIndexes, loadProgress, start, abort, isRunning };
+  return { status, plan, tokens, text, restartCount, readyStageIndexes, loadProgress, lastTiming, start, abort, isRunning };
 }

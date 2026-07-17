@@ -87,13 +87,11 @@ import {
   type Peer,
   type StageControlMessageFor,
   type StandingLedger,
+  createLegionActivationWireDecoder,
+  createLegionActivationWireEncoder,
+  type LegionActivationWireDecoder,
+  type LegionActivationWireEncoder,
 } from '@unstable-legion/core';
-import {
-  createActivationWireDecoder,
-  createActivationWireEncoder,
-  type ActivationWireDecoder,
-  type ActivationWireEncoder,
-} from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
@@ -194,7 +192,7 @@ export interface UseStageHostOptions {
     layerEnd: number;
     totalLayers: number;
     ctxSize: number;
-    wireDtype: 'f32' | 'f16';
+    wireDtype: 'f32' | 'f16' | 'i8';
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
@@ -366,7 +364,7 @@ interface PendingOpen {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   shardUrls: readonly string[];
   /** M3 preload only (manifest-based artifact-slice fetch) — see
    * `stage-runtime`'s `StageDescriptor.shardHashes`/`shardBytes`.
@@ -396,7 +394,7 @@ interface HostSessionState {
   sessionId: string;
   driverPeerId: string;
   origin: 'legacy' | 'session';
-  decoder?: ActivationWireDecoder;
+  decoder?: LegionActivationWireDecoder;
   /** Legacy-origin sessions start `true` (first `sf` frame is the wire
    * header); session-origin sessions start `false` (header arrived in
    * the open payload, decoder built immediately). */
@@ -420,11 +418,11 @@ interface HostSessionState {
    * boundary activation for `nextPeerId`. Built lazily on first forward
    * (needs `client.nEmbd`, known only after the worker loads). Its header is
    * sent to `nextPeerId` once, before the first activation frame. */
-  forwardEncoder?: ActivationWireEncoder;
+  forwardEncoder?: LegionActivationWireEncoder;
   forwardHeaderSent?: boolean;
   modelId: string;
   stageIndex: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
 }
 
 interface LoadedConfig {
@@ -433,7 +431,7 @@ interface LoadedConfig {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
 }
 
 /**
@@ -1022,10 +1020,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         await ensureWorkerLoaded(req);
         const client = engine.workerClient!;
         await client.sessionCreate(req.sessionId);
-        let decoder: ActivationWireDecoder | undefined;
+        let decoder: LegionActivationWireDecoder | undefined;
         let awaitingHeader = true;
         if (req.wireHeaderB64) {
-          decoder = createActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
+          decoder = createLegionActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
           awaitingHeader = false;
         }
         const state: HostSessionState = {
@@ -1303,7 +1301,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           const client = engine.workerClient;
           if (!client) return;
           if (state.awaitingHeader) {
-            state.decoder = createActivationWireDecoder(bytes);
+            state.decoder = createLegionActivationWireDecoder(bytes);
             state.awaitingHeader = false;
             log(`[stage-host] wire header sessionId=${sessionId}: modelId=${state.decoder.modelId} nEmbd=${state.decoder.nEmbd} dtype=${state.decoder.dtype}`);
             return;
@@ -1335,7 +1333,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
             if (!state.nextPeerId) throw new Error('relay stage has no nextPeerId — cannot forward');
             if (!result.activation) throw new Error('relay stage produced no boundary activation to forward');
             if (!state.forwardEncoder) {
-              state.forwardEncoder = createActivationWireEncoder({
+              state.forwardEncoder = createLegionActivationWireEncoder({
                 modelId: state.modelId,
                 stageIndex: state.stageIndex,
                 nEmbd: client.nEmbd,

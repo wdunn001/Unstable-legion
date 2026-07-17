@@ -154,22 +154,23 @@ export interface ChatModelConfig {
   /**
    * Wire dtype for the per-token activation frames crossing pipeline-stage
    * hops (see docs/WIRE-DTYPE.md) — how many bytes per nEmbd-wide
-   * hidden-state vector travel the wire per hop. Default `'f32'` (lossless,
-   * the historical behavior). Overridable via `?wireDtype=f16` (same
-   * e2e/local-dev query-param idiom as `?testModel=1`) for A/B bandwidth
-   * testing without a rebuild — see `wire-dtype.spec.ts`.
+   * hidden-state vector travel the wire per hop. Default `'i8'` (quantized,
+   * ~4x smaller than `'f32'`; see `activationWireI8.ts`). Overridable via
+   * `?wireDtype=f16` / `?wireDtype=f32` (same e2e/local-dev query-param
+   * idiom as `?testModel=1`) for A/B bandwidth testing without a rebuild —
+   * see `wire-dtype.spec.ts`.
    */
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
 }
 
-const VALID_WIRE_DTYPES = new Set(['f32', 'f16']);
+const VALID_WIRE_DTYPES = new Set(['f32', 'f16', 'i8']);
 
-/** Parse `?wireDtype=` from `location.search`. Falls back to `'f32'` for
- * anything unset/unrecognized — production never silently ships a lossy
- * wire dtype from a typo'd or stale query param. */
-function resolveWireDtype(params: URLSearchParams | undefined): 'f32' | 'f16' {
+/** Parse `?wireDtype=` from `location.search`. Falls back to `'i8'` for
+ * anything unset/unrecognized — production default is the quantized wire
+ * route; a typo'd/stale query param still yields a supported dtype. */
+function resolveWireDtype(params: URLSearchParams | undefined): 'f32' | 'f16' | 'i8' {
   const raw = params?.get('wireDtype');
-  return raw && VALID_WIRE_DTYPES.has(raw) ? (raw as 'f32' | 'f16') : 'f32';
+  return raw && VALID_WIRE_DTYPES.has(raw) ? (raw as 'f32' | 'f16' | 'i8') : 'i8';
 }
 
 /** Resolve the effective model config for the current page. Reads

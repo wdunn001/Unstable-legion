@@ -110,6 +110,23 @@ export {
   type DecodedStageFrameEnvelope,
 } from './stageFrameEnvelope.js';
 
+// ── Activation wire dispatcher (f32/f16 via stage-runtime, i8 in-repo) ──
+export {
+  createLegionActivationWireEncoder,
+  createLegionActivationWireDecoder,
+  legionActivationBytes,
+  type LegionWireDtype,
+  type LegionActivationWireEncoder,
+  type LegionActivationWireDecoder,
+  type LegionActivationWireOptions,
+} from './activationWireCodec.js';
+export {
+  LEGION_I8_CODEC_MARKER,
+  isLegionI8Header,
+  measureDeflateGain,
+  type DeflateGainResult,
+} from './activationWireI8.js';
+
 // ── Phase C: pipeline-split planner ──────────────────────────────────
 export {
   planPipeline,

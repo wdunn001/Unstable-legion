@@ -48,6 +48,7 @@
  */
 import { hostStabilityScore, type StageHostCap } from './stagePlanner.js';
 import type { MeshLoadedStage, MeshRosterEntry } from './types.js';
+import { legionActivationBytes } from './activationWireCodec.js';
 
 // ── Deterministic hash (shared with communalAssembly.ts / stageOrchestrator.ts) ──
 
@@ -80,7 +81,7 @@ export interface CommunalHostStageAd {
   includeEmbeddings: boolean;
   includeOutput: boolean;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   maxSessions: number;
   activeSessions: number;
   epoch: number;
@@ -364,7 +365,7 @@ export interface PlanCommunalRouteOptions {
    * Required whenever `topology.segments` is non-empty. */
   nEmbd?: number;
   /** Wire dtype for the hop-cost estimate. Default 'f16'. */
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   /**
    * Maximum TOTAL stages (local stage 0 + remote hops) this route may have.
    * Undefined = no cap. With the host-side relay this stays uncapped; set it
@@ -523,12 +524,12 @@ export function planCommunalRoute(
   const stages = [localStage, ...remoteStages];
   const perTokenHopBytes =
     stages.length > 1
-      ? // one hop per stage boundary — activationBytes lives in
-        // @unstable-legion/stage-runtime; inlined here (4 bytes/elem f32,
-        // 2 bytes/elem f16) to avoid a circular import back into
-        // stagePlanner.ts's dependency, matching that module's own
-        // constant rather than re-deriving it differently.
-        (wireDtype === 'f16' ? 2 : 4) * opts.nEmbd * (stages.length - 1)
+      ? // one hop per stage boundary — legionActivationBytes (this repo's
+        // own dispatcher, handling f32/f16 via @unstable-legion/stage-runtime
+        // and i8 locally) avoids a circular import back into
+        // stagePlanner.ts's dependency while matching that module's own
+        // byte-cost math exactly.
+        legionActivationBytes(1, opts.nEmbd, wireDtype) * (stages.length - 1)
       : 0;
 
   const allAdPeerIds = new Set(topology.segments.flatMap((s) => s.candidates.map((c) => c.peerId)));
@@ -662,7 +663,7 @@ export function planThinDriverRoute(
     });
   });
 
-  const perTokenHopBytes = (wireDtype === 'f16' ? 2 : 4) * opts.nEmbd * remoteStages.length;
+  const perTokenHopBytes = legionActivationBytes(1, opts.nEmbd, wireDtype) * remoteStages.length;
   const allAdPeerIds = new Set(topology.segments.flatMap((s) => s.candidates.map((c) => c.peerId)));
   const unselectedPeerIds = [...allAdPeerIds].filter((id) => !selectedPeerIds.has(id));
 

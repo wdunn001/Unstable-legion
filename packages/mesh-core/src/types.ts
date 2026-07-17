@@ -199,7 +199,7 @@ export interface MeshLoadedStage {
    * is treated as `f16` (the current streaming default) at ingestion —
    * see `collectCommunalAds`. Consumers must not assume it is present.
    */
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   /** Lane ceiling committed at load time (see `chooseMaxSessions`). */
   maxSessions: number;
   /** Sessions currently occupying a lane on THIS stage. */

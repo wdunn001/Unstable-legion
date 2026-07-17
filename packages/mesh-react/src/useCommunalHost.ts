@@ -123,7 +123,7 @@ export interface UseCommunalHostOptions {
    * capable-driver body-host regime). See `docs/OPTIONAL-STAGE0.md`. */
   supportThinDrivers?: boolean;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   /** Layer-package manifest URL (Phase C artifact slicing —
    * `fragmentsForRange`). Absent -> `fallbackShardUrls()` (Phase A/B
    * full.gguf-with-runtime-filter convention) is used instead, and the

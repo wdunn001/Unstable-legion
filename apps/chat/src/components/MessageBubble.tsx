@@ -37,7 +37,22 @@ export function MessageBubble(props: MessageBubbleProps) {
             <span aria-hidden="true">•</span> reconnected via another host
           </div>
         )}
+        {!isUser && message.tokPerSec !== undefined && (
+          <div
+            className="msg-tokrate"
+            title="Decode throughput for this reply — tokens generated per second across the mesh pipeline (first token to last)."
+          >
+            <span aria-hidden="true">⚡</span> {formatTokPerSec(message.tokPerSec)} tok/s
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+/** One decimal below 10 tok/s (where the difference reads), whole numbers
+ * above — a browser-mesh split route runs single-digit tok/s, so the
+ * fractional digit is the informative part of the metric here. */
+function formatTokPerSec(v: number): string {
+  return v < 10 ? v.toFixed(1) : Math.round(v).toString();
 }
