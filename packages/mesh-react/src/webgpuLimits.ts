@@ -100,30 +100,68 @@ function deriveGpuName(
 }
 
 /**
- * OPTIONAL-STAGE0 — the minimum WebGPU `maxStorageBufferBindingSize` a
- * device needs before it can usefully host EVEN stage 0 (embeddings + the
- * first `driverLayers` layers of the smallest deployed model). Below this, a
- * device is a "thin driver": it can still tokenize/detokenize on the CPU
- * (wasm, no GPU) and drive a chat, but it must route its first stage to a
- * remote isFirst host. The floor is deliberately conservative — one storage
- * buffer binding must hold a stage-0 weight slab; ~128 MiB is the empirical
- * lower bound for the q8_0 demo model's stage-0 slice. See
- * `docs/OPTIONAL-STAGE0.md`. */
+ * OPTIONAL-STAGE0 — the DEMO/TEST-MODEL floor: the minimum WebGPU
+ * `maxStorageBufferBindingSize` the tiny `qwen3-0.6b-q8_0` test model needs
+ * to host even stage 0. This is NOT a real per-model capability check — it
+ * was calibrated to the 0.6B test model's ~128MB stage-0 weight slab, and a
+ * production model's single largest storage-buffer allocation (the shared
+ * embeddings tensor) can be several times bigger (350MB for the shipped
+ * Qwen3-8B channel, ~430MB for a 14B one) — a phone whose adapter reports
+ * 128MB `maxStorageBufferBindingSize` clears THIS floor and then crashes on
+ * the real allocation. Kept as-is (some tests/callers still import it as a
+ * flat constant) — a real app should classify with `isThinDriverForModel`
+ * against `requiredStorageBufferBytesForManifest(manifest)` for the
+ * CURRENT channel instead. See `docs/OPTIONAL-STAGE0.md`. */
 export const USABLE_STAGE_HOST_MIN_BYTES = 128 * 1024 * 1024;
 
 /**
  * Classify a `detectWebGpuLimits()` result as a THIN driver (can't host any
- * stage) vs. a capable one. Thin iff WebGPU is absent/unusable OR the
- * adapter's `maxStorageBufferBindingSize` is below `USABLE_STAGE_HOST_MIN_BYTES`.
- * A thin driver hosts NO local stage-0 worker and relies on a remote isFirst
- * communal host (see `useCommunalChat`'s `thinDriver` mode). Pure — no probe,
- * so a caller can classify a cached result without re-hitting the adapter. */
+ * stage) vs. a capable one, against a FLAT byte floor. Thin iff WebGPU is
+ * absent/unusable OR the adapter's `maxStorageBufferBindingSize` is below
+ * `minBytes`. FALLBACK ONLY — `minBytes` defaults to
+ * `USABLE_STAGE_HOST_MIN_BYTES` (the demo/test-model floor, see its doc
+ * comment), which under-classifies a real production model on a
+ * memory-constrained device. The real per-model decision is
+ * `isThinDriverForModel` against `requiredStorageBufferBytesForManifest
+ * (manifest)` for the channel actually in use. Kept for existing callers/
+ * tests that don't (yet) have a manifest in hand. A thin driver hosts NO
+ * local stage-0 worker and relies on a remote isFirst communal host (see
+ * `useCommunalChat`'s `thinDriver`/`textRelay` modes). Pure — no probe, so
+ * a caller can classify a cached result without re-hitting the adapter. */
 export function isThinDriver(
   result: WebGpuLimitsResult,
   minBytes: number = USABLE_STAGE_HOST_MIN_BYTES,
 ): boolean {
   if (!result.ok || !result.limits) return true;
   return result.limits.maxStorageBufferBindingSize < minBytes;
+}
+
+/**
+ * OPTIONAL-STAGE0 Phase 2 — derives the required single-storage-buffer
+ * bytes to host stage 0 for a GIVEN model's parsed manifest: the shared
+ * embeddings artifact's `tensor_bytes` (the largest single GPU buffer a
+ * stage-0 host must bind in one `maxStorageBufferBindingSize`-limited
+ * allocation — see `@unstable-legion/stage-runtime`'s `LayerPackageManifest`,
+ * structurally compatible with the narrower shape accepted here so a caller
+ * can pass either the full parsed manifest or a minimal test fixture).
+ * Self-describing per model/channel — NOT a hardcoded constant, so a 14B (or
+ * any future) channel classifies correctly without a code change. */
+export function requiredStorageBufferBytesForManifest(manifest: { shared: { embeddings: { tensor_bytes: number } } }): number {
+  return manifest.shared.embeddings.tensor_bytes;
+}
+
+/**
+ * OPTIONAL-STAGE0 Phase 2 — the REAL, model-aware thin-driver classifier an
+ * app should use instead of the flat `isThinDriver`/`USABLE_STAGE_HOST_MIN_BYTES`
+ * floor (see that export's doc comment for why the flat floor under-classifies
+ * a real production model). Thin iff WebGPU is absent/unusable OR the
+ * adapter's `maxStorageBufferBindingSize` is below `requiredStorageBufferBytes`
+ * — typically `requiredStorageBufferBytesForManifest(manifest)` for the
+ * channel's CURRENT model. Pure — no probe, so a caller can classify a
+ * cached `detectWebGpuLimits()` result once the manifest resolves. */
+export function isThinDriverForModel(result: WebGpuLimitsResult, requiredStorageBufferBytes: number): boolean {
+  if (!result.ok || !result.limits) return true;
+  return result.limits.maxStorageBufferBindingSize < requiredStorageBufferBytes;
 }
 
 export async function detectWebGpuLimits(): Promise<WebGpuLimitsResult> {

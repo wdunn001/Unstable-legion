@@ -74,6 +74,8 @@ import {
   decodeStageFrameEnvelope,
   encodeStageControl,
   encodeStageFrameEnvelope,
+  extractIncrementalTextDelta,
+  INITIAL_TEXT_CURSOR,
   isStageControlFrame,
   makeStageLoadProgress,
   makeStagePong,
@@ -83,6 +85,7 @@ import {
   makeStageSessionBusy,
   makeStageStop,
   makeStageToken,
+  type IncrementalTextCursor,
   type MeshPeerCap,
   type Peer,
   type StageControlMessageFor,
@@ -92,7 +95,7 @@ import {
   type LegionActivationWireDecoder,
   type LegionActivationWireEncoder,
 } from '@unstable-legion/core';
-import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
+import { StageWorkerClient, dummyActivationFrame, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
@@ -388,6 +391,12 @@ interface PendingOpen {
   prevPeerId?: string;
   /** This host's pipeline position (driver-assigned). Default 1 (single remote). */
   stageIndex?: number;
+  /** TEXT-RELAY — see `stageControl.ts`'s `StageSessionOpenPayload.promptText`
+   * doc comment. Present only for `origin === 'session'`, and only when the
+   * driver requested it (a capable/token-id-thin driver never sets it). */
+  promptText?: string;
+  /** TEXT-RELAY — see `StageSessionOpenPayload.textOutput`'s doc comment. */
+  textOutput?: boolean;
 }
 
 interface HostSessionState {
@@ -423,6 +432,26 @@ interface HostSessionState {
   modelId: string;
   stageIndex: number;
   wireDtype: 'f32' | 'f16' | 'i8';
+  /** TEXT-RELAY: real token ids this host tokenized server-side from the
+   * open's `promptText` (isFirst stage only). Consumed — and cleared — by
+   * the very first prefill frame (`frame.seq === 0`) for this session,
+   * overriding whatever placeholder `tokens`/activation that frame itself
+   * carried (a textRelay driver has no local tokenizer, so it can't
+   * populate a real sideband). `undefined` for every non-textRelay session,
+   * and for a textRelay session once its first prefill has consumed it. */
+  pendingPromptTokens?: number[];
+  /** TEXT-RELAY: when true (this host was opened with `textOutput: true` —
+   * expected only on the FINAL stage), every sampled token also gets
+   * incrementally detokenized and streamed back via `stage.token.text`. */
+  textOutput: boolean;
+  /** TEXT-RELAY: every token THIS stage has sampled for this session so far
+   * (final-stage sessions with `textOutput` only) — redecoded in full on
+   * each step (see `incrementalTextStream.ts`'s doc comment for why a
+   * per-token-isolated decode is unsound). */
+  sampledTokens?: number[];
+  /** TEXT-RELAY: the incremental-streaming cursor for this session (see
+   * `extractIncrementalTextDelta`). */
+  textCursor?: IncrementalTextCursor;
 }
 
 interface LoadedConfig {
@@ -1026,6 +1055,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           decoder = createLegionActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
           awaitingHeader = false;
         }
+        // TEXT-RELAY: tokenize `promptText` server-side NOW, at accept time —
+        // only meaningful on the isFirst stage (the only one that embeds from
+        // token ids at all). A driver with no local tokenizer can't populate
+        // the first `sf` frame's `tokens` sideband itself; this session's
+        // very first prefill frame will use these ids instead (see
+        // onStageFrame below), discarding whatever placeholder that frame
+        // carries. A tokenize failure here fails the whole open (caught by
+        // this function's outer try/catch, same as any other open failure) —
+        // there is no way to serve a session whose prompt can't be tokenized.
+        let pendingPromptTokens: number[] | undefined;
+        if (req.promptText !== undefined && client.isFirst) {
+          pendingPromptTokens = await client.tokenize(req.promptText, true);
+        }
         const state: HostSessionState = {
           sessionId: req.sessionId,
           driverPeerId: req.peerId,
@@ -1051,6 +1093,8 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           modelId: req.modelId,
           stageIndex: req.stageIndex ?? 1,
           wireDtype: req.wireDtype,
+          pendingPromptTokens,
+          textOutput: req.textOutput ?? false,
         };
         hostSessions.set(req.sessionId, state);
         syncPublicState();
@@ -1249,6 +1293,8 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         nextPeerId: msg.payload.nextPeerId,
         prevPeerId: msg.payload.prevPeerId,
         stageIndex: msg.payload.stageIndex,
+        promptText: msg.payload.promptText,
+        textOutput: msg.payload.textOutput,
       });
     }
 
@@ -1308,7 +1354,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           }
           if (!state.decoder) return;
           const frame = state.decoder.decodeFrameBytes(bytes);
-          const wireFrame: WireActivationFrame = {
+          let wireFrame: WireActivationFrame = {
             dtype: 'f32',
             layout: 'token-major',
             tokenCount: frame.tokenCount,
@@ -1317,9 +1363,23 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               frame.activations.byteOffset + frame.activations.byteLength,
             ) as ArrayBuffer,
           };
-          const tokens = frame.tokens ?? [];
-          const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
+          let tokens: readonly number[] = frame.tokens ?? [];
           const isPrefill = frame.seq === 0;
+          // TEXT-RELAY: this session's very first prefill frame — if it was
+          // opened with `promptText` (isFirst stage only), the REAL token ids
+          // came from tokenizing that text server-side at open time (see
+          // openNow above), not from this frame's own placeholder
+          // tokens/activation (a textRelay driver has no local tokenizer to
+          // populate them with). Override once, then clear so every later
+          // frame on this session (real decode-step token ids, always known
+          // to the driver via the previous stage.token reply) uses the
+          // ordinary path unchanged.
+          if (isPrefill && state.pendingPromptTokens) {
+            tokens = state.pendingPromptTokens;
+            state.pendingPromptTokens = undefined;
+            wireFrame = dummyActivationFrame(tokens.length, client.nEmbd);
+          }
+          const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
           const result = isPrefill
             ? await client.prefill(tokens as number[], positions, wireFrame, sessionId)
             : await client.decode((tokens[0] as number) ?? 0, wireFrame, sessionId);
@@ -1368,12 +1428,34 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           state.decodedCount += 1;
           syncPublicState();
           const isEog = await client.tokenIsEog(result.predictedToken);
+          // TEXT-RELAY: this session's driver has no local tokenizer — stream
+          // the incremental decoded TEXT alongside the numeric token id
+          // instead of leaving detokenization to the driver. Redecodes the
+          // WHOLE growing token sequence every step (never a single token in
+          // isolation — see `incrementalTextStream.ts`'s doc comment for why
+          // that would be unsound) and buffers any still-incomplete trailing
+          // multi-byte character until a later step completes it; `flush` on
+          // eos so nothing sampled is silently dropped if generation ends
+          // mid-sequence.
+          let textDelta: string | undefined;
+          if (state.textOutput) {
+            state.sampledTokens = state.sampledTokens ?? [];
+            state.sampledTokens.push(result.predictedToken);
+            const fullText = await client.detokenize(state.sampledTokens);
+            const { delta, cursor } = extractIncrementalTextDelta(fullText, state.textCursor ?? INITIAL_TEXT_CURSOR, {
+              flush: isEog,
+            });
+            state.textCursor = cursor;
+            if (delta.length > 0) textDelta = delta;
+          }
           // Reply to the DRIVER, not the inbound sender — under relay the
           // frame arrived from the previous hop, but the token stream belongs
           // to the driver's session. (For a 2-stage session prevPeerId ===
           // driverPeerId, so this is unchanged.)
           await meshPeer.sendTool(
-            encodeStageControl(makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined)),
+            encodeStageControl(
+              makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined, textDelta),
+            ),
             state.driverPeerId,
           );
           if (state.decodedCount % progressEveryN === 0) {

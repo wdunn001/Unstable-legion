@@ -153,7 +153,17 @@ export interface DriverStageSessionOptions {
 export type StageOrchestratorEvent =
   | { type: 'planCreated'; plan: StagePlan }
   | { type: 'stageReady'; stageIndex: number; peerId: string }
-  | { type: 'token'; token: number; seq: number; done: boolean }
+  | {
+      type: 'token';
+      token: number;
+      seq: number;
+      done: boolean;
+      /** TEXT-RELAY only — see `CommunalDriverSessionOptions.textRelay`.
+       * The incremental decoded-text delta the isFinal host attached to
+       * this `stage.token` (absent when textRelay is off, or when this
+       * step didn't complete a safely-emittable chunk). */
+      text?: string;
+    }
   | { type: 'progress'; stageIndex: number; tokensDecoded: number }
   /** A host is still LOADING a stage (shard download / native open / warm-up)
    * in answer to our stage.load/session.open — surfaced so the chat UI can
@@ -741,6 +751,43 @@ export interface CommunalDriverSessionOptions {
    * forked function — churn/replan/attach-order all behave identically.
    * Default `false`. */
   thinDriver?: boolean;
+  /**
+   * TEXT-RELAY (Phase 2 of OPTIONAL-STAGE0, docs/OPTIONAL-STAGE0.md):
+   * extends `thinDriver` for a device that holds NO tokenizer at all (not
+   * even the CPU-only wasm one `thinTokenizer` needs) — memory-constrained
+   * phones that can't spare the tokenizer runtime's own footprint. Only
+   * meaningful together with `thinDriver: true` (a capable driver runs a
+   * real local stage-0 and has real token ids to work with; this flag has
+   * nothing to change there).
+   *
+   * Input: the driver never calls `localHooks.tokenize` — it ships the raw
+   * PROMPT TEXT to the isFirst remote host via `stage.session.open`'s
+   * `promptText` field (see `stageControl.ts`), which tokenizes it
+   * server-side with its own vocab and uses the result for this session's
+   * first prefill. `promptTokens` therefore stays empty for the life of a
+   * textRelay session — `tokenHistory().promptTokens` is not meaningful in
+   * this mode.
+   *
+   * Output: the isFinal host detokenizes every sampled token and streams
+   * the incremental decoded text back via `stage.token`'s `text` field
+   * (see the `'token'` event's `text`); this session accumulates it
+   * internally and resends `prompt + accumulatedText` as the NEW
+   * `promptText` on a continue-from-history replan (the new isFirst host
+   * re-tokenizes the reconstructed history — detok→retok is not always
+   * token-identical for a BPE tokenizer; a known, accepted minor drift on
+   * the replan path only, not solved perfectly here). `generatedTokens`
+   * (and therefore `tokenHistory()`/`result().tokens`) still fills with the
+   * real numeric token ids the isFinal host echoes back — those drive the
+   * decode loop exactly as in the token-id thin path; only the DRIVER's
+   * own tokenize/detokenize calls are elided.
+   *
+   * TRUST: same posture as `thinDriver`'s token-id path, made MORE literal —
+   * the PROMPT TEXT itself (not just token ids, which already trivially
+   * reveal it) leaves the device to the remote first host. The app MUST
+   * surface this (see `docs/TRUST.md` + the apps/chat trust UI). Default
+   * `false`.
+   */
+  textRelay?: boolean;
 }
 
 /**
@@ -786,6 +833,14 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   const replanJitterMs = opts.replanJitterMs ?? 1500;
   const priorityScore = opts.priorityScore ?? (() => 0);
   const thinDriver = opts.thinDriver ?? false;
+  // TEXT-RELAY only ever makes sense layered on top of thinDriver (see this
+  // option's doc comment) — guard against a caller setting it alone so a
+  // misconfigured session fails loudly at construction instead of silently
+  // running the capable local-stage path while also trying to ship promptText.
+  const textRelay = opts.textRelay ?? false;
+  if (textRelay && !thinDriver) {
+    throw new Error('runCommunalDriverSession: textRelay requires thinDriver: true');
+  }
 
   // OPTIONAL-STAGE0: in thin mode the local hooks never touch a stage-0
   // worker — `prefill`/`decode` return a zero-filled activation of the wire
@@ -812,6 +867,11 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   let restartCountValue = 0;
   let promptTokens: number[] = [];
   const generatedTokens: number[] = [];
+  // TEXT-RELAY: every `stage.token.text` delta received so far, in order —
+  // reused as `prompt + accumulatedText` on a continue-from-history replan
+  // (the new isFirst host's `promptText` to re-tokenize). Unused when
+  // textRelay is off.
+  let accumulatedText = '';
   let aborted = false;
   let abortReason: string | undefined;
   let encoder: LegionActivationWireEncoder | undefined;
@@ -866,7 +926,19 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       const decoded = early ?? decodeStageControl(frame);
       if (!decoded) return;
       if (decoded.kind === 'stage.token') {
-        emitter.emit({ type: 'token', token: decoded.payload.token, seq: decoded.payload.seq, done: decoded.payload.done });
+        // TEXT-RELAY: accumulate every incremental text delta the isFinal
+        // host attaches (see StageTokenPayload.text) — reused as the
+        // `promptText` sent to the isFirst host on a continue-from-history
+        // replan. A no-op string concat when textRelay is off (`text` is
+        // never populated by an old-bundle/non-textRelay host).
+        if (decoded.payload.text) accumulatedText += decoded.payload.text;
+        emitter.emit({
+          type: 'token',
+          token: decoded.payload.token,
+          seq: decoded.payload.seq,
+          done: decoded.payload.done,
+          ...(decoded.payload.text !== undefined ? { text: decoded.payload.text } : {}),
+        });
       } else if (decoded.kind === 'stage.progress') {
         const stageIndex = route.plan.stages.find((s) => s.peerId === peerId)?.stageIndex ?? -1;
         emitter.emit({ type: 'progress', stageIndex, tokensDecoded: decoded.payload.tokensDecoded });
@@ -934,6 +1006,11 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     stageIndex: number,
     candidates: readonly CommunalHostStageAd[],
     relay: { isFinal: boolean; prevPeerId: string; nextPeerId?: string },
+    /** TEXT-RELAY only — the prompt (or reconstructed history) text to send
+     * on THIS stage's open. Only ever passed for `stageIndex === 1` by
+     * `startCommunalSession` below; `undefined` everywhere else, including
+     * whenever textRelay is off. */
+    promptText?: string,
   ): Promise<Attached> {
     let lastErr: unknown;
     for (const cand of candidates) {
@@ -964,6 +1041,12 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           // from the PREVIOUS relay's own encoder, so we omit the header and
           // the host takes it inline (awaitingHeader). See StageSessionOpenPayload.
           ...(stageIndex === 1 ? { wireHeader: bytesToBase64(candEncoder.headerBytes()) } : {}),
+          // TEXT-RELAY: promptText only ever accompanies stage 1's open (the
+          // isFirst host); textOutput accompanies whichever hop is THIS
+          // route's final stage (stage 1 itself in a 2-total-stage route, a
+          // later hop in a multi-stage one). Both absent when textRelay is off.
+          ...(promptText !== undefined ? { promptText } : {}),
+          ...(textRelay && relay.isFinal ? { textOutput: true } : {}),
           stageIndex,
           isFinal: relay.isFinal,
           prevPeerId: relay.prevPeerId,
@@ -1032,7 +1115,12 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     return stage1.peerId;
   }
 
-  async function startCommunalSession(r: CommunalRoute): Promise<void> {
+  async function startCommunalSession(
+    r: CommunalRoute,
+    /** TEXT-RELAY only — see `attachOneStage`'s `promptText` param. Ignored
+     * (never read) unless `textRelay` is on. */
+    promptTextForStage1?: string,
+  ): Promise<void> {
     const remoteStages = [...r.plan.stages].filter((s) => s.stageIndex > 0).sort((a, b) => b.stageIndex - a.stageIndex);
     if (remoteStages.length === 0) throw new Error('communal route has no remote stages to attach');
     currentRemotePeerIds = new Set();
@@ -1059,7 +1147,12 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     for (const stage of remoteStages) {
       const candidates = r.attachOrder.get(stage.stageIndex) ?? [];
       if (candidates.length === 0) throw new Error(`route has no attach candidates for stage ${stage.stageIndex}`);
-      const attached = await attachOneStage(stage.stageIndex, candidates, relayFor(stage.stageIndex));
+      const attached = await attachOneStage(
+        stage.stageIndex,
+        candidates,
+        relayFor(stage.stageIndex),
+        stage.stageIndex === 1 ? promptTextForStage1 : undefined,
+      );
       currentRemotePeerIds.add(attached.peerId);
       attachedByStage.set(stage.stageIndex, attached);
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: attached.peerId });
@@ -1119,6 +1212,33 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     emitter.emit({ type: 'replan', lostPeerId, graceful, plan: newRoute.plan, restartCount: restartCountValue });
 
     try {
+      if (textRelay) {
+        // TEXT-RELAY: reconstruct the "history" as TEXT — prompt + every
+        // text delta decoded so far (see `accumulatedText`'s doc comment) —
+        // and send it as this attach's `promptText`. The new isFirst host
+        // tokenizes it server-side with its own vocab and uses THAT for the
+        // session's first prefill; `promptTokens` is never populated in
+        // this mode (no local tokenizer exists to populate it) and
+        // `generatedTokens` alone would be missing the original prompt, so
+        // — unlike the token-id paths below — there is no local history to
+        // chunk-reprefill. A single placeholder frame is enough to trigger
+        // the host's (already-tokenized) prefill; its own tokens/activation
+        // are ignored by a host that opened this session with `promptText`
+        // (see useStageHost.ts).
+        await startCommunalSession(newRoute, opts.prompt + accumulatedText);
+        // `tokens` is omitted (not `[]`) — the wire codec requires
+        // `tokens.length === derived tokenCount` whenever `tokens` is
+        // PRESENT, and this placeholder's tokenCount is 1 (a single dummy
+        // activation row), not 0. The isFirst host ignores this frame's
+        // tokens/activation entirely anyway (it was opened with
+        // `promptText`, see useStageHost.ts) — there is no real sideband to
+        // carry here.
+        const frame = encoder!.encodeFrame(new Float32Array(nEmbd), { seq: 0, posStart: 0, done: false });
+        const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
+        generatedTokens.push(tok.token);
+        void runDecodeLoop(1);
+        return;
+      }
       await startCommunalSession(newRoute);
       // Continue-from-history: re-prefill in <=256-tok chunks (CHAOS.md /
       // the plan doc's churn requirement) rather than one unbounded
@@ -1200,11 +1320,21 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
 
   void (async () => {
     try {
-      promptTokens = await hooks.tokenize(opts.prompt);
-      await startCommunalSession(route);
+      // TEXT-RELAY: no local tokenizer exists to populate `promptTokens` —
+      // it stays empty for the life of the session (see this option's doc
+      // comment); the raw prompt TEXT goes to the isFirst host instead, via
+      // `startCommunalSession`'s `promptTextForStage1` (threaded into
+      // `stage.session.open`, see `attachOneStage`).
+      promptTokens = textRelay ? [] : await hooks.tokenize(opts.prompt);
+      await startCommunalSession(route, textRelay ? opts.prompt : undefined);
       const positions = promptTokens.map((_, i) => i);
       const { activation } = await hooks.prefill(promptTokens, positions);
-      const frame = encoder!.encodeFrame(activation, { seq: 0, posStart: 0, tokens: promptTokens, done: false });
+      // TEXT-RELAY: `tokens` is omitted (not `[]`) — see the identical note
+      // in `triggerReplan`'s textRelay branch. `activation` here is a single
+      // dummy row (tokenCount=1; `hooks.prefill`'s `Math.max(1, tokens.length)`
+      // guard), so an empty `tokens` array would fail the wire codec's
+      // length-must-match-tokenCount check.
+      const frame = encoder!.encodeFrame(activation, { seq: 0, posStart: 0, ...(textRelay ? {} : { tokens: promptTokens }), done: false });
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {

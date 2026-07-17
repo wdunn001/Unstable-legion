@@ -115,6 +115,19 @@ export interface StageTokenPayload {
   seq: number;
   done: boolean;
   finishReason?: string;
+  /**
+   * TEXT-RELAY (additive, v1-safe — absent ⇒ unchanged pre-textRelay
+   * behavior, numeric `token` id only). Set by an `isFinal` host that was
+   * opened with `StageSessionOpenPayload.textOutput: true` — the
+   * INCREMENTAL decoded-text delta for this step, already UTF-8-safe
+   * (never splits a multi-byte character or holds a dangling partial
+   * grapheme — see mesh-react's `useStageHost.ts` / `incrementalTextStream.ts`'s
+   * buffering). A driver with no local tokenizer accumulates these deltas
+   * instead of calling `detokenize()` itself. Can be an empty string or
+   * absent on a step whose token didn't complete a safely-emittable
+   * chunk (the host is holding it back pending more tokens).
+   */
+  text?: string;
 }
 
 /**
@@ -166,6 +179,34 @@ export interface StageSessionOpenPayload {
    * for stage 1, the previous relay for a hop ≥2. Without it the host's
    * spoof guard (sender must equal driverPeerId) drops relayed frames. */
   prevPeerId?: string;
+  /**
+   * TEXT-RELAY (additive, v1-safe — absent ⇒ unchanged pre-textRelay
+   * behavior: the host trusts the first `sf` frame's own `tokens`
+   * sideband, as always). The prompt — or, on a continue-from-history
+   * reattach, the prompt plus everything generated so far — as RAW TEXT,
+   * for a driver with no local tokenizer at all (memory-constrained
+   * devices that can't hold a wasm tokenizer runtime). Only ever sent to
+   * the FIRST remote stage (`stageIndex === 1`): the isFirst host
+   * tokenizes it server-side with its own vocab (every stage's shards
+   * preserve full tokenizer metadata regardless of which tensors were
+   * sliced — see stage-runtime's `fragmentsForRange` doc) and uses the
+   * result for this session's very first prefill, IN PLACE OF the
+   * placeholder `tokens` sideband the driver's first `sf` frame carries
+   * (a driver with no tokenizer can't populate that sideband itself — see
+   * `stageOrchestrator.ts`'s `textRelay` mode). Continue-from-history
+   * detok→retok is not always token-identical for a BPE tokenizer — a
+   * known, accepted minor drift on the (rare) replan path, not solved
+   * perfectly here.
+   */
+  promptText?: string;
+  /**
+   * TEXT-RELAY (additive, v1-safe — absent/false ⇒ unchanged behavior,
+   * numeric token id only). When true, this host — expected to be
+   * `isFinal` for this session — DETOKENIZES every token it samples and
+   * streams the incremental decoded text back via `stage.token`'s `text`
+   * field, in addition to the numeric `token` id it always returns.
+   */
+  textOutput?: boolean;
 }
 
 export interface StageSessionAcceptPayload {
@@ -356,6 +397,7 @@ export function isStageTokenPayload(x: unknown): x is StageTokenPayload {
   if (!Number.isInteger(x.seq)) return false;
   if (typeof x.done !== 'boolean') return false;
   if (x.finishReason !== undefined && typeof x.finishReason !== 'string') return false;
+  if (x.text !== undefined && typeof x.text !== 'string') return false;
   return true;
 }
 
@@ -376,6 +418,9 @@ export function isStageSessionOpenPayload(x: unknown): x is StageSessionOpenPayl
   if (x.isFinal !== undefined && typeof x.isFinal !== 'boolean') return false;
   if (x.nextPeerId !== undefined && (typeof x.nextPeerId !== 'string' || !x.nextPeerId)) return false;
   if (x.prevPeerId !== undefined && (typeof x.prevPeerId !== 'string' || !x.prevPeerId)) return false;
+  // TEXT-RELAY fields (all optional, additive):
+  if (x.promptText !== undefined && typeof x.promptText !== 'string') return false;
+  if (x.textOutput !== undefined && typeof x.textOutput !== 'boolean') return false;
   return true;
 }
 
@@ -518,12 +563,21 @@ export function makeStageToken(
   seq: number,
   done: boolean,
   finishReason?: string,
+  /** TEXT-RELAY — see `StageTokenPayload.text`'s doc comment. */
+  text?: string,
 ): StageControlMessageFor<'stage.token'> {
   return {
     kind: 'stage.token',
     callId: stageTokenCallId(sessionId, seq),
     sessionId,
-    payload: { sessionId, token, seq, done, ...(finishReason !== undefined ? { finishReason } : {}) },
+    payload: {
+      sessionId,
+      token,
+      seq,
+      done,
+      ...(finishReason !== undefined ? { finishReason } : {}),
+      ...(text !== undefined ? { text } : {}),
+    },
   };
 }
 

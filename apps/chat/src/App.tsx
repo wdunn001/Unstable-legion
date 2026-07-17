@@ -18,6 +18,7 @@ import {
   MeshProvider,
   StandingLedger,
   bindPriorityScore,
+  isThinDriverForModel,
   mergeRelayUrls,
   sanitizeWeightBudget,
   useAudioKeepalive,
@@ -51,6 +52,7 @@ import { useHostingConsent } from './hooks/useHostingConsent.js';
 import { useToolContribution, type UseToolContributionHandle } from './hooks/useToolContribution.js';
 import { MAX_TOOL_ROUNDS, buildToolResponsePayload, collectMeshTools, stripToolMarkup } from './toolChat.js';
 import { useGpuDetection } from './hooks/useGpuDetection.js';
+import { useModelCapability } from './hooks/useModelCapability.js';
 import { useTheme, type UseThemeHandle } from './hooks/useTheme.js';
 import { resolveChatModelConfig } from './chatModelSource.js';
 import { formatVramLabel } from './gpuCatalog.js';
@@ -256,6 +258,18 @@ function Dashboard(props: {
   // apps/chat wants the GPU NAME, which `useCommunalHost` never surfaces).
   const gpuDetection = useGpuDetection();
 
+  // OPTIONAL-STAGE0 Phase 2 — per-model (not flat-128MB) thin/text-relay
+  // classification: this channel's manifest-derived stage-0 storage-buffer
+  // requirement, weighed against THIS device's adapter limit. `undefined`
+  // while the very first manifest resolution is in flight — treated as
+  // "not yet decided, assume capable" so a fast desktop's first render
+  // isn't spuriously flagged thin; `chat.start()` only runs on user
+  // interaction, well after both probes resolve in practice.
+  const modelCapability = useModelCapability(modelConfig.manifestUrl);
+  const isThinDevice =
+    modelCapability.requiredStorageBufferBytes !== undefined &&
+    isThinDriverForModel(gpuDetection, modelCapability.requiredStorageBufferBytes);
+
   const communal = useCommunalHost({
     enabled: hostingEnabled,
     peer,
@@ -316,6 +330,13 @@ function Dashboard(props: {
     hostingConsent.maxLayersOverride !== undefined ? layersHosted * modelConfig.avgLayerBytes : weightBudgetBytes;
   const capacitySummaryLabel = `Hosting up to ${layersHosted} of ${communalLayerCount} layers (~${formatVramLabel(effectiveApproxBytes)})`;
 
+  // OPTIONAL-STAGE0 Phase 2 — a device that fails the per-model capability
+  // check (`isThinDevice`) routes text-relay: no local stage-0 worker AND no
+  // local tokenizer worker (none is constructed anywhere in this component —
+  // `thinTokenizer` is deliberately never wired here). A capable device
+  // (the common case, `isThinDevice: false`) gets `thinDriver: false,
+  // textRelay: false` — byte-for-byte today's behavior, since those are
+  // `useCommunalChat`'s own defaults.
   const chat = useCommunalChat({
     peer,
     createStageWorker,
@@ -326,6 +347,8 @@ function Dashboard(props: {
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
     wireDtype: modelConfig.wireDtype,
+    thinDriver: isThinDevice,
+    textRelay: isThinDevice,
     priorityScore,
     standingLedger,
     telemetry: trackEvent,
@@ -800,7 +823,14 @@ function Dashboard(props: {
           }}
         />
       </div>
-      {trustModal && <TrustInterstitial isHostSetChange={ackedHostKey !== null} onAcknowledge={handleAcknowledge} />}
+      {trustModal && (
+        <TrustInterstitial
+          isHostSetChange={ackedHostKey !== null}
+          thinDriver={isThinDevice}
+          textRelay={isThinDevice}
+          onAcknowledge={handleAcknowledge}
+        />
+      )}
     </div>
   );
 }

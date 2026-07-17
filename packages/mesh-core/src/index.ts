@@ -103,6 +103,14 @@ export {
   type StageSessionBusyPayload,
 } from './stageControl.js';
 
+// ── TEXT-RELAY: incremental UTF-8-safe text streaming (pure) ──────────
+export {
+  extractIncrementalTextDelta,
+  INITIAL_TEXT_CURSOR,
+  type IncrementalTextCursor,
+  type IncrementalTextDeltaResult,
+} from './incrementalTextStream.js';
+
 // ── M2: sessionId envelope for the `sf` activation-frame channel ────
 export {
   encodeStageFrameEnvelope,

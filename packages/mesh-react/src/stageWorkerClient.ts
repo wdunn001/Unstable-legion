@@ -189,7 +189,20 @@ export class StageWorkerClient {
   }
 }
 
-function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivationFrame {
+/**
+ * A zero-filled placeholder activation frame of the given shape — used
+ * anywhere a caller must hand the wire codec/worker protocol AN activation
+ * even though the receiving stage is known to ignore its content (an isFirst
+ * stage's embedding step, or `warmUpStageWorker`'s throwaway dispatch below).
+ * Exported for `useStageHost.ts`'s TEXT-RELAY host-side prefill override
+ * (see `stageControl.ts`'s `StageSessionOpenPayload.promptText` doc
+ * comment): the host tokenizes `promptText` itself and must construct a
+ * correctly-shaped (tokenCount === its own real token count) placeholder to
+ * hand `client.prefill`, discarding the driver's own (differently-sized)
+ * placeholder — the wire codec would otherwise reject a `tokens` sideband
+ * whose length doesn't match the activation's derived tokenCount.
+ */
+export function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivationFrame {
   return { dtype: 'f32', layout: 'token-major', tokenCount, payload: new ArrayBuffer(tokenCount * nEmbd * 4) };
 }
 

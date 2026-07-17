@@ -47,6 +47,18 @@ interface FakeSessionHost {
    * peer (simulating the real host's relay loop) instead of returning a
    * token. Undefined ⇒ terminate (the pre-relay behavior). */
   forwardTo?: string;
+  /** TEXT-RELAY: when set, a final-stage mock host attaches
+   * `text: emitText(seq)` to its `stage.token` reply, simulating the real
+   * host's incremental server-side detokenize. Undefined ⇒ numeric token
+   * id only (the pre-textRelay/default behavior). */
+  emitText?: (seq: number) => string;
+  /** TEXT-RELAY: the `promptText` this host received on its
+   * `stage.session.open`, captured for assertions. Undefined if none was
+   * sent (the pre-textRelay/default behavior) or no open has arrived yet. */
+  receivedPromptText?: string;
+  /** TEXT-RELAY: the `textOutput` flag this host received on its
+   * `stage.session.open`, captured for assertions. */
+  receivedTextOutput?: boolean;
 }
 
 function makeFakeSessionHost(peerId: string, overrides: Partial<FakeSessionHost> = {}): FakeSessionHost {
@@ -94,6 +106,10 @@ function createMockMesh(selfId: string) {
         } else if (decoded.kind === 'stage.session.open') {
           currentSessionId = decoded.sessionId;
           host.opensReceived += 1;
+          // TEXT-RELAY: capture what this open actually carried, regardless
+          // of which openBehavior branch runs below.
+          host.receivedPromptText = decoded.payload.promptText;
+          host.receivedTextOutput = decoded.payload.textOutput;
           if (host.openBehavior === 'accept') {
             const accept = makeStageSessionAccept(
               decoded.sessionId,
@@ -153,7 +169,7 @@ function createMockMesh(selfId: string) {
         // tracker ignores — real addressing (reply to driverPeerId) is a host
         // concern the mock doesn't model (it delivers to the one driver).
         const token = host.tokenFor(seq);
-        const msg = makeStageToken(currentSessionId, token, seq, false);
+        const msg = makeStageToken(currentSessionId, token, seq, false, undefined, host.emitText?.(seq));
         queueMicrotask(() => deliverToolToDriver(encodeStageControl(msg), targetId));
       }
     },
@@ -638,4 +654,182 @@ test('communal 3-stage relay: wireDtype=i8 propagates through the plan/opens and
   // Frames still relay end to end over the i8 route.
   const firstFrame = mesh.sentFrames[0]!;
   assert.equal(firstFrame.target, 'hostA', 'the first sf must go to stage 1, not the final stage');
+});
+
+// ── TEXT-RELAY (Phase 2 of OPTIONAL-STAGE0): promptText in, text deltas out ──
+
+function textRelayRouteFor(hostId: string): CommunalRoute {
+  // A single remote stage covering the WHOLE model [0, totalLayers) — isFirst
+  // AND isFinal, matching communalThinDriver.test.ts's thinRouteFor shape: a
+  // textRelay driver (like a thin driver) has no local stage 0 at all.
+  const plan: StagePlan = {
+    modelId: 'm',
+    totalLayers: 8,
+    stages: [
+      { stageIndex: 1, peerId: hostId, layerStart: 0, layerEnd: 8, isFirst: true, isFinal: true, capacityBytes: 0, assignedBytes: 0, cacheHitFraction: 0 },
+    ],
+    perTokenHopBytes: 32,
+    unselectedPeerIds: [],
+  };
+  return {
+    plan,
+    attachOrder: new Map([[1, [makeAd(hostId, { layerStart: 0, layerEnd: 8, includeEmbeddings: true, includeOutput: true })]]]),
+  };
+}
+
+test('communal textRelay: driver sends promptText (no local tokenize), isFirst host tokenizes, final host streams text deltas, session completes', async () => {
+  const mesh = createMockMesh('driver');
+  const WORDS = ['Hello', ', ', 'world', '!'];
+  const hostA = makeFakeSessionHost('hostA', {
+    tokenFor: (seq) => 3000 + seq,
+    emitText: (seq) => WORDS[seq] ?? '',
+  });
+  mesh.hosts.set('hostA', hostA);
+
+  let tokenizeCalled = false;
+  let detokenizeCalled = false;
+  let resetCalled = false;
+
+  const handle = runCommunalDriverSession({
+    peer: mesh.peer,
+    route: textRelayRouteFor('hostA'),
+    modelId: 'm',
+    prompt: 'hi there',
+    maxDecodeTokens: 4,
+    thinDriver: true,
+    textRelay: true,
+    localHooks: {
+      nEmbd: 8,
+      async tokenize() {
+        tokenizeCalled = true;
+        throw new Error('textRelay driver must never tokenize locally');
+      },
+      async detokenize() {
+        detokenizeCalled = true;
+        throw new Error('textRelay driver must never detokenize locally');
+      },
+      async reset() {
+        resetCalled = true;
+        throw new Error('textRelay driver must NOT reset a local stage');
+      },
+      async prefill() {
+        throw new Error('textRelay driver must NOT call local prefill');
+      },
+      async decode() {
+        throw new Error('textRelay driver must NOT call local decode');
+      },
+    },
+    replanRoute: () => null,
+    timeouts: FAST_TIMEOUTS,
+  });
+
+  const events: { type: string; text?: string }[] = [];
+  handle.on((ev) => events.push(ev as { type: string; text?: string }));
+
+  const result = await handle.result();
+  assert.equal(result.aborted, false, `unexpected abort: ${result.abortReason}`);
+  assert.equal(tokenizeCalled, false, 'the driver must never call its local tokenize in textRelay mode');
+  assert.equal(detokenizeCalled, false, 'the driver must never call its local detokenize in textRelay mode');
+  assert.equal(resetCalled, false, 'the driver must NOT reset a local stage in textRelay mode');
+
+  // The isFirst host received the RAW PROMPT TEXT, not pre-tokenized ids.
+  assert.equal(hostA.receivedPromptText, 'hi there');
+  // The final host was told to stream text deltas back.
+  assert.equal(hostA.receivedTextOutput, true);
+
+  // 4 generated tokens (real ids echoed back by the host); no local prompt
+  // tokens — textRelay never populates `promptTokens`.
+  assert.equal(result.tokens.length, 4);
+
+  // The driver's accumulated text (from stage.token.text deltas) is correct.
+  const tokenEvents = events.filter((e) => e.type === 'token');
+  assert.equal(tokenEvents.length, 4);
+  const accumulated = tokenEvents.map((e) => e.text ?? '').join('');
+  assert.equal(accumulated, WORDS.join(''));
+});
+
+test('communal textRelay: requires thinDriver:true — misuse throws synchronously', () => {
+  const mesh = createMockMesh('driver');
+  const hostA = makeFakeSessionHost('hostA');
+  mesh.hosts.set('hostA', hostA);
+
+  assert.throws(
+    () =>
+      runCommunalDriverSession({
+        peer: mesh.peer,
+        route: textRelayRouteFor('hostA'),
+        modelId: 'm',
+        prompt: 'hi',
+        maxDecodeTokens: 1,
+        thinDriver: false,
+        textRelay: true,
+        localHooks: makeMockLocalHooks(),
+        replanRoute: () => null,
+        timeouts: FAST_TIMEOUTS,
+      }),
+    /textRelay requires thinDriver/,
+  );
+});
+
+test('communal textRelay: host death mid-decode replans by resending prompt+accumulated-text as promptText', async () => {
+  const mesh = createMockMesh('driver');
+  const WORDS = ['one ', 'two ', 'three ', 'four '];
+  const hostA = makeFakeSessionHost('hostA', {
+    tokenFor: (seq) => 1000 + seq,
+    emitText: (seq) => WORDS[seq] ?? '',
+    dieAtSeq: 1, // dies after its first decode-step reply (the seq=0 prefill)
+  });
+  const hostB = makeFakeSessionHost('hostB', {
+    tokenFor: (seq) => 2000 + seq,
+    emitText: (seq) => `B${seq} `,
+  });
+  mesh.hosts.set('hostA', hostA);
+  mesh.hosts.set('hostB', hostB);
+
+  let replanCalls = 0;
+  const handle = runCommunalDriverSession({
+    peer: mesh.peer,
+    route: textRelayRouteFor('hostA'),
+    modelId: 'm',
+    prompt: 'hello world',
+    maxDecodeTokens: 4,
+    thinDriver: true,
+    textRelay: true,
+    localHooks: {
+      nEmbd: 8,
+      async tokenize() {
+        throw new Error('textRelay driver must never tokenize locally');
+      },
+      async detokenize() {
+        throw new Error('textRelay driver must never detokenize locally');
+      },
+      async reset() {
+        throw new Error('textRelay driver must NOT reset a local stage');
+      },
+      async prefill() {
+        throw new Error('textRelay driver must NOT call local prefill');
+      },
+      async decode() {
+        throw new Error('textRelay driver must NOT call local decode');
+      },
+    },
+    replanRoute: (lostPeerId) => {
+      replanCalls++;
+      assert.equal(lostPeerId, 'hostA');
+      return textRelayRouteFor('hostB');
+    },
+    timeouts: FAST_TIMEOUTS,
+    replanJitterMs: 0,
+  });
+
+  const result = await handle.result();
+  assert.equal(result.aborted, false, `unexpected abort: ${result.abortReason}`);
+  assert.equal(replanCalls, 1);
+  assert.equal(result.restartCount, 1);
+
+  // hostA got the ORIGINAL prompt as promptText.
+  assert.equal(hostA.receivedPromptText, 'hello world');
+  // hostB (the replacement) got prompt + whatever text had been decoded
+  // before hostA died — exactly one word ("one ") arrived before the death.
+  assert.equal(hostB.receivedPromptText, 'hello worldone ');
 });

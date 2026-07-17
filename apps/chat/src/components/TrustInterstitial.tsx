@@ -5,7 +5,7 @@
  * this component renders the SAME paragraphs verbatim
  * (`trustStatement.ts`), never a paraphrase.
  */
-import { TRUST_STATEMENT_PARAGRAPHS, THIN_DRIVER_TRUST_ADDENDUM } from '../trustStatement.js';
+import { TRUST_STATEMENT_PARAGRAPHS, THIN_DRIVER_TRUST_ADDENDUM, TEXT_RELAY_TRUST_ADDENDUM } from '../trustStatement.js';
 
 export interface TrustInterstitialProps {
   /** True when this is a re-prompt because the host set serving this
@@ -17,6 +17,12 @@ export interface TrustInterstitialProps {
    * `THIN_DRIVER_TRUST_ADDENDUM` — the stricter privacy notice — verbatim.
    * See `docs/OPTIONAL-STAGE0.md` / `docs/TRUST.md`. */
   thinDriver?: boolean;
+  /** OPTIONAL-STAGE0 Phase 2 — true when THIS device is additionally
+   * running in text-relay mode (no local tokenizer either — see
+   * `useCommunalChat`'s `textRelay` option). Shows
+   * `TEXT_RELAY_TRUST_ADDENDUM` IN ADDITION to `THIN_DRIVER_TRUST_ADDENDUM`
+   * (only meaningful together with `thinDriver`). */
+  textRelay?: boolean;
   onAcknowledge: () => void;
 }
 
@@ -38,6 +44,11 @@ export function TrustInterstitial(props: TrustInterstitialProps) {
         {props.thinDriver && (
           <p className="trust-interstitial-thin" role="note">
             <strong>{THIN_DRIVER_TRUST_ADDENDUM}</strong>
+          </p>
+        )}
+        {props.thinDriver && props.textRelay && (
+          <p className="trust-interstitial-text-relay" role="note">
+            <strong>{TEXT_RELAY_TRUST_ADDENDUM}</strong>
           </p>
         )}
         <button type="button" className="btn btn-primary trust-interstitial-ack" onClick={props.onAcknowledge}>

@@ -145,6 +145,27 @@ export interface UseCommunalChatOptions {
     detokenize: (tokens: readonly number[]) => Promise<string>;
     dispose?: () => Promise<void> | void;
   };
+  /**
+   * OPTIONAL-STAGE0 Phase 2 — run as a TEXT-RELAY driver: like `thinDriver`
+   * (no local stage-0), but this device holds NO TOKENIZER AT ALL — not even
+   * the CPU-only wasm one `thinTokenizer` needs (memory-constrained phones
+   * that can't spare its footprint). Implies thin routing internally (no
+   * `thinDriver: true` needed alongside it) and `thinTokenizer` is neither
+   * required nor used. The prompt is sent as raw TEXT to the remote isFirst
+   * host, which tokenizes it server-side; the remote isFinal host detokenizes
+   * its own output and streams incremental TEXT DELTAS back (see
+   * `UseCommunalChatHandle.text`) instead of this hook detokenizing
+   * `tokens` locally. `tokens` state still fills with the real numeric ids
+   * the mesh echoes back (driving the decode loop), but is not otherwise
+   * meaningful client-side in this mode. See
+   * `stageOrchestrator.ts`'s `CommunalDriverSessionOptions.textRelay` for
+   * the full protocol description.
+   *
+   * TRUST: same posture as `thinDriver`'s token-id path, made more literal —
+   * the PROMPT TEXT itself (not just token ids) leaves the device to the
+   * remote first host. The app MUST surface this. Default `false`.
+   */
+  textRelay?: boolean;
   /** Forwarded to `runCommunalDriverSession`. See `useStagePipeline`'s
    * identical option for why the defaults below are generous (cold WebGPU
    * shader compilation on a communal host's first real dispatch). */
@@ -287,6 +308,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     standingLedger,
     thinDriver = false,
     thinTokenizer,
+    textRelay = false,
     timeouts,
     queueWaitMs,
     replanJitterMs,
@@ -363,22 +385,27 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       let genTokenCount = 0;
       setLastTiming(undefined);
 
+      // textRelay implies thin routing (no local stage 0) — see
+      // `textRelay`'s doc comment. A caller sets `textRelay: true` alone;
+      // `thinDriver: true` is not required alongside it.
+      const effectiveThin = thinDriver || textRelay;
+
       /** Build (or rebuild, for a replan) a `CommunalRoute` from the LIVE
        * roster — pure read, no I/O, cheap enough to call fresh every time
        * rather than caching (`buildCommunalTopology`'s own doc comment:
        * "cheap to call on every roster change"). */
       function buildRoute(excludePeerIds: readonly string[]): CommunalRoute | null {
         const roster = peer!.roster.snapshot();
-        // Thin drivers cover [0, totalLayers) and need a remote isFirst host;
-        // capable drivers cover [driverLayers, totalLayers) and host [0,
-        // driverLayers) locally. The `communalStart` + planner differ; the
-        // attach-order/candidate shape is identical.
+        // Thin/textRelay drivers cover [0, totalLayers) and need a remote
+        // isFirst host; capable drivers cover [driverLayers, totalLayers)
+        // and host [0, driverLayers) locally. The `communalStart` + planner
+        // differ; the attach-order/candidate shape is identical.
         const topology = buildCommunalTopology(
           roster,
-          { modelId, totalLayers, driverLayers, ...(thinDriver ? { communalStart: 0 } : {}) },
+          { modelId, totalLayers, driverLayers, ...(effectiveThin ? { communalStart: 0 } : {}) },
           { excludePeerIds },
         );
-        const routePlan = thinDriver
+        const routePlan = effectiveThin
           ? planThinDriverRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES })
           : planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES });
         if (!routePlan) return null;
@@ -387,36 +414,39 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       }
 
       try {
-        // Capable drivers need usable WebGPU for the local stage 0. A THIN
-        // driver deliberately has none — it hosts no stage and relies on a
-        // remote isFirst host (see `docs/OPTIONAL-STAGE0.md`), so the WebGPU
-        // gate is skipped and a CPU-only tokenizer is required instead.
-        if (!thinDriver) {
+        // Capable drivers need usable WebGPU for the local stage 0. A
+        // THIN/TEXT-RELAY driver deliberately has none — it hosts no stage
+        // and relies on a remote isFirst host (see `docs/OPTIONAL-STAGE0.md`),
+        // so the WebGPU gate is skipped. The token-id thin path still needs a
+        // CPU-only tokenizer of its own; textRelay needs none at all (the
+        // isFirst host tokenizes server-side).
+        if (!effectiveThin) {
           const gpu = await detectWebGpuLimits();
           if (!gpu.ok) throw new Error(gpu.reason ?? 'WebGPU unavailable for local stage-0');
-        } else if (!thinTokenizer) {
+        } else if (!textRelay && !thinTokenizer) {
           throw new Error('thinDriver mode requires a `thinTokenizer` (CPU-only tokenize/detokenize)');
         }
 
         const initialRoute = buildRoute([]);
         if (!initialRoute) {
           throw new Error(
-            thinDriver
-              ? 'no feasible THIN communal route — no remote isFirst host covers [0, X) with embeddings yet (a thin driver needs one to host its first stage)'
+            effectiveThin
+              ? 'no feasible THIN communal route — no remote isFirst host covers [0, X) with embeddings yet (a thin/textRelay driver needs one to host its first stage)'
               : 'no feasible communal route — mesh coverage has a gap, or no communal hosts have advertised loadedStages yet',
           );
         }
         setPlan(initialRoute.plan);
         setStatus({ phase: 'starting' });
         log(
-          `[communal-chat] ${thinDriver ? 'THIN ' : ''}route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
+          `[communal-chat] ${effectiveThin ? 'THIN ' : ''}route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
         );
 
         // The local CPU work a driver always does — tokenize/detokenize. In
         // capable mode this is the loaded stage-0 worker; in thin mode it's
-        // the injected CPU tokenizer (no GPU stage loaded at all).
+        // the injected CPU tokenizer (no GPU stage loaded at all); in
+        // textRelay mode there is no local tokenize/detokenize at all.
         let localWorker: StageWorkerClient | null = null;
-        if (!thinDriver) {
+        if (!effectiveThin) {
           // Resolve stage-0's shards from the SAME per-layer manifest the
           // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
           // the monolithic `full.gguf` fallback. This keeps every stage on one
@@ -452,21 +482,39 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           await warmUpStageWorker(localWorker, log);
           log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
           localWorkerRef.current = localWorker;
+        } else if (textRelay) {
+          log(`[communal-chat] ${elapsed()} text-relay driver — no local stage, no local tokenizer (nEmbd=${nEmbd})`);
         } else {
           log(`[communal-chat] ${elapsed()} thin driver — no local stage, CPU tokenizer only (nEmbd=${thinTokenizer!.nEmbd})`);
         }
 
-        const tokenizer = thinDriver
+        // TEXT-RELAY: no tokenizer exists on this device at all — the isFirst
+        // host tokenizes the prompt server-side and the isFinal host streams
+        // decoded text back (see the 'token' event's `text` handling below).
+        // These stubs exist only to satisfy the shape every mode shares; the
+        // orchestrator never calls tokenize/detokenize in textRelay mode
+        // (see `CommunalDriverSessionOptions.textRelay`'s doc comment).
+        const tokenizer = textRelay
           ? {
-              nEmbd: thinTokenizer!.nEmbd,
-              tokenize: (t: string) => thinTokenizer!.tokenize(t, true),
-              detokenize: (toks: readonly number[]) => thinTokenizer!.detokenize(toks),
+              nEmbd,
+              tokenize: async (): Promise<number[]> => {
+                throw new Error('textRelay driver must not tokenize locally');
+              },
+              detokenize: async (): Promise<string> => {
+                throw new Error('textRelay driver must not detokenize locally');
+              },
             }
-          : {
-              nEmbd: localWorker!.nEmbd,
-              tokenize: (t: string) => localWorker!.tokenize(t, true),
-              detokenize: (toks: readonly number[]) => localWorker!.detokenize([...toks]),
-            };
+          : thinDriver
+            ? {
+                nEmbd: thinTokenizer!.nEmbd,
+                tokenize: (t: string) => thinTokenizer!.tokenize(t, true),
+                detokenize: (toks: readonly number[]) => thinTokenizer!.detokenize(toks),
+              }
+            : {
+                nEmbd: localWorker!.nEmbd,
+                tokenize: (t: string) => localWorker!.tokenize(t, true),
+                detokenize: (toks: readonly number[]) => localWorker!.detokenize([...toks]),
+              };
 
         // ── M4 telemetry bookkeeping — per ATTACHED segment (reset on
         // every planCreated/replan), not per whole chat: a replan means a
@@ -526,7 +574,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           modelId,
           prompt,
           maxDecodeTokens: startOpts?.maxDecodeTokens ?? defaultMaxDecodeTokens,
-          thinDriver,
+          thinDriver: effectiveThin,
+          textRelay,
           localHooks: {
             nEmbd: tokenizer.nEmbd,
             tokenize: (t) => tokenizer.tokenize(t),
@@ -623,9 +672,20 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               setLoadProgress(undefined); // assembled + generating — no more load line
               const { generatedTokens } = handle.tokenHistory();
               setTokens(generatedTokens);
-              void Promise.resolve(tokenizer.detokenize(generatedTokens))
-                .then(setText)
-                .catch(() => undefined);
+              if (textRelay) {
+                // No local tokenizer to detokenize with — accumulate the
+                // incremental TEXT DELTA the isFinal host already streamed
+                // back (see stage.token's `text` field / the orchestrator's
+                // `textRelay` doc comment). `ev.text` can be absent/empty on
+                // a step whose token didn't complete a safely-emittable
+                // UTF-8 chunk (host-side buffering, see
+                // `incrementalTextStream.ts`).
+                if (ev.text) setText((prev) => prev + ev.text);
+              } else {
+                void Promise.resolve(tokenizer.detokenize(generatedTokens))
+                  .then(setText)
+                  .catch(() => undefined);
+              }
               break;
             }
             case 'aborted': {
@@ -688,6 +748,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       standingLedger,
       thinDriver,
       thinTokenizer,
+      textRelay,
       timeouts,
       queueWaitMs,
       replanJitterMs,
