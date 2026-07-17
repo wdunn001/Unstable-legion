@@ -714,14 +714,37 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         ctxSize: req.ctxSize,
         wireDtype: req.wireDtype,
       };
-      if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) return;
+      // INSTRUMENTATION: this decision — reuse vs await-in-flight vs full
+      // reload — is the difference between answering instantly and making a
+      // caller wait out a multi-minute reload of weights we may already have.
+      // It used to be silent, so a log could show "loading stage [2,36)" one
+      // second after [2,36) finished preloading with NO way to tell which
+      // branch fired or why. Never make anyone guess at this again.
+      const cfgStr = (c: LoadedConfig | undefined): string =>
+        c ? `[${c.layerStart},${c.layerEnd}) ctx=${c.ctxSize} ${c.wireDtype} ${c.modelId}` : 'none';
+      log(
+        `[stage-host] ensureWorkerLoaded want=${cfgStr(want)} resident=${cfgStr(engine.loadedConfig)} ` +
+          `hasWorker=${!!engine.workerClient} loadInFlight=${!!engine.loadInFlight} sessions=${hostSessions.size} origin=${req.origin}`,
+      );
+      if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) {
+        log(`[stage-host] REUSING resident stage ${cfgStr(engine.loadedConfig)} — no reload`);
+        return;
+      }
 
       if (engine.loadInFlight) {
         // Someone else is already loading (the common concurrent-open
         // race) — wait for THAT load, then re-check instead of starting
         // a second one.
+        log('[stage-host] a load is already in flight — awaiting it instead of starting a second');
         await engine.loadInFlight.catch(() => undefined);
-        if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) return;
+        if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) {
+          log(`[stage-host] REUSING stage ${cfgStr(engine.loadedConfig)} after awaiting the in-flight load`);
+          return;
+        }
+        log(
+          `[stage-host] in-flight load settled but did NOT satisfy this request ` +
+            `(resident=${cfgStr(engine.loadedConfig)} hasWorker=${!!engine.workerClient}) — reloading`,
+        );
       }
 
       if (engine.workerClient && hostSessions.size > 0) {
