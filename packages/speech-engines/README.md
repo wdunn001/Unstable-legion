@@ -87,11 +87,36 @@ A real `vite build` of `apps/demo` with the ASR host wired in produced:
 
 On top of the JS/wasm bundle, `Xenova/whisper-base`'s ONNX encoder+decoder
 weights (fp32/q8, whichever the device default picks) are on the order of
-tens of MB more, fetched from the HF Hub CDN on first use and cached by
-the browser's Cache Storage (transformers.js's default caching). Worth
-mirroring same-origin (the way `apps/demo` already mirrors web-llm models
-under `/webllm/`) before this leaves PoC status, so ASR hosting doesn't
-depend on `huggingface.co` being reachable from every mesh peer's browser.
+tens of MB more, fetched on first use and cached by the browser's Cache
+Storage (transformers.js's default caching).
+
+### Sourcing policy: public mirror primary, Legion CDN fallback
+
+Nothing above is fetched until a peer toggles ASR **hosting** on — the
+worker (and thus transformers.js + onnxruntime-web) is constructed lazily
+(`useSpeechHost`). Plain visitors and client-only peers download none of
+it. So the only open question is *where* the on-enable fetch comes from.
+`createWhisperEngine` follows the same policy as the LLM model layers —
+prefer the public mirror, keep a self-hosted fallback:
+
+- **Model weights** → `modelSources` defaults to
+  `[HF_MODEL_HOST, LEGION_MODEL_FALLBACK_HOST]`: **Hugging Face Hub
+  primary** (the ONNX repo already lives there — no infra of ours to
+  keep warm), **`cdn.codecai.net` fallback** for offline / HF-down. There
+  is no native failover in transformers.js, so the engine sets
+  `env.remoteHost` per attempt and retries the next source.
+- **onnxruntime-web wasm** → `wasmPaths` defaults to transformers.js' own
+  public CDN; set it to the Legion CDN to self-host the runtime. (Not on
+  HF — the runtime isn't a model — so its "public mirror" is the npm CDN.)
+
+Populate the fallback with `scripts/mirror-whisper-to-cdn.sh` (mirrors the
+HF repo layout + the ort wasm to the CDN host — a deploy-time step that
+writes to `.198`, not automation). This removes the hard dependency on
+`huggingface.co` being reachable from every mesh peer's browser while
+keeping our CDN's bandwidth for the fallback path only. The ~21.6 MB local
+`ort-wasm` bundle can then be dropped from `dist` in favor of the
+`wasmPaths` fetch (needs the CDN populated + a COOP/COEP re-check for the
+cross-origin threaded build first).
 
 ## Manual browser verification
 

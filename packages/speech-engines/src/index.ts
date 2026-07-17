@@ -11,7 +11,12 @@
  * COOP/COEP requirement for threaded wasm.
  */
 export type { SpeechEngine, SpeechEngineInput, SpeechEngineFactory } from './types.js';
-export { createWhisperEngine, type WhisperEngineOptions } from './whisperEngine.js';
+export {
+  createWhisperEngine,
+  type WhisperEngineOptions,
+  HF_MODEL_HOST,
+  LEGION_MODEL_FALLBACK_HOST,
+} from './whisperEngine.js';
 export { decodeToPcm, type DecodedPcm } from './audioDecode.js';
 export {
   type SpeechWorkerRequest,
