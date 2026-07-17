@@ -452,8 +452,8 @@ function Dashboard(props: {
   // ── Driver-side chat notice — honest failure/reconnect copy, never a
   // silent hang (see deriveChatNotice). ────────────────────────────────
   const chatNotice = useMemo(
-    () => deriveChatNotice(chat.status, chat.restartCount, capacity),
-    [chat.status, chat.restartCount, capacity],
+    () => deriveChatNotice(chat.status, chat.restartCount, capacity, isThinDevice),
+    [chat.status, chat.restartCount, capacity, isThinDevice],
   );
 
   // ── Trust gate ─────────────────────────────────────────────────────

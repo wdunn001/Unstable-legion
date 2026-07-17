@@ -162,11 +162,27 @@ export function deriveChatNotice(
   status: ChatStatusLike,
   restartCount: number,
   capacity: CapacityView,
+  /** True when THIS device can't run a model stage locally (see
+   * `isThinDriverForModel`). A thin device hosts nothing, so it can only chat
+   * when other members cover EVERY layer including the first stage — the
+   * generic "assembling…" copy is misleading for it, so we say so plainly. */
+  isThinDevice = false,
 ): ChatNoticeView | undefined {
   if (status.phase === 'error') {
     const err = status.error ?? 'unknown error';
     if (/no feasible|coverage|assembl|need a host|gap/i.test(err)) {
       const gaps = capacity.gaps.map((g) => `${g.layerStart}–${g.layerEnd}`).join(', ');
+      if (isThinDevice) {
+        // Don't pretend it's merely "assembling": a device too small to run a
+        // stage FUNDAMENTALLY depends on other members hosting the whole
+        // pipeline (first stage included). Tell the user that + the way out.
+        return {
+          kind: 'error',
+          message: gaps
+            ? `This device isn't powerful enough to run a model stage itself, so it needs other members to host the whole pipeline — layers ${gaps} still need a host. It'll work once capable members cover them; otherwise join from a more powerful device.`
+            : `This device isn't powerful enough to run a model stage itself, so it can only chat when other members host the model — and no member is hosting the first stage right now. Join from a more powerful device, or wait for a capable member to contribute.`,
+        };
+      }
       return {
         kind: 'error',
         message: gaps

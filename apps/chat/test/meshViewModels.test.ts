@@ -227,6 +227,28 @@ test('deriveChatNotice: no-feasible-route error → actionable "layers X–Y nee
   assert.match(notice.message, /layers 14–27 need a host/);
 });
 
+test('deriveChatNotice: thin device + coverage gap → honest "this device can\'t run a stage", not the generic assembling copy', () => {
+  const notice = deriveChatNotice(
+    { phase: 'error', error: 'no feasible communal route — coverage has a gap' },
+    0,
+    GAP_CAPACITY,
+    true, // isThinDevice
+  )!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /isn't powerful enough to run a model stage/i);
+  assert.match(notice.message, /layers 14–27 still need a host/);
+  assert.match(notice.message, /more powerful device/i);
+  // Must NOT reuse the misleading "assembling / waiting for hosts" framing.
+  assert.doesNotMatch(notice.message, /isn't fully assembled/i);
+});
+
+test('deriveChatNotice: thin device + whole model uncovered → "no member is hosting the first stage"', () => {
+  const noCoverage = deriveCapacityView(topology({ coverageFraction: 0, gaps: [] }), MODEL_LABEL);
+  const notice = deriveChatNotice({ phase: 'error', error: 'no feasible route — coverage gap' }, 0, noCoverage, true)!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /no member is hosting the first stage/i);
+});
+
 test('deriveChatNotice: host-loss error → "Lost connection to a host …"', () => {
   const notice = deriveChatNotice({ phase: 'error', error: 'lost connection to host peer-a' }, 1, READY_CAPACITY)!;
   assert.equal(notice.kind, 'error');
