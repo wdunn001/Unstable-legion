@@ -113,6 +113,7 @@ export {
 // ── Phase C: pipeline-split planner ──────────────────────────────────
 export {
   planPipeline,
+  validateStagePlan,
   filterStageHosts,
   hostCapacityBytes,
   hostStabilityScore,
@@ -123,6 +124,7 @@ export {
   type PlanPipelineOptions,
   type PlannedStage,
   type StagePlan,
+  type PlanValidity,
 } from './stagePlanner.js';
 
 // ── Phase C: driver-side stage-session orchestrator ──────────────────

@@ -6,12 +6,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planPipeline,
+  validateStagePlan,
   filterStageHosts,
   hostCapacityBytes,
   hostStabilityScore,
   layerFragmentId,
+  type PlannedStage,
   type RosterEntryWithStageHost,
   type StagePipelineRequest,
+  type StagePlan,
 } from '../src/stagePlanner.ts';
 import type { MeshRosterEntry } from '../src/types.ts';
 
@@ -281,4 +284,79 @@ test('filterStageHosts: excludePeerIds + includeUnavailable options', () => {
     ['a', 'b'],
   );
   assert.deepEqual(filterStageHosts([a, b], { excludePeerIds: ['a'] }).map((h) => h.peerId), []);
+});
+
+// ── validateStagePlan ──────────────────────────────────────────────────────
+
+function stage(i: number, start: number, end: number, over: Partial<PlannedStage> = {}): PlannedStage {
+  return {
+    stageIndex: i,
+    peerId: `p${i}`,
+    layerStart: start,
+    layerEnd: end,
+    isFirst: i === 0,
+    isFinal: false,
+    capacityBytes: 0,
+    assignedBytes: 0,
+    cacheHitFraction: 0,
+    ...over,
+  };
+}
+function plan(stages: PlannedStage[], totalLayers = 36): StagePlan {
+  return { modelId: 'qwen3-8b-q4', totalLayers, stages, perTokenHopBytes: 0, unselectedPeerIds: [] };
+}
+
+test('validateStagePlan: a well-formed 3-stage plan is valid', () => {
+  const p = plan([
+    stage(0, 0, 2),
+    stage(1, 2, 18),
+    stage(2, 18, 36, { isFinal: true }),
+  ]);
+  assert.deepEqual(validateStagePlan(p), { valid: true });
+});
+
+test('validateStagePlan: a contiguity GAP (skipped layers) is rejected — the multi-host gibberish shape', () => {
+  // driver[0,2) -> hostA[2,18) -> driver[18,36) is contiguous and VALID; the
+  // failure was the runtime skipping [2,18), not the plan. But a plan that
+  // literally omits [2,18) must be caught: [0,2) then [18,36).
+  const p = plan([
+    stage(0, 0, 2),
+    stage(1, 18, 36, { stageIndex: 1, isFinal: true }),
+  ]);
+  const r = validateStagePlan(p);
+  assert.equal(r.valid, false);
+  assert.match((r as { reason: string }).reason, /gap skips layers/);
+});
+
+test('validateStagePlan: an overlap (double-run layers) is rejected', () => {
+  const p = plan([stage(0, 0, 2), stage(1, 2, 20), stage(2, 18, 36, { isFinal: true })]);
+  const r = validateStagePlan(p);
+  assert.equal(r.valid, false);
+  assert.match((r as { reason: string }).reason, /overlap double-runs/);
+});
+
+test('validateStagePlan: must end exactly at totalLayers', () => {
+  const p = plan([stage(0, 0, 2), stage(1, 2, 30, { isFinal: true })]);
+  const r = validateStagePlan(p);
+  assert.equal(r.valid, false);
+  assert.match((r as { reason: string }).reason, /end at totalLayers/);
+});
+
+test('validateStagePlan: exactly one isFinal required', () => {
+  const none = validateStagePlan(plan([stage(0, 0, 2), stage(1, 2, 36)]));
+  assert.equal(none.valid, false);
+  assert.match((none as { reason: string }).reason, /isFinal/);
+  const two = validateStagePlan(plan([stage(0, 0, 2, { isFinal: true }), stage(1, 2, 36, { isFinal: true })]));
+  assert.equal(two.valid, false);
+});
+
+test('validateStagePlan: stage indexes must be a contiguous 0..n-1 run', () => {
+  const p = plan([stage(0, 0, 2), stage(2, 2, 36, { stageIndex: 2, isFinal: true })]);
+  const r = validateStagePlan(p);
+  assert.equal(r.valid, false);
+  assert.match((r as { reason: string }).reason, /contiguous 0\.\./);
+});
+
+test('validateStagePlan: a valid 2-stage plan (the proven shape) passes', () => {
+  assert.deepEqual(validateStagePlan(plan([stage(0, 0, 2), stage(1, 2, 36, { isFinal: true })])), { valid: true });
 });

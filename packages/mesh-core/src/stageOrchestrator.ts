@@ -13,21 +13,17 @@
  *   wasm/WebGPU stage runtime is wired by the demo layer) → on host
  *   death/graceful-leave/stall, abort → continue-from-history replan.
  *
- * SCOPE NOTE (read before extending): this module always assumes the
- * local peer runs stage 0 (the harness's exact proven topology — local
- * stage-A + N remote stages). It talks directly to `plan.stages[1]`'s
- * peer for outbound `sf` frames and expects `stage.token` to arrive
- * DIRECTLY from `plan.stages[stages.length-1]`'s peer ("direct token
- * return", matching the harness comment in host.ts — no relay hop). For
- * a 2-stage plan (1 local + 1 remote) this is exactly Phase B, proven.
- * For N>2 stages, the intermediate hosts (stage 1..N-2) are each
- * expected to run their OWN mesh-core-based host-loop that receives an
- * `sf` frame, computes its slice, and forwards the boundary activation
- * to the next stage's peer — that host-role loop is NOT implemented in
- * this pass (out of mesh-core's boundary per the workstream brief:
- * "driver's local stage-A execution is wired by the demo layer", and by
- * the same logic, other stages' engine execution is also demo/host-layer
- * work). Follow-up: a symmetric `runStageHostSession` counterpart.
+ * TOPOLOGY: the local peer runs stage 0; outbound `sf` frames go to
+ * stage 1 (`firstRemotePeerId`, addressed BY INDEX — a Set-order bug once
+ * sent them to the final stage, producing multi-host gibberish), and
+ * `stage.token` arrives DIRECTLY from the FINAL stage's peer (sender-agnostic,
+ * settled by `stageTokenCallId`). N>2 stages now work: the driver opens each
+ * hop with its `stageIndex`/`isFinal`/`prevPeerId`/`nextPeerId` (see
+ * `startCommunalSession`/`attachOneStage`), and each intermediate host's
+ * `useStageHost` relay loop forwards its boundary activation to `nextPeerId`
+ * instead of sampling. A hop ≥2 gets NO wireHeader (it takes its upstream
+ * relay's header inline). The final stage still returns the token straight to
+ * the driver — no relay hop on the token path.
  *
  * VERSION NOTE: this stays MESH_PROTOCOL_VERSION-compatible (v1,
  * additive) — no subprotocol/generation bump (assessment doc §2.4) is
@@ -832,6 +828,15 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   let finished = false;
 
   let currentRemotePeerIds: Set<string> = new Set();
+  // The attached remote stage of each stageIndex, so the driver addresses
+  // stage 1 (where outbound `sf` frames go) and the final stage BY INDEX, not
+  // by Set-insertion order. `firstRemotePeerId` used to return
+  // `[...currentRemotePeerIds][0]`, but `startCommunalSession` attaches
+  // downstream-first, so `[0]` was the FINAL peer — the driver shoved stage-0's
+  // activation straight into the last stage, skipping every middle hop. Only
+  // invisible with a single remote stage (Set has one element); this is the
+  // multi-host gibberish bug.
+  let attachedByStage: Map<number, Attached> = new Map();
   let sessionAbortController: { cancelled: boolean } = { cancelled: false };
 
   const unsubTool = opts.peer.onTool((frame, peerId) => {
@@ -925,7 +930,11 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
    * wireDtypes) -> on `stage.session.busy` either wait out the host's own
    * queue (same callId) or fall through to the next candidate. Throws
    * only once every candidate in `candidates` has been tried and failed. */
-  async function attachOneStage(stageIndex: number, candidates: readonly CommunalHostStageAd[]): Promise<Attached> {
+  async function attachOneStage(
+    stageIndex: number,
+    candidates: readonly CommunalHostStageAd[],
+    relay: { isFinal: boolean; prevPeerId: string; nextPeerId?: string },
+  ): Promise<Attached> {
     let lastErr: unknown;
     for (const cand of candidates) {
       if (sessionAbortController.cancelled) throw new Error('attach cancelled (superseded by a newer replan)');
@@ -950,7 +959,15 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           totalLayers: route.plan.totalLayers,
           ctxSize: cand.ctxSize,
           wireDtype: cand.wireDtype,
-          wireHeader: bytesToBase64(candEncoder.headerBytes()),
+          // RELAY: only stage 1 gets a header here — inbound frames come from
+          // the DRIVER's encoder (candEncoder). A hop ≥2's inbound frames come
+          // from the PREVIOUS relay's own encoder, so we omit the header and
+          // the host takes it inline (awaitingHeader). See StageSessionOpenPayload.
+          ...(stageIndex === 1 ? { wireHeader: bytesToBase64(candEncoder.headerBytes()) } : {}),
+          stageIndex,
+          isFinal: relay.isFinal,
+          prevPeerId: relay.prevPeerId,
+          ...(relay.nextPeerId !== undefined ? { nextPeerId: relay.nextPeerId } : {}),
         });
         const reply = await sendLoadAndAwaitWithProgress(
           opts.peer,
@@ -969,7 +986,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
             wireDtype: cand.wireDtype,
             nEmbd: reply.payload.nEmbd,
             isFirst: reply.payload.isFirst,
-            isFinal: reply.payload.isFinal,
+            isFinal: relay.isFinal,
             encoder: candEncoder,
           };
         }
@@ -984,7 +1001,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
                   wireDtype: cand.wireDtype,
                   nEmbd: decoded.payload.nEmbd,
                   isFirst: decoded.payload.isFirst,
-                  isFinal: decoded.payload.isFinal,
+                  isFinal: relay.isFinal,
                   encoder: candEncoder,
                 };
               }
@@ -1008,31 +1025,54 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   }
 
   function firstRemotePeerId(): string {
-    if (currentRemotePeerIds.size === 0) throw new Error('no remote stage attached — nothing to send sf frames to');
-    // SCOPE NOTE (top of this section): only the 2-total-stage topology is
-    // wired end to end, so there is always exactly one remote peer once
-    // attached.
-    return [...currentRemotePeerIds][0]!;
+    // Outbound `sf` frames go to stage 1 — the FIRST remote hop after the
+    // driver's local stage 0 — addressed by index, never by Set order.
+    const stage1 = attachedByStage.get(1);
+    if (!stage1) throw new Error('no stage-1 remote attached — nothing to send sf frames to');
+    return stage1.peerId;
   }
 
   async function startCommunalSession(r: CommunalRoute): Promise<void> {
     const remoteStages = [...r.plan.stages].filter((s) => s.stageIndex > 0).sort((a, b) => b.stageIndex - a.stageIndex);
     if (remoteStages.length === 0) throw new Error('communal route has no remote stages to attach');
     currentRemotePeerIds = new Set();
+    attachedByStage = new Map();
     emitter.emit({ type: 'planCreated', plan: r.plan });
-    let winner: Attached | undefined;
+    // Per-hop relay wiring, derived from the PLAN's stage→peer assignment
+    // (deterministic; `attachOrder[k][0]` is the same peer). prev/next must be
+    // known before frames flow — which is after ALL stages attach — so taking
+    // them from the plan (rather than the just-attached peer) is fine, and it
+    // sidesteps the ordering problem (attaching downstream-first, a stage's
+    // upstream neighbor isn't attached yet). If a busy-fallback picks a
+    // different peer than the plan, the neighbor's spoof guard rejects the
+    // mismatched sender → clean replan, never silent corruption.
+    const planByIndex = new Map(r.plan.stages.map((s) => [s.stageIndex, s]));
+    const relayFor = (stageIndex: number): { isFinal: boolean; prevPeerId: string; nextPeerId?: string } => {
+      const self = planByIndex.get(stageIndex);
+      const next = planByIndex.get(stageIndex + 1);
+      return {
+        isFinal: self?.isFinal ?? true,
+        prevPeerId: stageIndex === 1 ? opts.peer.selfId : planByIndex.get(stageIndex - 1)!.peerId,
+        ...(next ? { nextPeerId: next.peerId } : {}),
+      };
+    };
     for (const stage of remoteStages) {
       const candidates = r.attachOrder.get(stage.stageIndex) ?? [];
       if (candidates.length === 0) throw new Error(`route has no attach candidates for stage ${stage.stageIndex}`);
-      const attached = await attachOneStage(stage.stageIndex, candidates);
+      const attached = await attachOneStage(stage.stageIndex, candidates, relayFor(stage.stageIndex));
       currentRemotePeerIds.add(attached.peerId);
+      attachedByStage.set(stage.stageIndex, attached);
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: attached.peerId });
-      winner = attached;
     }
     await hooks.reset();
-    // winner is defined: remoteStages.length > 0 was checked above, and
-    // attachOneStage either returns or throws (never leaves it unset).
-    encoder = winner!.encoder;
+    // The driver's outbound encoder is STAGE 1's — the frames it sends must be
+    // decodable by the first hop. (Previously this took the last-iterated
+    // attach = the lowest stageIndex by luck, which happened to be stage 1
+    // only because the loop runs descending; making it explicit removes the
+    // dependence on iteration order.)
+    const stage1 = attachedByStage.get(1);
+    if (!stage1) throw new Error('communal route has no stage 1');
+    encoder = stage1.encoder;
     // No header sf frame here — unlike the legacy path, `stage.session.
     // open`'s `wireHeader` field already carried it (see this section's
     // top doc comment); the very first `sf` send below is a real

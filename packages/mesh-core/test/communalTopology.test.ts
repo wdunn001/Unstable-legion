@@ -340,3 +340,30 @@ test('deterministicHash: same input -> same output, different inputs usually dif
   assert.notEqual(deterministicHash('peer-1'), deterministicHash('peer-2'));
   assert.ok(deterministicHash('') >= 0);
 });
+
+test('planCommunalRoute: maxStages kill-switch rejects a route needing more hops than allowed', () => {
+  // Two adjacent hosts tile [2,28) as two segments → local[0,2) + 2 remote =
+  // 3 stages. maxStages:2 (driver + one remote) must reject it; undefined must
+  // still route it (the relay handles it).
+  const roster = [
+    makePeer('hostA', [{ layerStart: 2, layerEnd: 15 }]),
+    makePeer('hostB', [{ layerStart: 15, layerEnd: 28, includeOutput: true }]),
+  ];
+  const topo = buildCommunalTopology(roster, { modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS });
+  assert.equal(topo.segments.length, 2);
+
+  const capped = planCommunalRoute(topo, { driverPeerId: 'drv', nEmbd: 1024, maxStages: 2 });
+  assert.equal(capped, null, 'maxStages:2 rejects a 3-stage route');
+
+  const uncapped = planCommunalRoute(topo, { driverPeerId: 'drv', nEmbd: 1024 });
+  assert.ok(uncapped, 'no cap still routes it (relay-capable)');
+  assert.equal(uncapped!.stages.length, 3);
+});
+
+test('planCommunalRoute: maxStages does not reject the proven 2-stage route', () => {
+  const roster = [makePeer('hostA', [{ layerStart: 2, layerEnd: 28, includeOutput: true }])];
+  const topo = buildCommunalTopology(roster, { modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS });
+  const routed = planCommunalRoute(topo, { driverPeerId: 'drv', nEmbd: 1024, maxStages: 2 });
+  assert.ok(routed, 'a single full-range host is 2 stages — within the cap');
+  assert.equal(routed!.stages.length, 2);
+});

@@ -159,6 +159,16 @@ export interface UseCommunalChatOptions {
 
 const DEFAULT_BOOTSTRAP_STEP_MS = 120_000;
 const DEFAULT_LOAD_MS = 300_000;
+/**
+ * Cap on total pipeline stages a route may use. `Infinity` = the host-side
+ * relay is trusted to forward across arbitrarily many hops. Set to `2` as a
+ * runtime kill-switch to pin the mesh to the proven driver→one-remote shape
+ * if a relay regression ever ships — no code change beyond this line. A
+ * topology that needs more hops than this becomes unroutable (the greedy
+ * cover still prefers a single host that spans the whole range, so this only
+ * bites a genuinely fragmented mesh).
+ */
+const MAX_ROUTE_STAGES = Infinity;
 const DEFAULT_PING_MS = 30_000;
 const DEFAULT_LOCK_NAME = 'unstable-legion-communal-chat-driver-leader-v1';
 const DEFAULT_MAX_DECODE_TOKENS = 64;
@@ -315,8 +325,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           { excludePeerIds },
         );
         const routePlan = thinDriver
-          ? planThinDriverRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype })
-          : planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype });
+          ? planThinDriverRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES })
+          : planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES });
         if (!routePlan) return null;
         const attachOrder = communalAttachOrder(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth });
         return { plan: routePlan, attachOrder };

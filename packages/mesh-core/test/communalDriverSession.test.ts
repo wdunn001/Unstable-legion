@@ -42,6 +42,10 @@ interface FakeSessionHost {
   headerSeen: boolean;
   framesSeen: number;
   opensReceived: number;
+  /** RELAY: a non-final mock host FORWARDS each inbound `sf` frame to this
+   * peer (simulating the real host's relay loop) instead of returning a
+   * token. Undefined ⇒ terminate (the pre-relay behavior). */
+  forwardTo?: string;
 }
 
 function makeFakeSessionHost(peerId: string, overrides: Partial<FakeSessionHost> = {}): FakeSessionHost {
@@ -61,6 +65,8 @@ function createMockMesh(selfId: string) {
   const toolListeners = new Set<(frame: MeshToolFrame, peerId: string) => void>();
   const hosts = new Map<string, FakeSessionHost>();
   const sentTool: Array<{ frame: MeshToolFrame; peers?: string | string[] }> = [];
+  /** Every `sf` frame the driver (or a forwarding relay) emitted, in order. */
+  const sentFrames: Array<{ target: string; seq: number }> = [];
   let currentSessionId = '';
 
   function deliverToolToDriver(frame: MeshToolFrame, fromPeerId: string): void {
@@ -128,12 +134,23 @@ function createMockMesh(selfId: string) {
         if (!envelope) continue;
         const seq = host.framesSeen;
         host.framesSeen += 1;
+        sentFrames.push({ target: targetId, seq });
         if (host.dieAtSeq !== undefined && seq >= host.dieAtSeq) continue;
         if (host.gracefulStopAtSeq !== undefined && seq === host.gracefulStopAtSeq) {
           const stop = makeStageStop(currentSessionId, 'pagehide');
           queueMicrotask(() => deliverToolToDriver(encodeStageControl(stop), targetId));
           continue;
         }
+        if (host.forwardTo) {
+          // RELAY: hand the frame to the downstream host verbatim, exactly as
+          // the real relay loop would (seq/tokens preserved on the wire).
+          queueMicrotask(() => void peer.sendStageFrame(bytes, host.forwardTo));
+          continue;
+        }
+        // Final stage: emit the token. `deliverToolToDriver`'s 2nd arg is the
+        // SENDER label (the final host), which the driver's callId-keyed token
+        // tracker ignores — real addressing (reply to driverPeerId) is a host
+        // concern the mock doesn't model (it delivers to the one driver).
         const token = host.tokenFor(seq);
         const msg = makeStageToken(currentSessionId, token, seq, false);
         queueMicrotask(() => deliverToolToDriver(encodeStageControl(msg), targetId));
@@ -144,7 +161,7 @@ function createMockMesh(selfId: string) {
     },
   };
 
-  return { peer, hosts, sentTool };
+  return { peer, hosts, sentTool, sentFrames };
 }
 
 function makeMockLocalHooks(nEmbd = 8) {
@@ -483,4 +500,85 @@ test('communal session: external abort() cleanly finishes with partial history i
   const result = await handle.result();
   assert.equal(result.aborted, true);
   assert.equal(result.abortReason, 'caller cancelled');
+});
+
+// ── 3-stage relay: the multi-host bug this whole change fixes ─────────────
+
+function route3For(hostA: string, hostB: string): CommunalRoute {
+  // local[0,2) -> hostA[2,5) (relay) -> hostB[5,8) (final)
+  const plan: StagePlan = {
+    modelId: 'm',
+    totalLayers: 8,
+    stages: [
+      { stageIndex: 0, peerId: 'local', layerStart: 0, layerEnd: 2, isFirst: true, isFinal: false, capacityBytes: 0, assignedBytes: 0, cacheHitFraction: 0 },
+      { stageIndex: 1, peerId: hostA, layerStart: 2, layerEnd: 5, isFirst: false, isFinal: false, capacityBytes: 0, assignedBytes: 0, cacheHitFraction: 0 },
+      { stageIndex: 2, peerId: hostB, layerStart: 5, layerEnd: 8, isFirst: false, isFinal: true, capacityBytes: 0, assignedBytes: 0, cacheHitFraction: 0 },
+    ],
+    perTokenHopBytes: 64,
+    unselectedPeerIds: [],
+  };
+  return {
+    plan,
+    attachOrder: new Map([
+      [1, [makeAd(hostA, { layerStart: 2, layerEnd: 5, includeOutput: false })]],
+      [2, [makeAd(hostB, { layerStart: 5, layerEnd: 8, includeOutput: true })]],
+    ]),
+  };
+}
+
+test('communal 3-stage relay: driver opens each hop with correct stageIndex/isFinal/prev/next, and the FIRST sf goes to stage 1 (not the final)', async () => {
+  const mesh = createMockMesh('driver');
+  // hostA is the relay: not final, forwards to hostB.
+  mesh.hosts.set('hostA', makeFakeSessionHost('hostA', { isFinal: false, forwardTo: 'hostB' }));
+  mesh.hosts.set('hostB', makeFakeSessionHost('hostB', { isFinal: true }));
+
+  const handle = runCommunalDriverSession({
+    peer: mesh.peer,
+    route: route3For('hostA', 'hostB'),
+    modelId: 'm',
+    prompt: 'hi there',
+    maxDecodeTokens: 3,
+    localHooks: makeMockLocalHooks(),
+    replanRoute: () => null,
+    timeouts: FAST_TIMEOUTS,
+  });
+  const result = await handle.result();
+
+  // The session completed (relay carried frames end to end).
+  assert.equal(result.aborted, false, `aborted: ${result.abortReason}`);
+  assert.equal(mesh.hosts.get('hostA')!.opensReceived, 1);
+  assert.equal(mesh.hosts.get('hostB')!.opensReceived, 1);
+
+  // Inspect the two session.open payloads the driver sent.
+  const opens = mesh.sentTool
+    .map((s) => decodeStageControl(s.frame))
+    .filter((d): d is NonNullable<typeof d> => d?.kind === 'stage.session.open')
+    .map((d) => (d as { payload: import('../src/stageControl.ts').StageSessionOpenPayload }).payload);
+  const openA = opens.find((p) => p.layerStart === 2)!;
+  const openB = opens.find((p) => p.layerStart === 5)!;
+
+  // Stage 1 (hostA): gets a wireHeader (decodes the DRIVER's frames), forwards
+  // to hostB, accepts frames FROM the driver, is not final.
+  assert.equal(openA.stageIndex, 1);
+  assert.equal(openA.isFinal, false);
+  assert.equal(openA.nextPeerId, 'hostB');
+  assert.equal(openA.prevPeerId, 'driver');
+  assert.ok(openA.wireHeader, 'stage 1 must carry the driver-encoder header');
+
+  // Stage 2 (hostB): NO wireHeader (takes hostA's relay header inline), no
+  // next, accepts frames FROM hostA, is final.
+  assert.equal(openB.stageIndex, 2);
+  assert.equal(openB.isFinal, true);
+  assert.equal(openB.nextPeerId, undefined);
+  assert.equal(openB.prevPeerId, 'hostA');
+  assert.equal(openB.wireHeader, undefined, 'a hop ≥2 must NOT carry a header');
+
+  // THE BUG: every `sf` the DRIVER emits must go to stage 1 (hostA), never
+  // straight to the final stage (hostB). Before the fix it went to hostB.
+  const driverFrames = mesh.sentFrames.filter((f) => f.target === 'hostA' || f.target === 'hostB');
+  assert.ok(driverFrames.length > 0);
+  // The driver's own sends all target hostA; hostB only ever receives via the
+  // relay forward (which re-enters sendStageFrame, also recorded).
+  const firstFrame = mesh.sentFrames[0]!;
+  assert.equal(firstFrame.target, 'hostA', 'the first sf must go to stage 1, not the final stage');
 });

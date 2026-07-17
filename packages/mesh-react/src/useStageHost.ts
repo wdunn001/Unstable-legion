@@ -59,16 +59,21 @@
  * one driver's worth of concurrency (see legion-stage-runtime's
  * MULTI-SESSION.md: "1 fused + 2 wanted = 3").
  *
- * Scope: only the FINAL-stage host role is implemented — same scope note
- * as pre-M2 (`stageOrchestrator.ts`'s SCOPE NOTE; N>2-stage relay is out
- * of scope). A `stage.load`/`stage.session.open` for a non-final range
- * still loads and serves sessions correctly.
+ * RELAY: both host roles are implemented. A FINAL stage samples and returns
+ * `stage.token` to its `driverPeerId`. A NON-final stage (driver-assigned
+ * `isFinal:false` in the open, with a `nextPeerId`) instead RE-ENCODES its
+ * boundary activation and `sendStageFrame`s it downstream — see the
+ * `!state.isFinal` branch in `onStageFrame`. It accepts inbound frames from
+ * `prevPeerId` (the driver for stage 1, the previous relay for a hop ≥2), and
+ * a hop ≥2 opened without a `wireHeader` takes its upstream's header inline
+ * (the `awaitingHeader` path). Teardown propagates both directions.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   decodeStageControl,
   decodeStageFrameEnvelope,
   encodeStageControl,
+  encodeStageFrameEnvelope,
   isStageControlFrame,
   makeStageLoadProgress,
   makeStagePong,
@@ -83,7 +88,12 @@ import {
   type StageControlMessageFor,
   type StandingLedger,
 } from '@unstable-legion/core';
-import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
+import {
+  createActivationWireDecoder,
+  createActivationWireEncoder,
+  type ActivationWireDecoder,
+  type ActivationWireEncoder,
+} from '@unstable-legion/stage-runtime';
 import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
 import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
@@ -367,8 +377,19 @@ interface PendingOpen {
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** Present only for `origin === 'session'` — lets the host build the
-   * decoder at accept time instead of via the legacy first-frame convention. */
+   * decoder at accept time instead of via the legacy first-frame convention.
+   * Absent for a relay hop ≥2, which takes its upstream's header inline. */
   wireHeaderB64?: string;
+  /** RELAY (driver-assigned). Absent ⇒ the pre-relay assumption: this host is
+   * the final stage, the driver is upstream, there is no downstream. */
+  isFinalOverride?: boolean;
+  /** Downstream peer to forward the boundary activation to (iff not final). */
+  nextPeerId?: string;
+  /** Upstream peer whose `sf` frames to accept — the driver for stage 1, the
+   * previous relay for a hop ≥2. Defaults to the opener (`peerId`). */
+  prevPeerId?: string;
+  /** This host's pipeline position (driver-assigned). Default 1 (single remote). */
+  stageIndex?: number;
 }
 
 interface HostSessionState {
@@ -388,6 +409,22 @@ interface HostSessionState {
   layerStart: number;
   layerEnd: number;
   totalLayers: number;
+  /** RELAY: the peer we accept `sf` frames from (upstream). The driver for
+   * stage 1, the previous relay for a hop ≥2. The spoof guard checks THIS,
+   * not `driverPeerId`, so relayed frames aren't dropped. */
+  prevPeerId: string;
+  /** RELAY: the peer we forward our boundary activation to (downstream).
+   * Undefined for the final stage, which samples and returns `stage.token`. */
+  nextPeerId?: string;
+  /** RELAY: the per-session encoder a NON-final host uses to re-encode its
+   * boundary activation for `nextPeerId`. Built lazily on first forward
+   * (needs `client.nEmbd`, known only after the worker loads). Its header is
+   * sent to `nextPeerId` once, before the first activation frame. */
+  forwardEncoder?: ActivationWireEncoder;
+  forwardHeaderSent?: boolean;
+  modelId: string;
+  stageIndex: number;
+  wireDtype: 'f32' | 'f16';
 }
 
 interface LoadedConfig {
@@ -1001,10 +1038,21 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           createdAt: Date.now(),
           lastFrameAt: Date.now(),
           isFirst: client.isFirst,
-          isFinal: client.isFinal,
+          // RELAY: the driver decides finality. It knows the whole plan; the
+          // host only knows its own artifacts. Absent (pre-relay / legacy) ⇒
+          // fall back to the artifact-derived answer, which is correct for the
+          // proven single-remote-stage shape.
+          isFinal: req.isFinalOverride ?? client.isFinal,
           layerStart: req.layerStart,
           layerEnd: req.layerEnd,
           totalLayers: req.totalLayers,
+          // Accept `sf` from the upstream hop (driver for stage 1, prior relay
+          // for ≥2); default to the opener so a legacy/2-stage open is unchanged.
+          prevPeerId: req.prevPeerId ?? req.peerId,
+          nextPeerId: req.nextPeerId,
+          modelId: req.modelId,
+          stageIndex: req.stageIndex ?? 1,
+          wireDtype: req.wireDtype,
         };
         hostSessions.set(req.sessionId, state);
         syncPublicState();
@@ -1112,7 +1160,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         );
       }
       if (notifyDriver) {
-        await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), state.driverPeerId).catch(() => undefined);
+        // Propagate the teardown BOTH ways: upstream to the driver (owns the
+        // token stream) AND, for a relay, downstream to the next hop (whose
+        // session is now orphaned). For a 2-stage session prevPeerId ===
+        // driverPeerId and nextPeerId is undefined, so this is one send.
+        const notify = new Set<string>([state.driverPeerId]);
+        if (state.nextPeerId) notify.add(state.nextPeerId);
+        for (const target of notify) {
+          await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), target).catch(() => undefined);
+        }
       }
       await admitNextQueued();
     }
@@ -1189,6 +1245,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         wireDtype: msg.payload.wireDtype,
         shardUrls,
         wireHeaderB64: msg.payload.wireHeader,
+        // RELAY: driver-assigned position. Absent ⇒ pre-relay 2-stage
+        // assumption (final stage, driver upstream, no downstream).
+        isFinalOverride: msg.payload.isFinal,
+        nextPeerId: msg.payload.nextPeerId,
+        prevPeerId: msg.payload.prevPeerId,
+        stageIndex: msg.payload.stageIndex,
       });
     }
 
@@ -1198,9 +1260,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
     async function handleStop(msg: StageControlMessageFor<'stage.stop'>, peerId: string): Promise<void> {
       const state = hostSessions.get(msg.sessionId);
-      if (!state || state.driverPeerId !== peerId) return; // unknown session or spoof attempt — ignore
+      // A stop is legitimate from any peer in THIS session's pipeline — the
+      // driver, our upstream, or our downstream (a relay tears down both ways).
+      // notifyDriver:true so the stop keeps propagating to the OTHER neighbour.
+      if (!state || (peerId !== state.driverPeerId && peerId !== state.prevPeerId && peerId !== state.nextPeerId)) return;
       log(`[stage-host] stage.stop from ${peerId} sessionId=${msg.sessionId}: ${msg.payload.reason}`);
-      await freeSession(msg.sessionId, msg.payload.reason, false);
+      await freeSession(msg.sessionId, msg.payload.reason, true);
     }
 
     const unsubTool = peer.onTool((frame, peerId) => {
@@ -1225,9 +1290,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         log(`[stage-host] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${peerId}`);
         return;
       }
-      // Spoof guard: only the peer that opened this session may drive it.
-      if (peerId !== state.driverPeerId) {
-        log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} does not own sessionId=${sessionId} (owner=${state.driverPeerId})`);
+      // Spoof guard: only this session's UPSTREAM peer may drive it — the
+      // driver for stage 1, the previous relay for a hop ≥2. (For a 2-stage
+      // session prevPeerId === driverPeerId, so this is unchanged.)
+      if (peerId !== state.prevPeerId) {
+        log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
         return;
       }
       state.lastFrameAt = Date.now();
@@ -1258,18 +1325,61 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           const result = isPrefill
             ? await client.prefill(tokens as number[], positions, wireFrame, sessionId)
             : await client.decode((tokens[0] as number) ?? 0, wireFrame, sessionId);
+
+          if (!state.isFinal) {
+            // ── RELAY: this stage is NOT final. Its worker returned the
+            // boundary activation for the next slice; forward it to the
+            // downstream peer instead of sampling. seq/tokens/posStart/done
+            // are carried through verbatim so the downstream re-derives
+            // isPrefill (seq===0) and positions exactly as this host did.
+            if (!state.nextPeerId) throw new Error('relay stage has no nextPeerId — cannot forward');
+            if (!result.activation) throw new Error('relay stage produced no boundary activation to forward');
+            if (!state.forwardEncoder) {
+              state.forwardEncoder = createActivationWireEncoder({
+                modelId: state.modelId,
+                stageIndex: state.stageIndex,
+                nEmbd: client.nEmbd,
+                dtype: state.wireDtype,
+              });
+            }
+            if (!state.forwardHeaderSent) {
+              // One header, before the first activation frame — the downstream
+              // host (opened with NO wireHeader) is awaitingHeader and takes
+              // this as its decoder header (the legacy first-frame path).
+              await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, state.forwardEncoder.headerBytes()), state.nextPeerId);
+              state.forwardHeaderSent = true;
+            }
+            const activationF32 = new Float32Array(result.activation.payload);
+            const outBytes = state.forwardEncoder.encodeFrame(activationF32, {
+              seq: frame.seq,
+              posStart: frame.posStart ?? 0,
+              tokens: frame.tokens,
+              done: frame.done,
+              ...(frame.finishReason !== undefined ? { finishReason: frame.finishReason } : {}),
+            });
+            await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, outBytes), state.nextPeerId);
+            state.decodedCount += 1;
+            syncPublicState();
+            return;
+          }
+
+          // ── FINAL stage: sample and return the token to the DRIVER.
           if (result.predictedToken === undefined) {
             throw new Error('final-stage host produced no predictedToken');
           }
           state.decodedCount += 1;
           syncPublicState();
           const isEog = await client.tokenIsEog(result.predictedToken);
+          // Reply to the DRIVER, not the inbound sender — under relay the
+          // frame arrived from the previous hop, but the token stream belongs
+          // to the driver's session. (For a 2-stage session prevPeerId ===
+          // driverPeerId, so this is unchanged.)
           await meshPeer.sendTool(
             encodeStageControl(makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined)),
-            peerId,
+            state.driverPeerId,
           );
           if (state.decodedCount % progressEveryN === 0) {
-            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId, state.decodedCount, frame.seq)), peerId);
+            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId, state.decodedCount, frame.seq)), state.driverPeerId);
           }
           if (isEog) {
             // Generation finished — free the lane proactively instead of
@@ -1303,8 +1413,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const unsubRoster = meshPeer.roster.subscribe((snapshot) => {
       const present = new Set(snapshot.map((e) => e.peerId));
       for (const [sessionId, state] of hostSessions) {
-        if (!present.has(state.driverPeerId)) {
-          void freeSession(sessionId, 'driver left the mesh', false);
+        // A relay session dies if ANY of its pipeline neighbours vanish — the
+        // driver, our upstream (no more frames coming), or our downstream (no
+        // one to forward to). notifyDriver:true so the surviving neighbours
+        // learn to tear down too.
+        const goneDriver = !present.has(state.driverPeerId);
+        const gonePrev = !present.has(state.prevPeerId);
+        const goneNext = state.nextPeerId !== undefined && !present.has(state.nextPeerId);
+        if (goneDriver || gonePrev || goneNext) {
+          const who = goneDriver ? 'driver' : gonePrev ? 'upstream' : 'downstream';
+          void freeSession(sessionId, `${who} left the mesh`, true);
         }
       }
     });

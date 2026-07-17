@@ -141,8 +141,31 @@ export interface StageSessionOpenPayload {
    * activation-wire header this session's `sf` frames will be decoded
    * against. Sent up front (not as the first `sf` frame) precisely so a
    * host serving several concurrent sessions never has to guess which
-   * inbound `sf` frame is "the header" for a session it just opened. */
-  wireHeader: string;
+   * inbound `sf` frame is "the header" for a session it just opened.
+   *
+   * RELAY: only the FIRST remote hop (stage 1) gets a header here — it's the
+   * DRIVER's encoder header. For a hop ≥2 this is omitted, so the host sets
+   * `awaitingHeader` and takes its upstream relay's own header from the first
+   * `sf` frame (the legacy header path), since each relay re-encodes with its
+   * own encoder. Absent ⇒ expect the header inline. */
+  wireHeader?: string;
+  /** RELAY (additive, v1-safe — absent ⇒ the pre-relay 2-stage assumption:
+   * stageIndex 1, isFinal true, prevPeerId = the driver, no nextPeerId).
+   *
+   * This host's position in the pipeline, DRIVER-ASSIGNED and authoritative.
+   * Pre-relay the host self-declared finality from its own artifacts and the
+   * driver ignored it; a relay needs the driver to say who is final. */
+  stageIndex?: number;
+  /** Whether this host samples the next token and returns `stage.token`
+   * (true), or forwards its boundary activation to `nextPeerId` (false). */
+  isFinal?: boolean;
+  /** The downstream peer this host forwards its boundary activation to.
+   * Present iff `isFinal === false`. */
+  nextPeerId?: string;
+  /** The upstream peer whose `sf` frames this host must accept — the driver
+   * for stage 1, the previous relay for a hop ≥2. Without it the host's
+   * spoof guard (sender must equal driverPeerId) drops relayed frames. */
+  prevPeerId?: string;
 }
 
 export interface StageSessionAcceptPayload {
@@ -345,7 +368,14 @@ export function isStageSessionOpenPayload(x: unknown): x is StageSessionOpenPayl
   if (!Number.isInteger(x.totalLayers) || (x.totalLayers as number) < (x.layerEnd as number)) return false;
   if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
   if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
-  if (typeof x.wireHeader !== 'string' || !x.wireHeader) return false;
+  // wireHeader is now optional (a hop ≥2 omits it — see the field doc); when
+  // present it must still be a non-empty base64 string.
+  if (x.wireHeader !== undefined && (typeof x.wireHeader !== 'string' || !x.wireHeader)) return false;
+  // Relay fields (all optional, additive):
+  if (x.stageIndex !== undefined && (!Number.isInteger(x.stageIndex) || (x.stageIndex as number) < 0)) return false;
+  if (x.isFinal !== undefined && typeof x.isFinal !== 'boolean') return false;
+  if (x.nextPeerId !== undefined && (typeof x.nextPeerId !== 'string' || !x.nextPeerId)) return false;
+  if (x.prevPeerId !== undefined && (typeof x.prevPeerId !== 'string' || !x.prevPeerId)) return false;
   return true;
 }
 

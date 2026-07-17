@@ -216,10 +216,17 @@ test('isStageSessionOpenPayload: requires wireHeader + a well-formed layer range
     wireHeader: 'YmFzZTY0aGVhZGVy',
   };
   assert.equal(isStageSessionOpenPayload(base), true);
+  // wireHeader present-but-empty is still invalid; ABSENT is now VALID (a
+  // relay hop ≥2 omits it and takes its upstream's header inline).
   assert.equal(isStageSessionOpenPayload({ ...base, wireHeader: '' }), false);
-  assert.equal(isStageSessionOpenPayload({ ...base, wireHeader: undefined }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, wireHeader: undefined }), true);
   assert.equal(isStageSessionOpenPayload({ ...base, layerEnd: 0 }), false);
   assert.equal(isStageSessionOpenPayload({ ...base, wireDtype: 'bogus' }), false);
+  // Relay fields must be well-typed when present.
+  assert.equal(isStageSessionOpenPayload({ ...base, stageIndex: 2, isFinal: false, nextPeerId: 'B', prevPeerId: 'A' }), true);
+  assert.equal(isStageSessionOpenPayload({ ...base, stageIndex: -1 }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, isFinal: 'yes' }), false);
+  assert.equal(isStageSessionOpenPayload({ ...base, nextPeerId: '' }), false);
 });
 
 test('isStageSessionAcceptPayload: requires positive nEmbd/activeSessions/maxSessions', () => {
@@ -323,8 +330,8 @@ test('tracker flow: stage.session.open -> stage.session.busy settles the waiter 
   assert.equal((decoded as { payload: { queuePosition?: number } }).payload.queuePosition, 1);
 });
 
-test('decodeStageControl: rejects malformed stage.session.open (missing wireHeader) without throwing', () => {
-  const malformed: MeshToolFrame = {
+test('decodeStageControl: a stage.session.open with NO wireHeader decodes (relay hop ≥2 takes it inline)', () => {
+  const noHeader: MeshToolFrame = {
     kind: 'call',
     v: 1,
     ts: Date.now(),
@@ -332,7 +339,18 @@ test('decodeStageControl: rejects malformed stage.session.open (missing wireHead
     toolName: 'stage.session.open',
     args: { sessionId: 's1', modelId: 'm', layerStart: 0, layerEnd: 1, totalLayers: 1, ctxSize: 512, wireDtype: 'f16' },
   };
-  assert.equal(decodeStageControl(malformed), null);
+  assert.equal(decodeStageControl(noHeader)?.kind, 'stage.session.open');
+
+  // But a genuinely malformed one (bad layer range) is still rejected.
+  const badRange: MeshToolFrame = {
+    kind: 'call',
+    v: 1,
+    ts: Date.now(),
+    callId: 'c1',
+    toolName: 'stage.session.open',
+    args: { sessionId: 's1', modelId: 'm', layerStart: 5, layerEnd: 1, totalLayers: 1, ctxSize: 512, wireDtype: 'f16' },
+  };
+  assert.equal(decodeStageControl(badRange), null);
 });
 
 test('tracker flow: stage.token settles keyed by the seq-derived callId, not a preceding call', async () => {
@@ -411,4 +429,31 @@ test('PendingToolCallTracker.rejectCall: rejects one specific call (ceiling back
   assert.equal(await wb, 'b-resolved');
   // rejectCall on an unknown id is a no-op.
   assert.equal(tracker.rejectCall('nope', 'x'), false);
+});
+
+test('stage.session.open: relay fields (stageIndex/isFinal/next/prev) round-trip; wireHeader now optional', () => {
+  // A middle hop: has a next, no header (takes its upstream's header inline).
+  const mid = makeStageSessionOpen('s1', {
+    modelId: 'm', layerStart: 2, layerEnd: 18, totalLayers: 36, ctxSize: 4096, wireDtype: 'f16',
+    stageIndex: 1, isFinal: false, nextPeerId: 'hostB', prevPeerId: 'drv',
+  });
+  const decodedMid = decodeStageControl(encodeStageControl(mid));
+  assert.equal(decodedMid?.kind, 'stage.session.open');
+  const p = (decodedMid as { payload: import('../src/stageControl.ts').StageSessionOpenPayload }).payload;
+  assert.equal(p.stageIndex, 1);
+  assert.equal(p.isFinal, false);
+  assert.equal(p.nextPeerId, 'hostB');
+  assert.equal(p.prevPeerId, 'drv');
+  assert.equal(p.wireHeader, undefined);
+
+  // A pre-relay open (no relay fields, wireHeader present) is still valid.
+  const legacy = makeStageSessionOpen('s2', {
+    modelId: 'm', layerStart: 2, layerEnd: 36, totalLayers: 36, ctxSize: 4096, wireDtype: 'f16', wireHeader: 'aGVhZGVy',
+  });
+  assert.equal(decodeStageControl(encodeStageControl(legacy))?.kind, 'stage.session.open');
+
+  // A bad relay field is rejected, not silently accepted.
+  const bad = encodeStageControl(mid) as { kind: 'call'; args: Record<string, unknown> };
+  (bad.args as Record<string, unknown>).stageIndex = -1;
+  assert.equal(decodeStageControl(bad as never), null);
 });

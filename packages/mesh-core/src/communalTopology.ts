@@ -365,6 +365,15 @@ export interface PlanCommunalRouteOptions {
   nEmbd?: number;
   /** Wire dtype for the hop-cost estimate. Default 'f16'. */
   wireDtype?: 'f32' | 'f16';
+  /**
+   * Maximum TOTAL stages (local stage 0 + remote hops) this route may have.
+   * Undefined = no cap. With the host-side relay this stays uncapped; set it
+   * to `2` as a runtime kill-switch to pin the mesh to the proven single-remote
+   * shape without a code change. A topology needing more hops than this yields
+   * `null` (the caller then surfaces "coverage is split across N hosts").
+   * Mirrors the legacy `PlanPipelineOptions.maxStages`.
+   */
+  maxStages?: number;
 }
 
 /** Rank candidates for a segment: headroom desc, priorityScore desc,
@@ -469,6 +478,8 @@ export function planCommunalRoute(
     };
   }
   if (opts.nEmbd === undefined) return null;
+  // Capability/kill-switch gate: local stage 0 + one remote hop per segment.
+  if (opts.maxStages !== undefined && 1 + topology.segments.length > opts.maxStages) return null;
 
   const priorityScore = opts.priorityScore ?? (() => 0);
   const spreadWidth = opts.spreadWidth ?? 3;
@@ -611,6 +622,8 @@ export function planThinDriverRoute(
 ): ReturnType<typeof planCommunalRoute> {
   if (!thinDriverFirstStageCovered(topology)) return null;
   if (opts.nEmbd === undefined) return null;
+  // Thin driver has no local stage, so total stages === segments.
+  if (opts.maxStages !== undefined && topology.segments.length > opts.maxStages) return null;
 
   const priorityScore = opts.priorityScore ?? (() => 0);
   const spreadWidth = opts.spreadWidth ?? 3;
