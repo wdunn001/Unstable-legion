@@ -181,3 +181,57 @@ test('joinMesh sendStageFrame: pure self-address loops back locally, never touch
 
   peer.leave();
 });
+
+// ── peerConnectionType ────────────────────────────────────────────────────
+//
+// Fake room.getPeers()/pc.getStats() — mirrors iceDiagnostics.ts's own
+// captureSelectedPair shape (a nominated candidate-pair report pointing at
+// two candidate reports by id).
+
+function makeFakeStatsPc(local: { candidateType: string }, remote: { candidateType: string }): RTCPeerConnection {
+  const reports = new Map<string, Record<string, unknown>>([
+    ['pair-1', { type: 'candidate-pair', nominated: true, localCandidateId: 'local-1', remoteCandidateId: 'remote-1' }],
+    ['local-1', { candidateType: local.candidateType }],
+    ['remote-1', { candidateType: remote.candidateType }],
+  ]);
+  return {
+    getStats: async () => reports as unknown as RTCStatsReport,
+  } as unknown as RTCPeerConnection;
+}
+
+test('peerConnectionType: relay on either side of the nominated pair -> relayed', async () => {
+  const { room } = makeFakeRoom();
+  const pc = makeFakeStatsPc({ candidateType: 'relay' }, { candidateType: 'srflx' });
+  (room as { getPeers?: () => Record<string, RTCPeerConnection> }).getPeers = () => ({ other: pc });
+  const peer = joinMesh({ joinRoom: () => room, selfId: 'me', trysteroConfig: {}, roomId: 'r', cap: makeCap() });
+
+  assert.equal(await peer.peerConnectionType!('other'), 'relayed');
+  peer.leave();
+});
+
+test('peerConnectionType: host/srflx/prflx on both sides -> direct', async () => {
+  const { room } = makeFakeRoom();
+  const pc = makeFakeStatsPc({ candidateType: 'host' }, { candidateType: 'srflx' });
+  (room as { getPeers?: () => Record<string, RTCPeerConnection> }).getPeers = () => ({ other: pc });
+  const peer = joinMesh({ joinRoom: () => room, selfId: 'me', trysteroConfig: {}, roomId: 'r', cap: makeCap() });
+
+  assert.equal(await peer.peerConnectionType!('other'), 'direct');
+  peer.leave();
+});
+
+test('peerConnectionType: no connection for that peerId -> unknown', async () => {
+  const { room } = makeFakeRoom();
+  (room as { getPeers?: () => Record<string, RTCPeerConnection> }).getPeers = () => ({});
+  const peer = joinMesh({ joinRoom: () => room, selfId: 'me', trysteroConfig: {}, roomId: 'r', cap: makeCap() });
+
+  assert.equal(await peer.peerConnectionType!('other'), 'unknown');
+  peer.leave();
+});
+
+test('peerConnectionType: room has no getPeers at all -> unknown, never throws', async () => {
+  const { room } = makeFakeRoom();
+  const peer = joinMesh({ joinRoom: () => room, selfId: 'me', trysteroConfig: {}, roomId: 'r', cap: makeCap() });
+
+  assert.equal(await peer.peerConnectionType!('other'), 'unknown');
+  peer.leave();
+});

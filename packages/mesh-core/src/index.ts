@@ -127,6 +127,9 @@ export {
   type DeflateGainResult,
 } from './activationWireI8.js';
 
+// ── Wire dtype inference from byte size alone (pipeline-handoff UI) ────
+export { wireDtypeFromFrameBytes, type WireDtypeGuess } from './wireDtypeGuess.js';
+
 // ── Phase C: pipeline-split planner ──────────────────────────────────
 export {
   planPipeline,

@@ -238,6 +238,18 @@ export interface UseCommunalChatHandle {
    * readiness badge, mirroring `useStagePipeline`'s `readyStageIndexes`. */
   readyStageIndexes: readonly number[];
   /**
+   * Latest `sendStageFrame` byte size per DESTINATION peerId, captured from
+   * the same `loggedPeer.sendStageFrame` wrapper that already logs
+   * "sendStageFrame -> ... (N bytes)" — observability for the chat app's
+   * per-hop pipeline-handoff display (byte size shown directly, and the
+   * DERIVED wire dtype via mesh-core's `wireDtypeFromFrameBytes`, never a
+   * separately-plumbed dtype field). Reset to `{}` at the start of every
+   * `start()` call so a hop from a replaced/replanned-away route doesn't
+   * linger; a peerId with no entry means no frame has been sent to it yet
+   * this session (the UI should show "—", not guess).
+   */
+  hopBytes?: Readonly<Record<string, number>>;
+  /**
    * Run one full session. Resolves `true` when the session ran to its end
    * (any outcome — finished/aborted/error) and every resource is released;
    * resolves `false` when it REFUSED to start (a previous session is still
@@ -295,6 +307,14 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   const localWorkerRef = useRef<StageWorkerClient | null>(null);
   const sessionRef = useRef<StageSessionHandle | null>(null);
   const runningRef = useRef(false);
+  // Latest sendStageFrame byte size per destination peerId — see
+  // UseCommunalChatHandle.hopBytes's doc comment. A ref (not state):
+  // updated once per outbound stage frame (same frequency as the 'token'
+  // event, which already triggers a re-render via setTokens), so there's
+  // no need for its own render-triggering state churn — by the time a
+  // consumer's render reads it, the correlated token-driven re-render has
+  // already happened.
+  const hopBytesRef = useRef<Record<string, number>>({});
 
   const teardownLocalWorker = useCallback(async () => {
     const w = localWorkerRef.current;
@@ -319,6 +339,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       setText('');
       setRestartCount(0);
       setReadyStageIndexes([]);
+      hopBytesRef.current = {};
       setStatus({ phase: 'planning' });
 
       const lock = await acquireLeaderLock(leaderLockName);
@@ -478,6 +499,14 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           ...peer,
           sendStageFrame: async (bytes, peers) => {
             log(`[communal-chat] ${elapsed()} sendStageFrame -> ${JSON.stringify(peers)} (${bytes.byteLength} bytes)`);
+            // Pipeline-handoff UI observability: last frame size per
+            // destination peerId (see UseCommunalChatHandle.hopBytes).
+            // `peers` may be a bare peerId or a list (a route can fan a
+            // single frame out to more than one destination).
+            const targets = peers === undefined ? [] : Array.isArray(peers) ? peers : [peers];
+            for (const targetId of targets) {
+              hopBytesRef.current = { ...hopBytesRef.current, [targetId]: bytes.byteLength };
+            }
             try {
               await peer!.sendStageFrame(bytes, peers);
             } catch (err) {
@@ -679,5 +708,18 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
 
   const isRunning = useCallback(() => runningRef.current, []);
 
-  return { status, plan, tokens, text, restartCount, readyStageIndexes, loadProgress, lastTiming, start, abort, isRunning };
+  return {
+    status,
+    plan,
+    tokens,
+    text,
+    restartCount,
+    readyStageIndexes,
+    loadProgress,
+    lastTiming,
+    hopBytes: hopBytesRef.current,
+    start,
+    abort,
+    isRunning,
+  };
 }

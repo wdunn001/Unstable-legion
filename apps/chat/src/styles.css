@@ -704,6 +704,59 @@ code {
   background: var(--warn);
 }
 
+/* Pipeline handoff — per-hop Codec activation-transfer visibility (layer
+ * range, wire dtype, last frame size, direct/relayed). One row per remote
+ * hop of the ACTIVE route; see PipelineHandoff.tsx. */
+.pipeline-hop-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pipeline-hop {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+}
+.pipeline-hop-route {
+  font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+.pipeline-hop-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-hop-chip {
+  font-size: 11px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.pipeline-hop-dtype {
+  color: var(--accent);
+}
+.pipeline-hop-badge-direct {
+  background: var(--chip);
+  color: var(--chip-fg);
+  border-color: var(--chip);
+}
+.pipeline-hop-badge-relayed {
+  background: var(--chip-warn-bg);
+  color: var(--warn);
+  border-color: var(--chip-warn-bg);
+}
+.pipeline-hop-badge-unknown {
+  color: var(--muted);
+}
+.pipeline-hop-badge-local {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .standing-tier {
   display: inline-block;
   font-weight: bold;

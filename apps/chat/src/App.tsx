@@ -42,6 +42,7 @@ import { JoinScreen } from './components/JoinScreen.js';
 import { ConversationList } from './components/ConversationList.js';
 import { ChatPane } from './components/ChatPane.js';
 import { MeshSidebar } from './components/MeshSidebar.js';
+import type { HopConnType } from './components/PipelineHandoff.js';
 import { TrustBadge } from './components/TrustBadge.js';
 import { TrustInterstitial } from './components/TrustInterstitial.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
@@ -330,6 +331,39 @@ function Dashboard(props: {
     telemetry: trackEvent,
     log,
   });
+
+  // ── Pipeline-handoff connection-type polling ────────────────────────
+  // `peer.peerConnectionType` is best-effort/optional (mesh-core's Peer
+  // interface — see peer.ts) and only meaningful for the CURRENT route's
+  // remote hops. Poll gently (every 4s, matching the sidebar's own 2s
+  // "stay fresh" tick's order of magnitude but slower — this hits
+  // getStats() per hop, not free) and stop entirely once there's no plan
+  // or no remote hop to ask about. Connection type can change mid-session
+  // (ICE renegotiation), so a one-shot read on planCreated isn't enough.
+  const [hopConnTypes, setHopConnTypes] = useState<Readonly<Record<string, HopConnType>>>({});
+  useEffect(() => {
+    const remoteHopPeerIds = chat.plan ? chat.plan.stages.filter((s) => s.stageIndex > 0).map((s) => s.peerId) : [];
+    if (!peer || remoteHopPeerIds.length === 0) {
+      setHopConnTypes({});
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      for (const peerId of remoteHopPeerIds) {
+        if (typeof peer.peerConnectionType !== 'function') continue;
+        void peer.peerConnectionType(peerId).then((type) => {
+          if (cancelled) return;
+          setHopConnTypes((prev) => (prev[peerId] === type ? prev : { ...prev, [peerId]: type }));
+        });
+      }
+    };
+    poll();
+    const id = setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [peer, chat.plan]);
 
   const threads = useThreads();
 
@@ -756,6 +790,14 @@ function Dashboard(props: {
           audioKeepalive={audioKeepalive}
           showAudioKeepalive={hostingConsent.consent === 'accepted'}
           toolContribution={toolContribution}
+          pipelineHandoff={{
+            stages: chat.plan?.stages ?? [],
+            hopBytes: chat.hopBytes ?? {},
+            nEmbd: modelConfig.nEmbd,
+            connTypes: hopConnTypes,
+            selfId: selfId2,
+            nickOf,
+          }}
         />
       </div>
       {trustModal && <TrustInterstitial isHostSetChange={ackedHostKey !== null} onAcknowledge={handleAcknowledge} />}

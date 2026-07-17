@@ -2,6 +2,7 @@ import type { AudioKeepaliveHandle } from '@unstable-legion/react';
 import { CapacityMeter } from './CapacityMeter.js';
 import { OccupancyMeter } from './OccupancyMeter.js';
 import { TopologyMap } from './TopologyMap.js';
+import { PipelineHandoff, type PipelineHandoffProps } from './PipelineHandoff.js';
 import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
 import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingConsentBanner.js';
@@ -20,6 +21,7 @@ export interface MeshSidebarProps {
   audioKeepalive: AudioKeepaliveHandle;
   showAudioKeepalive: boolean;
   toolContribution: UseToolContributionHandle;
+  pipelineHandoff: PipelineHandoffProps;
 }
 
 export function MeshSidebar(props: MeshSidebarProps) {
@@ -49,6 +51,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
       <CapacityMeter capacity={props.capacity} />
       {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
       <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} />
+      <PipelineHandoff {...props.pipelineHandoff} />
       <ToolContributionPanel tools={props.toolContribution} />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />

@@ -43,6 +43,16 @@ export interface TrysteroRoom {
   onPeerJoin(cb: (peerId: string) => void): void;
   onPeerLeave(cb: (peerId: string) => void): void;
   leave(): void;
+  /**
+   * Trystero's own live-connection map (`@trystero-p2p/core`'s room.mjs
+   * returns `[id, peer.connection]` pairs) — only peers with a COMPLETED
+   * WebRTC connection appear here (unlike `iceDiagnostics.ts`'s wrap,
+   * which also sees in-flight/failed attempts). Optional: a fake room in
+   * a unit test, or a future non-WebRTC Trystero strategy, may not
+   * implement it — `peerConnectionType` below treats its absence as
+   * 'unknown', never a hard error.
+   */
+  getPeers?(): Record<string, RTCPeerConnection>;
 }
 
 export type JoinRoomFn = (
@@ -117,6 +127,25 @@ export interface Peer {
   sendStageFrame(bytes: Uint8Array, peers?: string | string[]): Promise<void>;
   /** Subscribe to inbound stage-activation frames. */
   onStageFrame(cb: (bytes: Uint8Array, peerId: string) => void): () => void;
+  /**
+   * Best-effort DIRECT (P2P) vs RELAYED (via TURN) classification for a
+   * currently-connected peer's WebRTC path — pure observability for the
+   * pipeline-handoff UI, no orchestrator/relay behavior depends on this.
+   * Mirrors `iceDiagnostics.ts`'s `captureSelectedPair`: reads the
+   * nominated candidate-pair off `getStats()` and inspects both
+   * candidates' `candidateType` ('relay' on either side -> 'relayed';
+   * both host/srflx/prflx -> 'direct'). Resolves 'unknown' whenever the
+   * answer can't be determined — no connection for that peerId, the
+   * underlying Trystero room doesn't expose `getPeers` (e.g. a non-WebRTC
+   * strategy, or the Node bridge), or the stats call fails. Never throws
+   * — `getStats()` is best-effort exactly like `iceDiagnostics.ts`
+   * already treats it.
+   *
+   * Optional on the interface (additive surface — existing `Peer`
+   * literals built by hand for tests, e.g. skillResolver.test.ts's mock
+   * peer, don't need updating).
+   */
+  peerConnectionType?(peerId: string): Promise<'direct' | 'relayed' | 'unknown'>;
   /** Leave the room and stop the heartbeat. */
   leave(): void;
 }
@@ -419,6 +448,38 @@ export function joinMesh(opts: PeerOptions): Peer {
     onStageFrame(cb) {
       stageFrameListeners.add(cb);
       return () => stageFrameListeners.delete(cb);
+    },
+    async peerConnectionType(peerId) {
+      try {
+        if (typeof room.getPeers !== 'function') return 'unknown';
+        const pc = room.getPeers()[peerId];
+        if (!pc || typeof pc.getStats !== 'function') return 'unknown';
+        // Same maplike-view cast iceDiagnostics.ts's captureSelectedPair
+        // uses — RTCStatsReport IS a maplike at runtime, older lib.dom
+        // typings just don't declare `.get`.
+        const stats = (await pc.getStats()) as unknown as Map<string, Record<string, unknown>>;
+        let result: 'direct' | 'relayed' | 'unknown' = 'unknown';
+        stats.forEach((report) => {
+          if (report.type !== 'candidate-pair' || !(report as { nominated?: boolean }).nominated) return;
+          const r = report as { localCandidateId?: string; remoteCandidateId?: string };
+          const local = r.localCandidateId ? stats.get(r.localCandidateId) : undefined;
+          const remote = r.remoteCandidateId ? stats.get(r.remoteCandidateId) : undefined;
+          const localType = local?.candidateType as string | undefined;
+          const remoteType = remote?.candidateType as string | undefined;
+          if (localType === 'relay' || remoteType === 'relay') {
+            result = 'relayed';
+          } else if (
+            (localType === 'host' || localType === 'srflx' || localType === 'prflx') &&
+            (remoteType === 'host' || remoteType === 'srflx' || remoteType === 'prflx')
+          ) {
+            result = 'direct';
+          }
+        });
+        return result;
+      } catch {
+        // getStats is best-effort — never let observability break the mesh.
+        return 'unknown';
+      }
     },
     leave() {
       if (heartbeat) clearInterval(heartbeat);
