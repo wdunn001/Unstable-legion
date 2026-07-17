@@ -22,7 +22,7 @@
  * "Loading into GPU…", so a remote caller's would-be host never looks
  * "ready" while its weights are still in flight.
  */
-import type { CommunalHostPhase } from '@unstable-legion/react';
+import type { CommunalHostPhase, StageWorkerLoadProgress } from '@unstable-legion/react';
 import {
   claimLayerCount,
   deriveHostingLifecycleState,
@@ -63,10 +63,11 @@ export interface HostingConsentBannerProps {
   /** The "Contribute more" expander — undefined hides it entirely (e.g.
    * capacity math isn't ready yet). */
   contribution?: ContributionPanelProps;
-  /** Live shard download/load progress for the stage this host is
-   * currently loading — the SAME numbers `[stage-host] load progress`
-   * logs to the console, rendered as a bar. Undefined outside a load. */
-  downloadProgress?: { shardsFetched: number; totalShards: number; bytesFetched: number; totalBytes?: number };
+  /** Live load progress for the stage this host is currently loading — the
+   * SAME numbers `[stage-host] load progress` logs to the console, rendered as
+   * a bar. Carries the loader's own `phase` and, while opening, the VRAM
+   * upload's `openFraction`. Undefined outside a load. */
+  downloadProgress?: StageWorkerLoadProgress;
 }
 
 /**
@@ -82,19 +83,28 @@ function DownloadProgressBar(props: {
   layerCount: number;
   lifecycle: HostingLifecycleState;
 }) {
-  const fraction = downloadProgressFraction(props.progress);
-  const pct = Math.round(fraction * 100);
-  const label =
-    props.lifecycle === 'opening'
-      ? `Loading ${props.layerCount} layer${props.layerCount === 1 ? '' : 's'} into GPU — ${formatGigabytes(
-          props.progress.totalBytes ?? props.progress.bytesFetched,
-        )} fetched, opening stage…`
-      : `${downloadProgressLabel(props.progress, props.layerCount)} · ${pct}%`;
+  const opening = props.lifecycle === 'opening';
+  // While opening, the honest number is the VRAM upload's own progress — the
+  // download is already done, so its byte fraction would just sit at 100% for
+  // minutes. `openFraction` is undefined on a host whose wasm predates the
+  // progress reporter: show the phase without a false percentage rather than
+  // claiming 0%.
+  const openPct = props.progress.openFraction !== undefined ? Math.round(props.progress.openFraction * 100) : undefined;
+  const pct = opening ? openPct : Math.round(downloadProgressFraction(props.progress) * 100);
+  const layers = `${props.layerCount} layer${props.layerCount === 1 ? '' : 's'}`;
+  const label = opening
+    ? openPct !== undefined
+      ? `Loading ${layers} into GPU · ${openPct}%`
+      : `Loading ${layers} into GPU — ${formatGigabytes(props.progress.totalBytes ?? props.progress.bytesFetched)} fetched, opening stage…`
+    : `${downloadProgressLabel(props.progress, props.layerCount)} · ${pct}%`;
+  // Indeterminate (an opening stage with no reported fraction) => omit
+  // aria-valuenow, which is how a progressbar signals "unknown".
+  const indeterminate = opening && openPct === undefined;
   return (
     <div
       className="host-download"
       role="progressbar"
-      aria-valuenow={props.lifecycle === 'opening' ? 100 : pct}
+      {...(indeterminate ? {} : { 'aria-valuenow': pct })}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={label}
@@ -103,7 +113,7 @@ function DownloadProgressBar(props: {
       <div className="capacity-bar-track">
         <div
           className="capacity-bar-fill capacity-bar-fill-ready"
-          style={{ width: `${props.lifecycle === 'opening' ? 100 : pct}%` }}
+          style={{ width: `${indeterminate ? 100 : pct}%` }}
         />
       </div>
     </div>

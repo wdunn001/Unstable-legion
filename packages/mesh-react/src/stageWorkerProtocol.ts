@@ -43,6 +43,13 @@ export interface StageWorkerLoadProgress {
    * runtime — callers treat undefined as 'downloading'.
    */
   phase?: 'downloading' | 'opening';
+  /**
+   * 0..1 progress of the VRAM upload while `phase === 'opening'`, relayed from
+   * llama.cpp's own byte accounting (skippy MODEL_OPEN_PROGRESS -> stage_glue
+   * -> the loader). Undefined means the open is running but this host's wasm
+   * predates the reporter — show an indeterminate state, never 0%.
+   */
+  openFraction?: number;
 }
 
 export type StageWorkerRequest =

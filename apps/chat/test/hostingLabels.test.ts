@@ -237,3 +237,18 @@ test('deriveHostingLifecycleState: a cache-warm load reports opening from the lo
     'downloading',
   );
 });
+
+test('deriveHostingLifecycleState: openFraction does not change the phase decision', () => {
+  // openFraction is presentation detail for the 'opening' state; the lifecycle
+  // itself is still decided by the loader's phase. A partial VRAM upload is
+  // still 'opening', not 'hosting'.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'loading',
+      claim: { layerStart: 2, layerEnd: 36 },
+      downloadProgress: { shardsFetched: 36, totalShards: 36, phase: 'opening' },
+    }),
+    'opening',
+  );
+});
