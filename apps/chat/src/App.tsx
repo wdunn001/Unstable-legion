@@ -594,33 +594,6 @@ function Dashboard(props: {
   }
 
   const busy = chat.status.phase === 'planning' || chat.status.phase === 'starting' || chat.status.phase === 'running';
-  // Turn the raw stage-load progress into a human line + 0..1 bar for the
-  // chat waiting-state — the fix for "it loads for 8 minutes and tells me
-  // nothing." Byte fraction when the host reports totalBytes, else shard
-  // count; phase relabels the silent native-open / warm-up tail.
-  const chatLoadProgress = useMemo(() => {
-    const lp = chat.loadProgress;
-    if (!lp) return undefined;
-    const model = modelConfig.modelLabel;
-    const fmt = (n: number): string =>
-      n >= 1_073_741_824 ? `${(n / 1_073_741_824).toFixed(1)} GB` : `${Math.round(n / 1_048_576)} MB`;
-    const fraction =
-      lp.totalBytes && lp.totalBytes > 0
-        ? lp.bytesFetched / lp.totalBytes
-        : lp.totalShards > 0
-          ? lp.shardsFetched / lp.totalShards
-          : 0;
-    let label: string;
-    if (lp.phase === 'warming') {
-      label = `Warming up ${model} on the GPU…`;
-    } else if (lp.phase === 'opening') {
-      label = `Assembling ${model} — ${lp.totalShards} shards in, opening stage…`;
-    } else {
-      const bytes = lp.totalBytes ? ` · ${fmt(lp.bytesFetched)}/${fmt(lp.totalBytes)}` : '';
-      label = `Loading ${model} — shard ${lp.shardsFetched}/${lp.totalShards}${bytes}`;
-    }
-    return { label, fraction: Math.max(0, Math.min(1, fraction)) };
-  }, [chat.loadProgress, modelConfig.modelLabel]);
   const remoteCount = peer ? roster.filter((r) => r.peerId !== peer.selfId).length : 0;
   // ICE observability (mesh-core's iceDiagnostics, installed by joinMesh):
   // distinguishes "nobody else is here" from "someone is TRYING to reach us
@@ -645,7 +618,6 @@ function Dashboard(props: {
       // rounding if detokenization ever normalizes whitespace/casing).
       chatTokens: chat.tokens,
       chatRestartCount: chat.restartCount,
-      chatLoadProgress: chat.loadProgress,
       threadCount: threads.threads.length,
       activeThreadId: threads.activeThreadId,
       trustModalOpen: trustModal !== null,
@@ -667,7 +639,6 @@ function Dashboard(props: {
     chat.text,
     chat.tokens,
     chat.restartCount,
-    chat.loadProgress,
     threads.threads,
     threads.activeThreadId,
     trustModal,
@@ -725,7 +696,6 @@ function Dashboard(props: {
           busy={busy}
           capacity={capacity}
           notice={chatNotice}
-          loadProgress={chatLoadProgress}
           onSend={handleSend}
           onStop={() => {
             // A stop during a tool round-trip must also stop the loop from

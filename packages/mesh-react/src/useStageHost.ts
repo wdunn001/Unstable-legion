@@ -387,6 +387,27 @@ interface LoadedConfig {
   wireDtype: 'f32' | 'f16';
 }
 
+/**
+ * The loaded-worker state that MUST survive a re-subscribe of the "answer"
+ * effect below. It used to live as `let`s inside that effect, which meant a
+ * remount (the effect's deps include `enabled` = hosting&&isLeader, and
+ * leader-election churn flips it) ran the cleanup's `disposeWorker()` and
+ * started a fresh empty closure — silently throwing away a stage that had
+ * ALREADY finished (or was mid-)preloading its 4.4GB into VRAM. The next
+ * `stage.session.open` then cold-re-downloaded from shard 1 ("it says ready,
+ * then loads for 8 min when I send a prompt"), and — worse for a REMOTE
+ * caller — looked like a non-responsive/failed host. Holding this in a
+ * hook-lifetime ref makes the reuse guard in `ensureWorkerLoaded` survive
+ * the churn, and disposal now happens only on true unmount.
+ */
+interface StageEngine {
+  workerClient: StageWorkerClient | undefined;
+  loadedConfig: LoadedConfig | undefined;
+  loadInFlight: Promise<void> | undefined;
+  hostSessions: Map<string, HostSessionState>;
+  loadEpoch: number;
+}
+
 function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
   return (
     a.modelId === b.modelId &&
@@ -490,6 +511,36 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // ref-bridge pattern as `preloadRequestRef`/`republishNowRef`.
   const forceDisconnectRequestRef = useRef<(reason: string) => void>(() => undefined);
 
+  // The loaded worker + its sessions live HERE, at hook lifetime — NOT as
+  // `let`s inside the "answer" effect — so a re-subscribe of that effect
+  // (leader-election churn flipping `enabled`, or any other dep change)
+  // cannot dispose a stage the host already spent minutes loading into
+  // VRAM. See StageEngine's doc. Disposal is deferred to true unmount below.
+  const engineRef = useRef<StageEngine | null>(null);
+  if (!engineRef.current) {
+    engineRef.current = { workerClient: undefined, loadedConfig: undefined, loadInFlight: undefined, hostSessions: new Map(), loadEpoch: 0 };
+  }
+  useEffect(() => {
+    // Dispose the resident worker ONLY when the component truly unmounts
+    // (tab/route gone). Hosting toggled off or leadership lost stops
+    // advertising (suppressAdvertise) and serving new sessions, but keeps
+    // the weights resident — re-electing/re-enabling must not pay the 4.4GB
+    // reload again. (A future "free VRAM after a sustained hosting-off"
+    // grace timer can hang off `enabled` here; residency is the safe
+    // default and matches the product intent that a committed stage stays
+    // ready for the next caller.)
+    return () => {
+      const eng = engineRef.current;
+      if (eng?.workerClient) void eng.workerClient.dispose().catch(() => undefined);
+      if (eng) {
+        eng.workerClient = undefined;
+        eng.loadedConfig = undefined;
+        eng.loadInFlight = undefined;
+        eng.hostSessions.clear();
+      }
+    };
+  }, []);
+
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -578,24 +629,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const meshPeer: Peer = peer;
     const log = (line: string) => logRef.current(line);
 
-    let workerClient: StageWorkerClient | undefined;
-    let loadedConfig: LoadedConfig | undefined;
-    // Guards against two near-simultaneous session-open requests each
-    // starting their OWN `.load()` call: two concurrent driver tabs can
-    // both send `stage.load`/`stage.session.open` before either has
-    // finished loading (a real scenario this hook must handle — that's
-    // the whole point of M2). Without this, the second request would see
-    // `workerClient === undefined` too and race a second full model
-    // fetch, each overwriting `workerClient` when it resolves. Every
-    // caller of `ensureWorkerLoaded` while a load is in flight awaits
-    // THIS SAME promise instead of starting its own.
-    let loadInFlight: Promise<void> | undefined;
-    const hostSessions = new Map<string, HostSessionState>();
+    // Worker/session/load state lives on the hook-lifetime `engineRef` (see
+    // StageEngine's doc), NOT as effect-local `let`s — so a re-subscribe of
+    // THIS effect (leader-election churn etc.) cannot dispose a stage the
+    // host already loaded into VRAM. `engine.loadInFlight` still guards two
+    // near-simultaneous opens from each starting their OWN `.load()` (M2:
+    // two driver tabs can both `stage.session.open` before either finishes —
+    // the second awaits THIS SAME promise). `engine.loadEpoch` bumps every
+    // successful (re)load (MeshLoadedStage.epoch's doc). `hostSessions` is
+    // aliased to the same persistent Map (mutated in place, never reassigned)
+    // so active sessions survive a re-subscribe too.
+    const engine = engineRef.current!;
+    const hostSessions = engine.hostSessions;
     let queue: readonly QueueEntry<PendingOpen>[] = [];
-    // M3: bumped every successful (re)load — see MeshLoadedStage.epoch's
-    // doc comment in types.ts (lets a consumer tell "this is a fresh load
-    // of the same range" apart from stale cap data during a fast reload).
-    let loadEpoch = 0;
 
     function syncPublicState(): void {
       setSessions(
@@ -615,19 +661,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       setQueueLength(queue.length);
       sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: hostSessions.size };
       loadedStagesRef.current =
-        workerClient && loadedConfig
+        engine.workerClient && engine.loadedConfig
           ? [
               {
-                modelId: loadedConfig.modelId,
-                layerStart: loadedConfig.layerStart,
-                layerEnd: loadedConfig.layerEnd,
-                includeEmbeddings: workerClient.isFirst,
-                includeOutput: workerClient.isFinal,
-                ctxSize: loadedConfig.ctxSize,
-                wireDtype: loadedConfig.wireDtype,
+                modelId: engine.loadedConfig.modelId,
+                layerStart: engine.loadedConfig.layerStart,
+                layerEnd: engine.loadedConfig.layerEnd,
+                includeEmbeddings: engine.workerClient.isFirst,
+                includeOutput: engine.workerClient.isFinal,
+                ctxSize: engine.loadedConfig.ctxSize,
+                wireDtype: engine.loadedConfig.wireDtype,
                 maxSessions: driverMaxSessions,
                 activeSessions: hostSessions.size,
-                epoch: loadEpoch,
+                epoch: engine.loadEpoch,
               },
             ]
           : [];
@@ -639,9 +685,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     }
 
     async function disposeWorker(): Promise<void> {
-      const w = workerClient;
-      workerClient = undefined;
-      loadedConfig = undefined;
+      const w = engine.workerClient;
+      engine.workerClient = undefined;
+      engine.loadedConfig = undefined;
       if (w) await w.dispose().catch(() => undefined);
     }
 
@@ -658,17 +704,17 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         ctxSize: req.ctxSize,
         wireDtype: req.wireDtype,
       };
-      if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+      if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) return;
 
-      if (loadInFlight) {
+      if (engine.loadInFlight) {
         // Someone else is already loading (the common concurrent-open
         // race) — wait for THAT load, then re-check instead of starting
         // a second one.
-        await loadInFlight.catch(() => undefined);
-        if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+        await engine.loadInFlight.catch(() => undefined);
+        if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) return;
       }
 
-      if (workerClient && hostSessions.size > 0) {
+      if (engine.workerClient && hostSessions.size > 0) {
         throw new Error(
           `host is already serving ${hostSessions.size} session(s) on a different stage configuration`,
         );
@@ -770,15 +816,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         );
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
         await warmUpStageWorker(client, log);
-        workerClient = client;
-        loadedConfig = want;
-        loadEpoch += 1;
+        engine.workerClient = client;
+        engine.loadedConfig = want;
+        engine.loadEpoch += 1;
       })();
-      loadInFlight = doLoad;
+      engine.loadInFlight = doLoad;
       try {
         await doLoad;
       } finally {
-        if (loadInFlight === doLoad) loadInFlight = undefined;
+        if (engine.loadInFlight === doLoad) engine.loadInFlight = undefined;
       }
     }
 
@@ -836,7 +882,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     async function openNow(req: PendingOpen): Promise<void> {
       try {
         await ensureWorkerLoaded(req);
-        const client = workerClient!;
+        const client = engine.workerClient!;
         await client.sessionCreate(req.sessionId);
         let decoder: ActivationWireDecoder | undefined;
         let awaitingHeader = true;
@@ -944,7 +990,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       if (!state) return;
       hostSessions.delete(sessionId);
       syncPublicState();
-      await workerClient?.sessionFree(sessionId).catch(() => undefined);
+      await engine.workerClient?.sessionFree(sessionId).catch(() => undefined);
       log(`[stage-host] session FREED sessionId=${sessionId} reason=${reason} active=${hostSessions.size}/${driverMaxSessions}`);
       // M4 — the host directly witnessed this driver occupying a lane for
       // [createdAt, now), regardless of why the session ended (natural
@@ -1086,7 +1132,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       state.lastFrameAt = Date.now();
       void (async () => {
         try {
-          const client = workerClient;
+          const client = engine.workerClient;
           if (!client) return;
           if (state.awaitingHeader) {
             state.decoder = createActivationWireDecoder(bytes);
@@ -1179,7 +1225,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       unsubFrame();
       preloadRequestRef.current = () => undefined;
       forceDisconnectRequestRef.current = () => undefined;
-      void disposeWorker();
+      // Deliberately NOT disposing the worker here. This effect re-subscribes
+      // on `enabled`/leadership churn, and disposing on every re-subscribe is
+      // exactly what silently threw away a stage already loaded into VRAM
+      // (see StageEngine's doc). The weights live on `engineRef` and are
+      // disposed only on true unmount (the []-effect near the top of the
+      // hook); a re-subscribe re-adopts the same resident engine and reuses it.
     };
     // `log` deliberately excluded — see logRef above; this effect must not
     // tear down (and silently terminate in-flight worker/session state)

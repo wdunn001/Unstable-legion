@@ -15,15 +15,15 @@
  * capability probe resolves AFTER an earlier accept on a since-changed
  * device) 'accepted' states.
  *
- * NOTE: `../hostingLabels.js` now has the lifecycle-aware
- * (Downloading/Loading into GPU/Hosting) + layer-count-clean label
- * helpers this component SHOULD render (see that module's doc comment
- * and its unit tests) — deliberately not wired in yet. Split out into a
- * follow-up PR so the functional load-path fixes (WebGPU device limits,
- * stall watchdog, OPFS persistence) could ship first; this component's
- * JSX is UNCHANGED pending that follow-up.
+ * The status row is driven by `../hostingLabels.js`'s lifecycle state
+ * machine (`deriveHostingLifecycleState` → `hostingStatusLabel`): the word
+ * "Hosting" appears ONLY once the stage is genuinely loaded into VRAM and
+ * advertising/serving — before that it reads "Downloading model…" then
+ * "Loading into GPU…", so a remote caller's would-be host never looks
+ * "ready" while its weights are still in flight.
  */
 import type { CommunalHostPhase } from '@unstable-legion/react';
+import { deriveHostingLifecycleState, hostingStatusLabel } from '../hostingLabels.js';
 import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
 
 export type HostingConsent = 'unset' | 'accepted' | 'declined';
@@ -125,6 +125,20 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
   }
 
   if (props.consent === 'accepted') {
+    // The right-drawer host lifecycle: off → Ready to host → Downloading
+    // model… → Loading into GPU… → Hosting N layers. Same signals the
+    // console logs, but a caller (local OR remote) now sees WHY a host isn't
+    // answering yet instead of a stage that claims "ready" mid-download.
+    const lifecycle = deriveHostingLifecycleState({
+      hostingEnabled: props.hostingEnabled,
+      phase: props.phase,
+      claim: props.claim,
+      downloadProgress: props.downloadProgress,
+    });
+    const statusLabel = hostingStatusLabel(lifecycle, {
+      claim: props.claim,
+      capacityPreviewLabel: props.capacitySummaryLabel.replace(/^Hosting\s+/i, ''),
+    });
     return (
       <div className="consent-status" role="region" aria-label="Hosting status">
         <label className="consent-toggle">
@@ -134,18 +148,15 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
             disabled={!props.capable}
             onChange={(e) => props.onToggleHosting(e.target.checked)}
           />
-          <span>
-            Hosting{' '}
-            {props.claim
-              ? `layers ${props.claim.layerStart}–${props.claim.layerEnd}`
-              : props.hostingEnabled
-                ? `(${props.phase}…)`
-                : '(off)'}
-          </span>
+          <span className={`consent-status-label consent-status-${lifecycle}`}>{statusLabel}</span>
         </label>
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
         <span className="consent-capacity-summary">{props.capacitySummaryLabel}</span>
-        {props.hostingEnabled && props.downloadProgress && <DownloadProgressBar progress={props.downloadProgress} />}
+        {/* The bar stays visible through 'opening' (every shard fetched, native
+            load into VRAM running) so "Loading into GPU…" isn't a bare spinner. */}
+        {props.hostingEnabled && (lifecycle === 'downloading' || lifecycle === 'opening') && props.downloadProgress && (
+          <DownloadProgressBar progress={props.downloadProgress} />
+        )}
         {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
         {props.capable && props.contribution && <ContributionPanel {...props.contribution} />}
       </div>

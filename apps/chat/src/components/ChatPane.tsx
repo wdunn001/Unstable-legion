@@ -12,10 +12,6 @@ export interface ChatPaneProps {
   /** Driver-side failure/reconnect notice — a visible card, never a silent
    * hang (see `deriveChatNotice`). Undefined when there's nothing to say. */
   notice?: ChatNoticeView;
-  /** Live model-assembly progress while a stage host loads its slice —
-   * the cure for the silent multi-minute cold load. `fraction` is 0..1.
-   * Undefined once assembled or before any load starts. */
-  loadProgress?: { label: string; fraction: number };
   onSend: (text: string) => void;
   onStop: () => void;
 }
@@ -62,20 +58,6 @@ export function ChatPane(props: ChatPaneProps) {
             {props.notice.kind === 'retrying' ? '⏳' : '⚠'}
           </span>
           <span className="chat-notice-message">{props.notice.message}</span>
-        </div>
-      )}
-      {props.loadProgress && (
-        <div className="chat-loadbar" role="status" aria-live="polite">
-          <div className="chat-loadbar-label">
-            <span className="chat-loadbar-spinner" aria-hidden="true" />
-            {props.loadProgress.label}
-          </div>
-          <div className="chat-loadbar-track">
-            <div
-              className="chat-loadbar-fill"
-              style={{ width: `${Math.round(props.loadProgress.fraction * 100)}%` }}
-            />
-          </div>
         </div>
       )}
       <Composer disabled={disabled} disabledReason={disabledReason} busy={props.busy} onSend={props.onSend} onStop={props.onStop} />
