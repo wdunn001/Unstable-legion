@@ -173,12 +173,33 @@ export type CommunalChatStatus =
   | { phase: 'aborted'; reason: string }
   | { phase: 'error'; error: string };
 
+/**
+ * Live view of a stage host loading its slice (shard download → native open
+ * → warm-up), surfaced from the orchestrator's `loadProgress` events so the
+ * chat waiting-state can show "Loading Qwen3-8B — shard 24/36 · 2.6/4.4 GB"
+ * instead of a silent multi-minute spinner. Undefined once the pipeline is
+ * assembled (or before any load starts).
+ */
+export interface StageLoadProgressView {
+  stageIndex: number;
+  peerId: string;
+  shardsFetched: number;
+  totalShards: number;
+  bytesFetched: number;
+  totalBytes?: number;
+  phase?: 'downloading' | 'opening' | 'warming';
+}
+
 export interface UseCommunalChatHandle {
   status: CommunalChatStatus;
   plan?: CommunalRoute['plan'];
   tokens: readonly number[];
   text: string;
   restartCount: number;
+  /** Live stage-load progress while the pipeline assembles — drives the
+   * chat waiting-state's "shard 24/36 · 2.6/4.4 GB" line. Undefined once
+   * assembled (cleared on the first token) or before any load begins. */
+  loadProgress?: StageLoadProgressView;
   /** stageIndex values that have completed attach (`stage.session.accept`)
    * for the CURRENT route — UI topology display can render a per-stage
    * readiness badge, mirroring `useStagePipeline`'s `readyStageIndexes`. */
@@ -234,6 +255,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   const [text, setText] = useState('');
   const [restartCount, setRestartCount] = useState(0);
   const [readyStageIndexes, setReadyStageIndexes] = useState<readonly number[]>([]);
+  const [loadProgress, setLoadProgress] = useState<StageLoadProgressView | undefined>(undefined);
 
   const lockRef = useRef<{ release: () => void } | null>(null);
   const localWorkerRef = useRef<StageWorkerClient | null>(null);
@@ -493,6 +515,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               setPlan(ev.plan);
               setRestartCount(ev.restartCount);
               setReadyStageIndexes([]);
+              setLoadProgress(undefined);
               segmentStartAt = Date.now();
               segmentTokenCount = 0;
               segmentHostLayers = ev.plan.stages
@@ -502,10 +525,26 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'stageReady': {
               setReadyStageIndexes((prev) => (prev.includes(ev.stageIndex) ? prev : [...prev, ev.stageIndex]));
+              // This stage finished loading — drop its in-flight progress so
+              // the UI doesn't keep showing a load line for an assembled stage.
+              setLoadProgress((prev) => (prev && prev.stageIndex === ev.stageIndex ? undefined : prev));
+              break;
+            }
+            case 'loadProgress': {
+              setLoadProgress({
+                stageIndex: ev.stageIndex,
+                peerId: ev.peerId,
+                shardsFetched: ev.shardsFetched,
+                totalShards: ev.totalShards,
+                bytesFetched: ev.bytesFetched,
+                totalBytes: ev.totalBytes,
+                phase: ev.phase,
+              });
               break;
             }
             case 'token': {
               segmentTokenCount += 1;
+              setLoadProgress(undefined); // assembled + generating — no more load line
               const { generatedTokens } = handle.tokenHistory();
               setTokens(generatedTokens);
               void Promise.resolve(tokenizer.detokenize(generatedTokens))
@@ -544,6 +583,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
         lockRef.current?.release();
         lockRef.current = null;
         runningRef.current = false;
+        setLoadProgress(undefined);
       }
       return true;
     },
@@ -583,5 +623,5 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
 
   const isRunning = useCallback(() => runningRef.current, []);
 
-  return { status, plan, tokens, text, restartCount, readyStageIndexes, start, abort, isRunning };
+  return { status, plan, tokens, text, restartCount, readyStageIndexes, loadProgress, start, abort, isRunning };
 }

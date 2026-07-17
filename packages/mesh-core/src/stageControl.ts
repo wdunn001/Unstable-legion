@@ -81,6 +81,34 @@ export interface StageProgressPayload {
   seq: number;
 }
 
+/**
+ * Unsolicited host→driver push emitted WHILE the host is loading a stage
+ * in answer to a `stage.load` / `stage.session.open` — the multi-GB shard
+ * download + native `legion_stage_open` + WebGPU warm-up that can take many
+ * minutes on an ordinary link. Before this frame existed the driver saw
+ * NOTHING between "sent stage.load" and "got stage.ready ~8 min later",
+ * so its load wait was a single flat timeout that (a) fired spuriously
+ * mid-download (the 5-minute `loadMs` stall → forced replan seen live) and
+ * (b) left the chat UI frozen with no "shard 24/36…" feedback. The driver
+ * resets its no-progress stall clock on each of these (see
+ * `PendingToolCallTracker.resetTimeout`) and surfaces the counts to the UI.
+ *
+ * Its envelope `callId` is a FRESH id (never the load's) so it can never
+ * settle the `stage.ready`/`stage.session.accept` waiter registered under
+ * the load's callId; correlation to the in-flight load is by source peer +
+ * `sessionId`. `phase` lets the UI label the silent tail of the load
+ * (`opening` = native open after the last shard, `warming` = WebGPU
+ * warm-up) instead of showing a stuck "shard N/N".
+ */
+export interface StageLoadProgressPayload {
+  sessionId: string;
+  shardsFetched: number;
+  totalShards: number;
+  bytesFetched: number;
+  totalBytes?: number;
+  phase?: 'downloading' | 'opening' | 'warming';
+}
+
 export interface StageTokenPayload {
   sessionId: string;
   token: number;
@@ -151,6 +179,7 @@ export type StageControlKind =
   | 'stage.ping'
   | 'stage.pong'
   | 'stage.progress'
+  | 'stage.load.progress'
   | 'stage.token'
   | 'stage.session.open'
   | 'stage.session.accept'
@@ -163,6 +192,7 @@ const RESULT_KINDS: ReadonlySet<StageControlKind> = new Set([
   'stage.ready',
   'stage.pong',
   'stage.progress',
+  'stage.load.progress',
   'stage.token',
   'stage.session.accept',
   'stage.session.busy',
@@ -185,6 +215,7 @@ export type StageControlMessage =
   | StageControlMessageOf<'stage.ping', StagePingPayload>
   | StageControlMessageOf<'stage.pong', StagePongPayload>
   | StageControlMessageOf<'stage.progress', StageProgressPayload>
+  | StageControlMessageOf<'stage.load.progress', StageLoadProgressPayload>
   | StageControlMessageOf<'stage.token', StageTokenPayload>
   | StageControlMessageOf<'stage.session.open', StageSessionOpenPayload>
   | StageControlMessageOf<'stage.session.accept', StageSessionAcceptPayload>
@@ -284,6 +315,17 @@ export function isStageProgressPayload(x: unknown): x is StageProgressPayload {
   );
 }
 
+export function isStageLoadProgressPayload(x: unknown): x is StageLoadProgressPayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  if (!Number.isInteger(x.shardsFetched) || (x.shardsFetched as number) < 0) return false;
+  if (!Number.isInteger(x.totalShards) || (x.totalShards as number) < 0) return false;
+  if (typeof x.bytesFetched !== 'number' || (x.bytesFetched as number) < 0) return false;
+  if (x.totalBytes !== undefined && (typeof x.totalBytes !== 'number' || (x.totalBytes as number) < 0)) return false;
+  if (x.phase !== undefined && x.phase !== 'downloading' && x.phase !== 'opening' && x.phase !== 'warming') return false;
+  return true;
+}
+
 export function isStageTokenPayload(x: unknown): x is StageTokenPayload {
   if (!isRecord(x)) return false;
   if (typeof x.sessionId !== 'string') return false;
@@ -333,6 +375,7 @@ const PAYLOAD_GUARDS: { [K in StageControlKind]: (x: unknown) => boolean } = {
   'stage.ping': isStagePingPayload,
   'stage.pong': isStagePongPayload,
   'stage.progress': isStageProgressPayload,
+  'stage.load.progress': isStageLoadProgressPayload,
   'stage.token': isStageTokenPayload,
   'stage.session.open': isStageSessionOpenPayload,
   'stage.session.accept': isStageSessionAcceptPayload,
@@ -426,6 +469,18 @@ export function makeStagePong(sessionId: string, sentAtMs: number, callId: strin
 }
 export function makeStageProgress(sessionId: string, tokensDecoded: number, seq: number, callId = newCallId()): StageControlMessageFor<'stage.progress'> {
   return { kind: 'stage.progress', callId, sessionId, payload: { sessionId, tokensDecoded, seq } };
+}
+/**
+ * Load-progress push. `callId` defaults to a FRESH id on purpose (never
+ * the load's callId) so this frame can't settle the load's ready/accept
+ * waiter — see `StageLoadProgressPayload`'s doc.
+ */
+export function makeStageLoadProgress(
+  sessionId: string,
+  payload: Omit<StageLoadProgressPayload, 'sessionId'>,
+  callId = newCallId(),
+): StageControlMessageFor<'stage.load.progress'> {
+  return { kind: 'stage.load.progress', callId, sessionId, payload: { ...payload, sessionId } };
 }
 export function makeStageToken(
   sessionId: string,

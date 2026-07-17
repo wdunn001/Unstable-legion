@@ -50,6 +50,7 @@ import {
   stageTokenCallId,
   type StageControlMessage,
   type StageLoadPayload,
+  type StageLoadProgressPayload,
 } from './stageControl.js';
 import { encodeStageFrameEnvelope } from './stageFrameEnvelope.js';
 import { deterministicHash, type CommunalHostStageAd } from './communalTopology.js';
@@ -83,8 +84,29 @@ export interface DriverStageHooks {
 export interface StageOrchestratorTimeouts {
   /** Preflight stage.ping -> stage.pong timeout. Default 10_000. */
   pingMs?: number;
-  /** stage.load -> stage.ready timeout (model fetch across LAN/WAN). Default 120_000. */
+  /**
+   * @deprecated Superseded by the progress-aware pair below. Still honored
+   * as the `loadStallMs` default when that isn't given, so existing callers
+   * keep working. A multi-GB load has no fixed duration a flat timeout can
+   * safely encode (see loadWatchdog.ts) — this used to fire mid-download and
+   * force a spurious replan.
+   */
   loadMs?: number;
+  /**
+   * NO-PROGRESS window for a stage load: the deadline is reset on every
+   * `stage.load.progress` push from the host, so a healthy-but-slow load
+   * never trips it; only genuine silence does. Kept at the old flat `loadMs`
+   * value by default so a host on an OLD build that sends no progress frames
+   * degrades to exactly the previous behavior (no regression). Default:
+   * `loadMs ?? 300_000`.
+   */
+  loadStallMs?: number;
+  /**
+   * Absolute backstop for a stage load regardless of progress — guards the
+   * pathological "progress trickles forever, never finishes" case.
+   * Default 1_800_000 (30 min), mirroring the host's own LOAD_CEILING_MS.
+   */
+  loadCeilingMs?: number;
   /** Per-step decode timeout before a TPOT estimate exists. Default 20_000. */
   bootstrapStepMs?: number;
   /** Floor for the adaptive 10x-TPOT per-step timeout. Default 5_000. */
@@ -137,6 +159,21 @@ export type StageOrchestratorEvent =
   | { type: 'stageReady'; stageIndex: number; peerId: string }
   | { type: 'token'; token: number; seq: number; done: boolean }
   | { type: 'progress'; stageIndex: number; tokensDecoded: number }
+  /** A host is still LOADING a stage (shard download / native open / warm-up)
+   * in answer to our stage.load/session.open — surfaced so the chat UI can
+   * show "Loading Qwen3-8B — shard 24/36 · 2.6/4.4 GB" instead of a frozen
+   * spinner during the multi-minute cold load. `stageIndex` is -1 if the
+   * source peer isn't (yet) in the current plan. */
+  | {
+      type: 'loadProgress';
+      stageIndex: number;
+      peerId: string;
+      shardsFetched: number;
+      totalShards: number;
+      bytesFetched: number;
+      totalBytes?: number;
+      phase?: StageLoadProgressPayload['phase'];
+    }
   | { type: 'stall'; reason: string }
   | { type: 'replan'; lostPeerId?: string; graceful: boolean; plan: StagePlan; restartCount: number }
   | { type: 'aborted'; reason: string }
@@ -209,11 +246,61 @@ async function sendAndAwaitControl(
   return decoded;
 }
 
+/** The load a session closure is currently awaiting — shared between
+ * `sendLoadAndAwaitWithProgress` and the closure's `onTool` handler so a
+ * `stage.load.progress` push can reset THIS load's stall clock. */
+interface ActiveLoad {
+  peerId: string;
+  callId: string;
+  stallMs: number;
+}
+
+/**
+ * Progress-aware send-and-await for a stage LOAD (`stage.load` /
+ * `stage.session.open`), replacing a flat `loadMs` timeout that couldn't
+ * tell "slowly downloading 4.4GB" from "host died" — it fired mid-download
+ * and forced a spurious replan (observed live at the 5-minute mark).
+ *
+ * The ready/accept waiter is registered with `stallMs` as its timeout, and
+ * the closure's `onTool` handler calls `tracker.resetTimeout(callId,
+ * stallMs)` on every `stage.load.progress` from this peer — so the deadline
+ * only fires after genuine SILENCE (`stallMs` with no progress), never
+ * during a healthy slow load. A separate `ceilingMs` backstop guards the
+ * "progress forever, never finishes" pathology. `setActiveLoad` publishes
+ * the in-flight load to the shared handler for the duration of the wait.
+ */
+async function sendLoadAndAwaitWithProgress(
+  peer: StageOrchestratorPeer,
+  tracker: PendingToolCallTracker,
+  msg: StageControlMessage,
+  peerId: string,
+  stallMs: number,
+  ceilingMs: number,
+  setActiveLoad: (a: ActiveLoad | undefined) => void,
+): Promise<StageControlMessage> {
+  const waiter = tracker.expect(msg.callId, stallMs);
+  const ceiling = setTimeout(() => {
+    tracker.rejectCall(msg.callId, `stage load exceeded overall ceiling of ${ceilingMs}ms (callId=${msg.callId})`);
+  }, ceilingMs);
+  setActiveLoad({ peerId, callId: msg.callId, stallMs });
+  try {
+    await peer.sendTool(encodeStageControl(msg), peerId);
+    const reply = await waiter;
+    const decoded = decodeStageControl({ kind: 'result', ...reply });
+    if (!decoded) throw new Error(`malformed reply to ${msg.kind} (callId=${msg.callId})`);
+    return decoded;
+  } finally {
+    clearTimeout(ceiling);
+    setActiveLoad(undefined);
+  }
+}
+
 // ── Driver session ───────────────────────────────────────────────────────
 
 export function runDriverStageSession(opts: DriverStageSessionOptions): StageSessionHandle {
   const pingMs = opts.timeouts?.pingMs ?? 10_000;
-  const loadMs = opts.timeouts?.loadMs ?? 120_000;
+  const loadStallMs = opts.timeouts?.loadStallMs ?? opts.timeouts?.loadMs ?? 300_000;
+  const loadCeilingMs = opts.timeouts?.loadCeilingMs ?? 1_800_000;
   const bootstrapStepMs = opts.timeouts?.bootstrapStepMs ?? 20_000;
   const stepTimeoutFloorMs = opts.timeouts?.stepTimeoutFloorMs ?? 5_000;
 
@@ -229,6 +316,8 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
+  // The stage load currently being awaited (see sendLoadAndAwaitWithProgress).
+  let activeLoad: ActiveLoad | undefined;
 
   let resolveResult!: (r: StageSessionResult) => void;
   const resultPromise = new Promise<StageSessionResult>((resolve) => {
@@ -244,9 +333,28 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
   const unsubTool = opts.peer.onTool((frame, peerId) => {
     if (!isStageControlFrame(frame)) return;
     if (frame.kind === 'result') {
+      // A load-progress push carries a FRESH callId (never the load's), so
+      // it never settles the ready/accept waiter — decode it first and use
+      // it to reset THIS peer's in-flight load stall clock + drive the UI.
+      const early = decodeStageControl(frame);
+      if (early?.kind === 'stage.load.progress') {
+        const p = early.payload;
+        emitter.emit({
+          type: 'loadProgress',
+          stageIndex: plan.stages.findIndex((s) => s.peerId === peerId),
+          peerId,
+          shardsFetched: p.shardsFetched,
+          totalShards: p.totalShards,
+          bytesFetched: p.bytesFetched,
+          totalBytes: p.totalBytes,
+          phase: p.phase,
+        });
+        if (activeLoad && activeLoad.peerId === peerId) controlTracker.resetTimeout(activeLoad.callId, activeLoad.stallMs);
+        return;
+      }
       const settled = controlTracker.settle(frame) || tokenTracker.settle(frame);
       if (!settled) return; // stray/duplicate — ignore
-      const decoded = decodeStageControl(frame);
+      const decoded = early ?? decodeStageControl(frame);
       if (!decoded) return;
       if (decoded.kind === 'stage.token') {
         emitter.emit({ type: 'token', token: decoded.payload.token, seq: decoded.payload.seq, done: decoded.payload.done });
@@ -335,7 +443,17 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
         wireDtype: opts.wireDtype,
         ...extras,
       });
-      const reply = await sendAndAwaitControl(opts.peer, controlTracker, load, stage.peerId, loadMs);
+      const reply = await sendLoadAndAwaitWithProgress(
+        opts.peer,
+        controlTracker,
+        load,
+        stage.peerId,
+        loadStallMs,
+        loadCeilingMs,
+        (a) => {
+          activeLoad = a;
+        },
+      );
       if (reply.kind !== 'stage.ready') throw new Error(`unexpected reply to stage.load from ${stage.peerId}: ${reply.kind}`);
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: stage.peerId });
     }
@@ -664,7 +782,8 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): StageSessionHandle {
   const pingMs = opts.timeouts?.pingMs ?? 10_000;
-  const loadMs = opts.timeouts?.loadMs ?? 120_000;
+  const loadStallMs = opts.timeouts?.loadStallMs ?? opts.timeouts?.loadMs ?? 300_000;
+  const loadCeilingMs = opts.timeouts?.loadCeilingMs ?? 1_800_000;
   const bootstrapStepMs = opts.timeouts?.bootstrapStepMs ?? 20_000;
   const stepTimeoutFloorMs = opts.timeouts?.stepTimeoutFloorMs ?? 5_000;
   const queueWaitMs = opts.queueWaitMs ?? 30_000;
@@ -703,6 +822,8 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
+  // The stage load currently being awaited (see sendLoadAndAwaitWithProgress).
+  let activeLoad: ActiveLoad | undefined;
 
   let resolveResult!: (r: StageSessionResult) => void;
   const resultPromise = new Promise<StageSessionResult>((resolve) => {
@@ -716,9 +837,28 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   const unsubTool = opts.peer.onTool((frame, peerId) => {
     if (!isStageControlFrame(frame)) return;
     if (frame.kind === 'result') {
+      // Load-progress push (fresh callId, never settles a waiter) — reset the
+      // in-flight load's stall clock + surface counts to the UI. See path-1's
+      // handler and StageLoadProgressPayload's doc.
+      const early = decodeStageControl(frame);
+      if (early?.kind === 'stage.load.progress') {
+        const p = early.payload;
+        emitter.emit({
+          type: 'loadProgress',
+          stageIndex: route.plan.stages.find((s) => s.peerId === peerId)?.stageIndex ?? -1,
+          peerId,
+          shardsFetched: p.shardsFetched,
+          totalShards: p.totalShards,
+          bytesFetched: p.bytesFetched,
+          totalBytes: p.totalBytes,
+          phase: p.phase,
+        });
+        if (activeLoad && activeLoad.peerId === peerId) controlTracker.resetTimeout(activeLoad.callId, activeLoad.stallMs);
+        return;
+      }
       const settled = controlTracker.settle(frame) || tokenTracker.settle(frame);
       if (!settled) return;
-      const decoded = decodeStageControl(frame);
+      const decoded = early ?? decodeStageControl(frame);
       if (!decoded) return;
       if (decoded.kind === 'stage.token') {
         emitter.emit({ type: 'token', token: decoded.payload.token, seq: decoded.payload.seq, done: decoded.payload.done });
@@ -812,7 +952,17 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           wireDtype: cand.wireDtype,
           wireHeader: bytesToBase64(candEncoder.headerBytes()),
         });
-        const reply = await sendAndAwaitControl(opts.peer, controlTracker, open, cand.peerId, loadMs);
+        const reply = await sendLoadAndAwaitWithProgress(
+          opts.peer,
+          controlTracker,
+          open,
+          cand.peerId,
+          loadStallMs,
+          loadCeilingMs,
+          (a) => {
+            activeLoad = a;
+          },
+        );
         if (reply.kind === 'stage.session.accept') {
           return {
             peerId: cand.peerId,

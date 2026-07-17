@@ -20,6 +20,7 @@ import {
   makeStagePong,
   makeStageStop,
   makeStageProgress,
+  makeStageLoadProgress,
   makeStageToken,
   makeStageSessionOpen,
   makeStageSessionAccept,
@@ -351,4 +352,63 @@ test('tracker flow: stage.token settles keyed by the seq-derived callId, not a p
   const decoded = decodeStageControl({ kind: 'result', ...got });
   assert.equal(decoded?.kind, 'stage.token');
   assert.equal((decoded as { payload: { token: number } }).payload.token, 99);
+});
+
+test('stage.load.progress: round-trips as a result-shaped push and guards phase', async () => {
+  const msg = makeStageLoadProgress('s1', {
+    shardsFetched: 24,
+    totalShards: 36,
+    bytesFetched: 2_600_000_000,
+    totalBytes: 4_425_000_000,
+    phase: 'downloading',
+  });
+  // Fresh callId (never a load's) so it can't settle a ready/accept waiter.
+  assert.ok(msg.callId.startsWith('tc-'));
+  const frame = encodeStageControl(msg);
+  assert.equal(frame.kind, 'result');
+  const decoded = decodeStageControl(frame);
+  assert.equal(decoded?.kind, 'stage.load.progress');
+  assert.equal((decoded as { payload: { shardsFetched: number } }).payload.shardsFetched, 24);
+  assert.equal((decoded as { payload: { phase?: string } }).payload.phase, 'downloading');
+
+  // phase is optional (absent is valid — an old/plain host may omit it).
+  const noPhase = makeStageLoadProgress('s2', { shardsFetched: 1, totalShards: 2, bytesFetched: 10 });
+  assert.equal(decodeStageControl(encodeStageControl(noPhase))?.kind, 'stage.load.progress');
+
+  // A bad phase is rejected (guard), not silently accepted.
+  const badPhase = encodeStageControl(noPhase) as { kind: 'result'; result: { payload: Record<string, unknown> } };
+  (badPhase.result.payload as Record<string, unknown>).phase = 'bogus';
+  assert.equal(decodeStageControl(badPhase as never), null);
+});
+
+test('PendingToolCallTracker.resetTimeout: each reset pushes the deadline out (progress keeps a slow call alive)', async () => {
+  const tracker = new PendingToolCallTracker();
+  const callId = newCallId();
+  const waiter = tracker.expect(callId, 60).catch((e: Error) => `rejected:${e.message}`);
+  // Reset every 30ms, five times — total 150ms > the 60ms base window, but
+  // no 60ms gap ever elapses, so it must NOT time out.
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(tracker.resetTimeout(callId, 60), true);
+  }
+  // Now settle it cleanly — it survived all the resets.
+  const settled = tracker.settle({ v: 1, ts: Date.now(), callId, status: 'ok', result: {} } as never);
+  assert.equal(settled, true);
+  const got = await waiter;
+  assert.notEqual(typeof got === 'string' && got.startsWith('rejected'), true);
+});
+
+test('PendingToolCallTracker.rejectCall: rejects one specific call (ceiling backstop) without touching others', async () => {
+  const tracker = new PendingToolCallTracker();
+  const a = newCallId();
+  const b = newCallId();
+  const wa = tracker.expect(a, 10_000).then(() => 'a-resolved').catch((e: Error) => `a:${e.message}`);
+  const wb = tracker.expect(b, 10_000).then(() => 'b-resolved').catch((e: Error) => `b:${e.message}`);
+  assert.equal(tracker.rejectCall(a, 'ceiling exceeded'), true);
+  assert.equal(await wa, 'a:ceiling exceeded');
+  // b is untouched and still pending — settle it to prove it wasn't rejected.
+  assert.equal(tracker.settle({ v: 1, ts: Date.now(), callId: b, status: 'ok', result: {} } as never), true);
+  assert.equal(await wb, 'b-resolved');
+  // rejectCall on an unknown id is a no-op.
+  assert.equal(tracker.rejectCall('nope', 'x'), false);
 });

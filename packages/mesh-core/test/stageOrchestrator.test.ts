@@ -17,6 +17,7 @@ import { runDriverStageSession, type StageOrchestratorPeer, type StageOrchestrat
 import {
   decodeStageControl,
   encodeStageControl,
+  makeStageLoadProgress,
   makeStagePong,
   makeStageReady,
   makeStageStop,
@@ -39,6 +40,14 @@ interface FakeHost {
   /** After receiving this many sf frames, proactively send stage.stop
    * instead of a token (simulate graceful pagehide leave). */
   gracefulStopAtSeq?: number;
+  /** Simulate a slow cold load: emit this many `stage.load.progress` frames
+   * (spaced `loadProgressIntervalMs` apart) before finally replying
+   * `stage.ready`. Exercises the progress-aware load wait. */
+  loadProgressCount?: number;
+  loadProgressIntervalMs?: number;
+  /** Delay (ms) before replying `stage.ready` to a `stage.load`. With no
+   * progress frames + a delay past `loadStallMs`, the driver should stall. */
+  loadReadyDelayMs?: number;
   /** Every `sf` stream starts with one header frame (no seq) before any
    * real activation frame — tracked per-host so a post-replan resend to
    * a fresh host is handled correctly. */
@@ -116,7 +125,28 @@ function createMockMesh(selfId: string) {
             { isFirst: decoded.payload.layerStart === 0, isFinal: host.isFinal, nEmbd: 8 },
             decoded.callId,
           );
-          queueMicrotask(() => deliverToolToDriver(encodeStageControl(ready), targetId));
+          const progressCount = host.loadProgressCount ?? 0;
+          const interval = host.loadProgressIntervalMs ?? 0;
+          // Emit N spaced load-progress pushes (fresh callId each — they must
+          // NOT settle the ready waiter) to mimic a slow shard download.
+          for (let i = 0; i < progressCount; i++) {
+            setTimeout(() => {
+              const prog = makeStageLoadProgress(decoded.sessionId, {
+                shardsFetched: i + 1,
+                totalShards: progressCount,
+                bytesFetched: (i + 1) * 100,
+                totalBytes: progressCount * 100,
+                phase: i + 1 >= progressCount ? 'warming' : 'downloading',
+              });
+              deliverToolToDriver(encodeStageControl(prog), targetId);
+            }, i * interval);
+          }
+          const readyAt = host.loadReadyDelayMs ?? (progressCount > 0 ? progressCount * interval : 0);
+          if (readyAt > 0) {
+            setTimeout(() => deliverToolToDriver(encodeStageControl(ready), targetId), readyAt);
+          } else {
+            queueMicrotask(() => deliverToolToDriver(encodeStageControl(ready), targetId));
+          }
         }
         // stage.stop from driver -> nothing to simulate; host just stops mattering.
       }
@@ -524,4 +554,71 @@ test('f16 vs f32 route: identical activations produce smaller wire frames on the
   // But the DECODED side always reconstructs the same f32 byte length —
   // the size win is wire-only, never visible to the native stage input.
   assert.equal(hostF32.decodedActivationByteLengths[1], hostF16.decodedActivationByteLengths[1]);
+});
+
+// ── Progress-aware load wait (the silent-cold-load fix) ──────────────────────
+
+test('progress-aware load: ready that arrives well past loadStallMs still succeeds while progress flows', async () => {
+  const mesh = createMockMesh('driver');
+  // Ready arrives at ~250ms — 2.5x the 100ms stall window — but 5 progress
+  // pushes at 50ms intervals keep resetting the stall clock, so a healthy
+  // slow load is NOT mistaken for a dead host (the exact bug: a 4.4GB solo
+  // load tripped the flat 5-min timeout mid-download and forced a replan).
+  const hostA = makeFakeHost('hostA', { loadProgressCount: 5, loadProgressIntervalMs: 50 });
+  mesh.hosts.set('hostA', hostA);
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan: twoStagePlan('hostA'),
+    modelId: 'm',
+    prompt: 'hello world',
+    maxDecodeTokens: 2,
+    wireDtype: 'f16',
+    localHooks: makeMockLocalHooks(),
+    replan: () => null,
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: { pingMs: 200, loadStallMs: 100, loadCeilingMs: 60_000, bootstrapStepMs: 500, stepTimeoutFloorMs: 50 },
+  });
+  const events = collectEvents(handle);
+  const result = await handle.result();
+
+  assert.equal(result.aborted, false, 'a healthy slow load must not abort');
+  assert.ok(!events.some((e) => e.type === 'stall'), 'no stall while progress flows');
+  const loadEvents = events.filter((e) => e.type === 'loadProgress');
+  assert.equal(loadEvents.length, 5, 'every load-progress push surfaced as an event');
+  assert.ok(
+    loadEvents.some((e) => e.type === 'loadProgress' && e.phase === 'warming'),
+    'the warming-phase tail surfaced',
+  );
+  assert.ok(events.some((e) => e.type === 'stageReady' && e.peerId === 'hostA'));
+  assert.ok(events.some((e) => e.type === 'finished'));
+});
+
+test('progress-aware load: genuine silence past loadStallMs still stalls (fast-fail preserved)', async () => {
+  const mesh = createMockMesh('driver');
+  // No progress frames + ready delayed to 300ms > the 80ms stall window ⇒
+  // the load must fail fast (host truly dead), not hang for the ceiling.
+  const hostA = makeFakeHost('hostA', { loadReadyDelayMs: 300 });
+  mesh.hosts.set('hostA', hostA);
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan: twoStagePlan('hostA'),
+    modelId: 'm',
+    prompt: 'hi',
+    maxDecodeTokens: 1,
+    wireDtype: 'f16',
+    localHooks: makeMockLocalHooks(),
+    replan: () => null, // no spare ⇒ stall funnels to a clean abort
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: { pingMs: 200, loadStallMs: 80, loadCeilingMs: 60_000, bootstrapStepMs: 500, stepTimeoutFloorMs: 50 },
+  });
+  const startedAt = Date.now();
+  const result = await handle.result();
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(result.aborted, true, 'a silent (dead) host load must fail, not hang');
+  // Fast-fail at the ~80ms STALL window, nowhere near the 60s ceiling — the
+  // whole point is that silence is caught quickly while healthy slow loads
+  // (previous test) survive indefinitely.
+  assert.ok(elapsed < 2_000, `aborted fast (${elapsed}ms), not hung to the ceiling`);
+  assert.match(result.abortReason ?? '', /timed out|load/i);
 });

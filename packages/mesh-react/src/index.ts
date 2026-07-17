@@ -206,6 +206,7 @@ export {
   type UseCommunalChatOptions,
   type UseCommunalChatHandle,
   type CommunalChatStatus,
+  type StageLoadProgressView,
 } from './useCommunalChat.js';
 export {
   STAGE_MODEL_ID,

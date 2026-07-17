@@ -1048,6 +1048,57 @@ code {
   flex: 1 1 auto;
 }
 
+/* Model-assembly progress in the chat waiting-state — the visible cure for
+ * the silent multi-minute cold load. Accent-tinted (this is healthy work in
+ * progress, not an error). */
+.chat-loadbar {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.chat-loadbar-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: var(--accent);
+}
+.chat-loadbar-spinner {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: chat-loadbar-spin 0.8s linear infinite;
+}
+@keyframes chat-loadbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.chat-loadbar-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow: hidden;
+}
+.chat-loadbar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-loadbar-spinner {
+    animation: none;
+  }
+}
+
 /* Narrow desktop: keep all three columns, just slimmer chrome. The real
  * mobile treatment (collapse strips) lives in the 720px block below. */
 @media (max-width: 900px) {

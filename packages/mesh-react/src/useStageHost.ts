@@ -70,6 +70,7 @@ import {
   decodeStageFrameEnvelope,
   encodeStageControl,
   isStageControlFrame,
+  makeStageLoadProgress,
   makeStagePong,
   makeStageProgress,
   makeStageReady,
@@ -683,6 +684,31 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           (message) => onLifecycleRef.current?.({ type: 'worker-crashed', reason: message }),
         );
         setLoadProgress(undefined);
+        // Mirror the local shard-download progress OUT to the driver that
+        // asked us to load (skip the self-directed preload, which has no
+        // waiting driver). Before this the driver saw nothing between
+        // stage.load and stage.ready ~8 min later — its wait was a flat
+        // timeout that fired mid-download and forced a spurious replan, and
+        // the chat UI had no "shard 24/36…" to show. See
+        // StageLoadProgressPayload's doc.
+        let lastProgress: StageWorkerLoadProgress | undefined;
+        const notifyDriverLoadProgress = (p: StageWorkerLoadProgress, phase: 'downloading' | 'opening' | 'warming'): void => {
+          if (req.peerId === '__preload__') return;
+          void meshPeer
+            .sendTool(
+              encodeStageControl(
+                makeStageLoadProgress(req.sessionId, {
+                  shardsFetched: p.shardsFetched,
+                  totalShards: p.totalShards,
+                  bytesFetched: p.bytesFetched,
+                  totalBytes: p.totalBytes,
+                  phase,
+                }),
+              ),
+              req.peerId,
+            )
+            .catch(() => undefined);
+        };
         // A multi-GB model download has no fixed duration a flat timeout
         // could safely encode (observed live: Qwen3-8B's 4.7GB tripped a
         // 240s flat deadline mid-download, killing a perfectly healthy
@@ -713,6 +739,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               (progress) => {
                 progressTick();
                 setLoadProgress(progress);
+                lastProgress = progress;
+                // shardsFetched===totalShards means the download is done and
+                // the native legion_stage_open is running — label it 'opening'
+                // so the UI doesn't show a stuck "shard N/N".
+                const phase = progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading';
+                notifyDriverLoadProgress(progress, phase);
                 log(
                   `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +
                     (progress.totalBytes
@@ -728,6 +760,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           }
           throw err;
         });
+        // Keep progress flowing to the driver through the silent warm-up
+        // tail (a throwaway WebGPU dispatch, seconds but not instant) so its
+        // stall clock stays reset and the UI shows "warming up…" rather than
+        // freezing on the last shard count.
+        notifyDriverLoadProgress(
+          lastProgress ?? { shardsFetched: 0, totalShards: 0, bytesFetched: 0 },
+          'warming',
+        );
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
         await warmUpStageWorker(client, log);
         workerClient = client;
