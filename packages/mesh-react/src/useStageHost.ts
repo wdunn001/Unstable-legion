@@ -64,7 +64,7 @@
  * of scope). A `stage.load`/`stage.session.open` for a non-final range
  * still loads and serves sessions correctly.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   decodeStageControl,
   decodeStageFrameEnvelope,
@@ -313,6 +313,18 @@ const DEFAULT_IDLE_SWEEP_MS = 30_000;
 // resets on every shard-progress tick instead. LOAD_STALL_MS is the real
 // health signal (no progress at all for this long => genuinely stuck);
 // LOAD_CEILING_MS is a generous backstop, not the primary timeout.
+/**
+ * How long a stage stays resident in VRAM after this peer STOPS hosting
+ * before the weights are freed. Deliberately long runway: `enabled` is
+ * `hosting && isLeader`, so colocation leader-election can blip it for a
+ * moment, and a cold reload is a multi-minute multi-GB round trip — holding
+ * VRAM for a while is far cheaper than paying that back for a toggle the user
+ * reverses or a leadership handoff that returns. Re-enabling inside the window
+ * cancels the free entirely and the stage is reused as-is. A true unmount
+ * (tab closed) frees immediately and does not wait this out.
+ */
+const RESIDENT_GRACE_MS = 10 * 60_000;
+
 const LOAD_STALL_MS = 90_000;
 const LOAD_CEILING_MS = 30 * 60_000;
 
@@ -520,26 +532,67 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   if (!engineRef.current) {
     engineRef.current = { workerClient: undefined, loadedConfig: undefined, loadInFlight: undefined, hostSessions: new Map(), loadEpoch: 0 };
   }
+  const disposeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Free the resident stage and stop advertising it. */
+  const disposeResident = useCallback((reason: string): void => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const w = eng.workerClient;
+    eng.workerClient = undefined;
+    eng.loadedConfig = undefined;
+    eng.loadInFlight = undefined;
+    eng.hostSessions.clear();
+    // Never leave an ad up for weights we no longer hold (see disposeWorker).
+    loadedStagesRef.current = [];
+    sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: 0 };
+    republishNowRef.current();
+    if (w) {
+      logRef.current(`[stage-host] freeing resident stage (${reason})`);
+      void w.dispose().catch(() => undefined);
+    }
+  }, [driverMaxSessions]);
+
+  // True unmount (tab/route gone) — free immediately, nothing left to serve.
   useEffect(() => {
-    // Dispose the resident worker ONLY when the component truly unmounts
-    // (tab/route gone). Hosting toggled off or leadership lost stops
-    // advertising (suppressAdvertise) and serving new sessions, but keeps
-    // the weights resident — re-electing/re-enabling must not pay the 4.4GB
-    // reload again. (A future "free VRAM after a sustained hosting-off"
-    // grace timer can hang off `enabled` here; residency is the safe
-    // default and matches the product intent that a committed stage stays
-    // ready for the next caller.)
+    return () => disposeResident('unmounted');
+  }, [disposeResident]);
+
+  // A SUSTAINED hosting-off frees the GPU; a transient one must not.
+  //
+  // Two failure modes to thread between. Disposing the instant `enabled` goes
+  // false (the original behavior, via the answer effect's cleanup) throws away
+  // a stage that cost minutes to load whenever leader-election merely blips —
+  // and `enabled` is `hosting && isLeader`, so colocation hands it a reason to
+  // blip. But never disposing (the engineRef refactor's mistake) means
+  // switching hosting OFF silently keeps 4.4GB pinned in VRAM until the tab
+  // closes, and a leadership handoff between two tabs has the old leader
+  // holding its weights while the new one loads its own — double VRAM, on
+  // exactly the hardware where that OOMs.
+  //
+  // So: keep it resident across a blip, free it once the peer has genuinely
+  // stopped hosting. The runway is deliberately long — a cold reload is a
+  // multi-minute 4.4GB round trip, so holding VRAM a while is the far cheaper
+  // bet than paying that back for a toggle the user reverses.
+  useEffect(() => {
+    if (enabled) {
+      // Hosting (re)enabled inside the window — cancel the pending free.
+      if (disposeTimerRef.current !== undefined) {
+        clearTimeout(disposeTimerRef.current);
+        disposeTimerRef.current = undefined;
+      }
+      return;
+    }
+    disposeTimerRef.current = setTimeout(() => {
+      disposeTimerRef.current = undefined;
+      disposeResident(`hosting off for ${Math.round(RESIDENT_GRACE_MS / 60_000)}min`);
+    }, RESIDENT_GRACE_MS);
     return () => {
-      const eng = engineRef.current;
-      if (eng?.workerClient) void eng.workerClient.dispose().catch(() => undefined);
-      if (eng) {
-        eng.workerClient = undefined;
-        eng.loadedConfig = undefined;
-        eng.loadInFlight = undefined;
-        eng.hostSessions.clear();
+      if (disposeTimerRef.current !== undefined) {
+        clearTimeout(disposeTimerRef.current);
+        disposeTimerRef.current = undefined;
       }
     };
-  }, []);
+  }, [enabled, disposeResident]);
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
