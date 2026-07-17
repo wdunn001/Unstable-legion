@@ -23,7 +23,15 @@
  * "ready" while its weights are still in flight.
  */
 import type { CommunalHostPhase } from '@unstable-legion/react';
-import { deriveHostingLifecycleState, hostingStatusLabel } from '../hostingLabels.js';
+import {
+  claimLayerCount,
+  deriveHostingLifecycleState,
+  downloadProgressFraction,
+  downloadProgressLabel,
+  formatGigabytes,
+  hostingStatusLabel,
+  type HostingLifecycleState,
+} from '../hostingLabels.js';
 import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
 
 export type HostingConsent = 'unset' | 'accepted' | 'declined';
@@ -61,21 +69,42 @@ export interface HostingConsentBannerProps {
   downloadProgress?: { shardsFetched: number; totalShards: number; bytesFetched: number; totalBytes?: number };
 }
 
-/** "Downloading model layers: 17/36 · 1.8 / 4.4 GB" + a live bar. */
-function DownloadProgressBar(props: { progress: NonNullable<HostingConsentBannerProps['downloadProgress']> }) {
-  const { shardsFetched, totalShards, bytesFetched, totalBytes } = props.progress;
-  const gb = (n: number) => (n / 1_000_000_000).toFixed(1);
-  const pct = totalBytes
-    ? Math.min(100, Math.round((bytesFetched / totalBytes) * 100))
-    : Math.min(100, Math.round((shardsFetched / Math.max(1, totalShards)) * 100));
+/**
+ * The live "what is my browser actually doing right now" readout — the whole
+ * point of the hosting panel while a stage loads. Shows the SAME numbers the
+ * console logs ("shard 3/12 (251/1274 MB)"), expressed in LAYER units + real
+ * GB (see hostingLabels' module doc on why raw fragment counts mislead), plus
+ * a percentage and a bar. During 'opening' the download is done and the
+ * native load into VRAM is running — say so instead of a stuck "11 of 11".
+ */
+function DownloadProgressBar(props: {
+  progress: NonNullable<HostingConsentBannerProps['downloadProgress']>;
+  layerCount: number;
+  lifecycle: HostingLifecycleState;
+}) {
+  const fraction = downloadProgressFraction(props.progress);
+  const pct = Math.round(fraction * 100);
+  const label =
+    props.lifecycle === 'opening'
+      ? `Loading ${props.layerCount} layer${props.layerCount === 1 ? '' : 's'} into GPU — ${formatGigabytes(
+          props.progress.totalBytes ?? props.progress.bytesFetched,
+        )} fetched, opening stage…`
+      : `${downloadProgressLabel(props.progress, props.layerCount)} · ${pct}%`;
   return (
-    <div className="host-download" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-      <div className="host-download-label">
-        Downloading model layers: {shardsFetched}/{totalShards}
-        {totalBytes ? ` · ${gb(bytesFetched)} / ${gb(totalBytes)} GB` : ''}
-      </div>
+    <div
+      className="host-download"
+      role="progressbar"
+      aria-valuenow={props.lifecycle === 'opening' ? 100 : pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label}
+    >
+      <div className="host-download-label">{label}</div>
       <div className="capacity-bar-track">
-        <div className="capacity-bar-fill capacity-bar-fill-ready" style={{ width: `${pct}%` }} />
+        <div
+          className="capacity-bar-fill capacity-bar-fill-ready"
+          style={{ width: `${props.lifecycle === 'opening' ? 100 : pct}%` }}
+        />
       </div>
     </div>
   );
@@ -153,9 +182,15 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
         <span className="consent-capacity-summary">{props.capacitySummaryLabel}</span>
         {/* The bar stays visible through 'opening' (every shard fetched, native
-            load into VRAM running) so "Loading into GPU…" isn't a bare spinner. */}
+            load into VRAM running) so "Loading into GPU…" isn't a bare spinner.
+            Layer count comes from the actual claim when we have one, so the
+            readout is in the same units the rest of the panel speaks. */}
         {props.hostingEnabled && (lifecycle === 'downloading' || lifecycle === 'opening') && props.downloadProgress && (
-          <DownloadProgressBar progress={props.downloadProgress} />
+          <DownloadProgressBar
+            progress={props.downloadProgress}
+            layerCount={props.claim ? claimLayerCount(props.claim) : props.downloadProgress.totalShards}
+            lifecycle={lifecycle}
+          />
         )}
         {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
         {props.capable && props.contribution && <ContributionPanel {...props.contribution} />}

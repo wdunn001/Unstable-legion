@@ -1284,5 +1284,13 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     queueLength,
     lastError,
     preloadError,
+    // Was MISSING: every shard called setLoadProgress(...) and logged
+    // "[stage-host] load progress: shard 3/12 (251/1274 MB)" to the console,
+    // but the handle never handed it back — so `useCommunalHost`'s
+    // `downloadProgress` (and therefore the right drawer's progress bar) was
+    // permanently undefined and the user saw a bare "Downloading model…" with
+    // no numbers during a multi-minute download. `loadProgress?:` being
+    // OPTIONAL on the interface is why tsc never flagged the omission.
+    loadProgress,
   };
 }
