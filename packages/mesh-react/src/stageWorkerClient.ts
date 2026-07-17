@@ -206,9 +206,24 @@ function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivation
  * dispatch exceeded 90s under 3-tab contention). Exercises both shapes
  * a real session hits — a multi-token prefill dispatch and a
  * single-token decode dispatch — with throwaway dummy input, then
- * resets KV state. Failures here are logged but non-fatal (best-effort
- * warm-up; a real load-order or shape bug still surfaces on the real
- * request).
+ * resets KV state.
+ *
+ * A FAILURE HERE IS FATAL, and deliberately so. This dispatch is the only
+ * proof that the stage can actually run: it compiles every compute pipeline
+ * and executes both real dispatch shapes. If it fails, the stage CANNOT
+ * serve — full stop.
+ *
+ * This used to log "dispatch failed (non-fatal)" and return normally, on the
+ * theory that a real bug would "surface on the real request". It did — as a
+ * broken host advertised to the whole mesh. Observed live: a WGSL compile
+ * error (`@builtin(num_subgroups)` unsupported on the device) killed the
+ * pipeline, the failure was swallowed, `useStageHost` set `workerClient` and
+ * published `loadedStages`, drivers routed real chats to it, and every
+ * prefill trapped `unreachable` — a crash loop that reloaded the stage over
+ * and over. "Surfacing on the real request" means breaking a stranger's chat.
+ * A peer must never claim capacity it hasn't PROVEN it can serve; throwing
+ * here routes the failure into the caller's normal load-failed/backoff path
+ * and the stage is simply never advertised.
  */
 export async function warmUpStageWorker(client: StageWorkerClient, log: StageWorkerLog = () => undefined): Promise<void> {
   try {
@@ -217,8 +232,11 @@ export async function warmUpStageWorker(client: StageWorkerClient, log: StageWor
     const decodeInput = client.isFirst ? undefined : dummyActivationFrame(1, client.nEmbd);
     await client.decode(0, decodeInput);
   } catch (err) {
-    log(`[stage-warmup] dispatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    log(`[stage-warmup] FAILED — refusing to report this stage ready: ${message}`);
+    throw new Error(`stage warm-up dispatch failed (stage cannot serve): ${message}`);
   } finally {
-    await client.reset();
+    // A reset failure must never mask the real warm-up error above.
+    await client.reset().catch(() => undefined);
   }
 }
