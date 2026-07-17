@@ -199,3 +199,41 @@ test('deriveHostingLifecycleState: still "hosting" once the load settles (progre
     'hosting',
   );
 });
+
+test('deriveHostingLifecycleState: a cache-warm load reports opening from the loader phase, not "downloading"', () => {
+  // The exact lie: every shard is already in OPFS, so the "download" finishes
+  // in milliseconds and the whole multi-minute wait is legion_stage_open
+  // pushing weights into VRAM. Shard counts alone (36/36) said 'opening' only
+  // by luck; a loader that reports phase must be believed over the counts.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'loading',
+      claim: { layerStart: 2, layerEnd: 36 },
+      downloadProgress: { shardsFetched: 36, totalShards: 36, phase: 'opening' },
+    }),
+    'opening',
+  );
+  // And the loader's phase wins even when the counts would disagree — mid
+  // shard-count but already opening is exactly what a partially-cached load
+  // with concurrent fetches can look like.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'loading',
+      claim: { layerStart: 2, layerEnd: 36 },
+      downloadProgress: { shardsFetched: 12, totalShards: 36, phase: 'opening' },
+    }),
+    'opening',
+  );
+  // No phase (older runtime) -> fall back to the count heuristic, unchanged.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'loading',
+      claim: { layerStart: 2, layerEnd: 36 },
+      downloadProgress: { shardsFetched: 12, totalShards: 36 },
+    }),
+    'downloading',
+  );
+});

@@ -111,7 +111,7 @@ export interface HostingLifecycleInputs {
   hostingEnabled: boolean;
   phase: CommunalHostPhase;
   claim?: { layerStart: number; layerEnd: number };
-  downloadProgress?: Pick<StageWorkerLoadProgress, 'shardsFetched' | 'totalShards'>;
+  downloadProgress?: Pick<StageWorkerLoadProgress, 'shardsFetched' | 'totalShards' | 'phase'>;
 }
 
 /**
@@ -139,6 +139,11 @@ export function deriveHostingLifecycleState(inputs: HostingLifecycleInputs): Hos
   if (inputs.phase === 'retrying') return 'retrying';
   const p = inputs.downloadProgress;
   if (p && p.totalShards > 0) {
+    // The loader's own phase is authoritative. Falling back to shard counts
+    // is what made a CACHE-WARM load read "Downloading model…" for minutes:
+    // every shard is resident almost instantly and the real wait is the VRAM
+    // upload, which the counts cannot see.
+    if (p.phase) return p.phase;
     return p.shardsFetched < p.totalShards ? 'downloading' : 'opening';
   }
   if (inputs.phase === 'active' || inputs.phase === 'draining') return 'hosting';

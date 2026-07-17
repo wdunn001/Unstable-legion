@@ -819,10 +819,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 progressTick();
                 setLoadProgress(progress);
                 lastProgress = progress;
-                // shardsFetched===totalShards means the download is done and
-                // the native legion_stage_open is running — label it 'opening'
-                // so the UI doesn't show a stuck "shard N/N".
-                const phase = progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading';
+                // Prefer the loader's OWN phase — it knows whether it's still
+                // fetching or already inside legion_stage_open pushing weights
+                // to VRAM. The shard-count guess below is only a fallback for
+                // an older runtime that doesn't report one, and it is wrong in
+                // exactly the case that matters: a cache-warm load hits
+                // shardsFetched===totalShards within seconds and then spends
+                // minutes in the GPU upload.
+                const phase =
+                  progress.phase ??
+                  (progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading');
                 notifyDriverLoadProgress(progress, phase);
                 log(
                   `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +

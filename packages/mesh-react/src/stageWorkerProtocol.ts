@@ -34,6 +34,15 @@ export interface StageWorkerLoadProgress {
   totalShards: number;
   bytesFetched: number;
   totalBytes?: number;
+  /**
+   * What the load is actually doing, straight from the runtime's loader
+   * (`StageLoadProgress.phase`) — NOT inferred from shard counts. 'opening'
+   * means every shard is resident and legion_stage_open is uploading weights
+   * to VRAM, which on a cache-warm load is the entire wait; counts alone made
+   * the UI report "Downloading model…" for all of it. Absent from an older
+   * runtime — callers treat undefined as 'downloading'.
+   */
+  phase?: 'downloading' | 'opening';
 }
 
 export type StageWorkerRequest =
