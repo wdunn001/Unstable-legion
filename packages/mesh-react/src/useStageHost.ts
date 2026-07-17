@@ -688,6 +688,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       const w = engine.workerClient;
       engine.workerClient = undefined;
       engine.loadedConfig = undefined;
+      // RETRACT THE ADVERTISEMENT THE INSTANT THE WEIGHTS GO AWAY.
+      // `loadedStagesRef` is what the publish loop broadcasts, and it is only
+      // recomputed by syncPublicState(). Without this call it kept the OLD
+      // stage after a dispose — and since `doLoad` begins with
+      // `await disposeWorker()`, the peer went on telling the mesh "I have
+      // [2,36) loaded" for the ENTIRE multi-minute reload. Drivers believed
+      // the ad, routed real work to a host holding no weights, and sat
+      // waiting through the download. A host must never be listed for a
+      // stage it does not currently have resident.
+      syncPublicState();
       if (w) await w.dispose().catch(() => undefined);
     }
 
