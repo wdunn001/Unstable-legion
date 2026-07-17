@@ -275,6 +275,14 @@ function Dashboard(props: {
     peer,
     baseCap: props.baseCap,
     createStageWorker,
+    // OPTIONAL-STAGE0: capable hosts claim over [0, totalLayers) so the
+    // lowest claim owns the embeddings (an isFirst communal host). Without
+    // this, every peer hosts its own stage-0 privately and NOBODY advertises
+    // [0, driverLayers), so a thin / text-relay client (a phone) can never
+    // route its first stage and sits forever at "waiting for host to cover
+    // every layer". Turning it on is the host-side half of the thin-driver
+    // feature — the driver-side (text-relay) is inert without it.
+    supportThinDrivers: true,
     modelId: modelConfig.modelId,
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
