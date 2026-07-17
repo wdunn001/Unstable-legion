@@ -158,3 +158,44 @@ test('hostingStatusLabel: idle state offers the capacity preview without claimin
   const label = hostingStatusLabel('idle', { capacityPreviewLabel: 'up to 34 of 34 layers (~8.0GB)' });
   assert.equal(label, 'Ready to host — up to 34 of 34 layers (~8.0GB)');
 });
+
+test('deriveHostingLifecycleState: a re-download while already hosting reports downloading, NOT hosting', () => {
+  // The bug this locks down: raising the layer budget makes the host re-claim
+  // a bigger range and start fetching, but useCommunalHost flips `phase` back
+  // to 'active' (the PREVIOUS stage is still loaded + advertised). A
+  // phase-first check rendered "Hosting N layers" with no progress bar while
+  // gigabytes silently re-downloaded. Any time bytes are moving, say so.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'active',
+      claim: { layerStart: 2, layerEnd: 13 },
+      downloadProgress: { shardsFetched: 3, totalShards: 12 },
+    }),
+    'downloading',
+  );
+  // Same for the native-open tail of that re-load.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'active',
+      claim: { layerStart: 2, layerEnd: 13 },
+      downloadProgress: { shardsFetched: 12, totalShards: 12 },
+    }),
+    'opening',
+  );
+});
+
+test('deriveHostingLifecycleState: still "hosting" once the load settles (progress cleared)', () => {
+  // useStageHost clears loadProgress when a load settles, so absence — not a
+  // stale final value — is what lets 'hosting' win again.
+  assert.equal(
+    deriveHostingLifecycleState({
+      hostingEnabled: true,
+      phase: 'active',
+      claim: { layerStart: 2, layerEnd: 13 },
+      downloadProgress: undefined,
+    }),
+    'hosting',
+  );
+});

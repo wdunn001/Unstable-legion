@@ -825,6 +825,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         await doLoad;
       } finally {
         if (engine.loadInFlight === doLoad) engine.loadInFlight = undefined;
+        // `loadProgress` must mean EXACTLY "a load is in flight right now" —
+        // it's the signal the UI uses to decide whether to show the download
+        // readout AT ALL (see deriveHostingLifecycleState). Left un-cleared it
+        // lingered at its final value forever after a load, which would make a
+        // finished stage look like it were perpetually "opening". Cleared on
+        // success AND failure; the per-shard ticks above re-populate it the
+        // moment the next load (e.g. the user raising their layer budget)
+        // starts fetching.
+        setLoadProgress(undefined);
       }
     }
 

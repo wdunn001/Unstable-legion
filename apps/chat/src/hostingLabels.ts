@@ -114,23 +114,36 @@ export interface HostingLifecycleInputs {
   downloadProgress?: Pick<StageWorkerLoadProgress, 'shardsFetched' | 'totalShards'>;
 }
 
-/** Pure derivation — no React, no timers. `phase === 'loading'` splits
- * into 'downloading' (shards still in flight) vs 'opening' (every shard
- * fetched; native `legion_stage_open`/llama_context construction still
- * running before the stage advertises) using the same shard-count signal
- * the progress bar renders. The word "hosting" is reachable ONLY via the
- * 'hosting' state (phase 'active'/'draining') — never while merely
- * claimed-and-loading. */
+/**
+ * Pure derivation — no React, no timers.
+ *
+ * An IN-FLIGHT LOAD IS AUTHORITATIVE, checked before `phase`: if bytes are
+ * moving, say so, whatever the phase claims. This matters because `phase`
+ * lies during a re-load — when a user raises their layer budget, the host
+ * re-claims a bigger range and starts fetching, but `useCommunalHost` flips
+ * `phase` straight back to 'active' (the PREVIOUS stage is still loaded and
+ * advertised), so a phase-first check rendered "Hosting 11 layers" with no
+ * bar while it silently re-downloaded gigabytes. The rule is simply: any
+ * time we're downloading, show that we're downloading.
+ *
+ * This relies on `useStageHost` clearing `loadProgress` when a load settles,
+ * so its presence means "loading right now" and never a stale leftover.
+ * 'downloading' (shards still in flight) vs 'opening' (every shard fetched;
+ * native `legion_stage_open` still running) uses the same shard counts the
+ * bar renders. The word "hosting" is reachable ONLY via the 'hosting' state —
+ * never while merely claimed-and-loading.
+ */
 export function deriveHostingLifecycleState(inputs: HostingLifecycleInputs): HostingLifecycleState {
   if (!inputs.hostingEnabled) return 'off';
   if (inputs.phase === 'error') return 'error';
   if (inputs.phase === 'retrying') return 'retrying';
-  if (inputs.phase === 'active' || inputs.phase === 'draining') return 'hosting';
-  if (inputs.phase === 'loading') {
-    const p = inputs.downloadProgress;
-    if (!p || p.totalShards <= 0 || p.shardsFetched < p.totalShards) return 'downloading';
-    return 'opening';
+  const p = inputs.downloadProgress;
+  if (p && p.totalShards > 0) {
+    return p.shardsFetched < p.totalShards ? 'downloading' : 'opening';
   }
+  if (inputs.phase === 'active' || inputs.phase === 'draining') return 'hosting';
+  // Claimed and loading, but no shard tick has landed yet.
+  if (inputs.phase === 'loading') return 'downloading';
   return 'idle'; // enabled, no claim assigned yet
 }
 
