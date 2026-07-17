@@ -18,8 +18,10 @@
  * PoC.
  *
  * Device selection: tries `webgpu` first (fast, GPU-resident), falls back
- * to `wasm` (CPU, works everywhere but slower and needs COOP/COEP headers
- * for the threaded build — see this package's README).
+ * to `wasm` (CPU, works everywhere but slower). No cross-origin isolation
+ * is required: WebGPU needs none, and onnxruntime-web's wasm backend
+ * detects a non-isolated page and runs single-threaded automatically —
+ * the same posture the LLM path already takes. See this package's README.
  *
  * Weight sourcing: model weights are fetched from an ordered list of
  * remote hosts (`modelSources`), first reachable wins. The default is

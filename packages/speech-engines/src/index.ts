@@ -8,7 +8,8 @@
  * `@unstable-legion/core`'s `speech.ts`.
  *
  * See README.md for the base64-over-`tc` framing decision and the
- * COOP/COEP requirement for threaded wasm.
+ * cross-origin isolation notes (not required — WebGPU needs none and the
+ * wasm fallback runs single-threaded without it).
  */
 export type { SpeechEngine, SpeechEngineInput, SpeechEngineFactory } from './types.js';
 export {

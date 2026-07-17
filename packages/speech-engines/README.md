@@ -57,18 +57,31 @@ token and activation frames already ride the wire — not implemented
 here; this PoC intentionally keeps the transport dumb so the ASR engine
 and the tool-call plumbing get proven first.
 
-## COOP/COEP
+## Cross-origin isolation (not required)
 
-transformers.js's WASM backend (`onnxruntime-web`) uses SIMD + threads
-for real throughput; the threaded build needs
-`SharedArrayBuffer`, which requires the page be served with
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`).
-Without those headers it still runs (falls back to a single-threaded
-wasm build), just slower. `apps/demo`'s dev server / nginx config does
-not currently set these headers — see this repo's top-level PoC report
-for what to add before this goes past spike stage. WebGPU device
-selection doesn't need COOP/COEP.
+No COOP/COEP headers are needed to run this. The primary path is WebGPU,
+which needs no isolation at all. The WASM fallback (`onnxruntime-web`)
+*can* use SIMD + threads for more throughput — the threaded build wants
+`SharedArrayBuffer`, which needs a cross-origin-isolated page
+(`Cross-Origin-Opener-Policy: same-origin` +
+`Cross-Origin-Embedder-Policy: require-corp`) — but onnxruntime-web
+detects a non-isolated page and **runs single-threaded automatically**,
+just slower. It does not error.
+
+This is deliberately the same posture the existing LLM path already
+takes (`@codecai/web-llm` on WebGPU, no isolation), so ASR adds **no new
+header requirement** and **no risk to the mesh or to existing model
+loading**. Note the trap it avoids: enabling COEP `require-corp`
+app-wide would force *every* cross-origin subresource — including the
+existing LLM model-weight fetches — to be CORP/CORS-clean or be blocked,
+which is a real regression surface for a feature the mesh already
+depends on. (COOP/COEP do **not** affect WebRTC data channels, the
+WSS/MQTT signaling, or STUN/TURN — those aren't COEP-governed
+subresources, so the peer mesh is unaffected either way.)
+
+Turning threads on is a possible future optimization, tracked as a
+separate cross-origin-hosting follow-up (see `CROSS-ORIGIN-FOLLOWUP.md`
+on its branch) — not something this PoC takes on.
 
 ## Model download size / bundle size (measured)
 
@@ -115,8 +128,11 @@ writes to `.198`, not automation). This removes the hard dependency on
 `huggingface.co` being reachable from every mesh peer's browser while
 keeping our CDN's bandwidth for the fallback path only. The ~21.6 MB local
 `ort-wasm` bundle can then be dropped from `dist` in favor of the
-`wasmPaths` fetch (needs the CDN populated + a COOP/COEP re-check for the
-cross-origin threaded build first).
+`wasmPaths` fetch once the CDN is populated — tracked in the separate
+cross-origin-hosting follow-up (`CROSS-ORIGIN-FOLLOWUP.md`), which also
+covers the CORP/CORS headers those cross-origin assets need. No
+cross-origin isolation is required for this (single-threaded fallback);
+threads stay an optional future optimization.
 
 ## Manual browser verification
 
