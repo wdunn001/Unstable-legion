@@ -45,13 +45,16 @@ Peers find each other and connect with **no application server** — but two
 pieces of shared infrastructure make that reliable, both self-hosted off-ISP on
 a VPS (public infrastructure proved unreliable — see the docs):
 
-- **Signaling** (WebRTC offer/answer exchange, peer discovery): a self-hosted
-  **MQTT-over-WSS** broker at `wss://signal.quasarke.net/mqtt` (mosquitto behind
-  nginx TLS). Public MQTT brokers stalled discovery — peers never exchanged SDP.
-  See the homelab `mail-stack/vps-relay/signaling` IaC.
-- **NAT traversal** (STUN/TURN): self-hosted **coturn** at `51.81.33.184`. The
-  home router won't hairpin, and public STUN was removed by request, so the mesh
-  points at the off-ISP relay by IP. See `docs/TURN-RELIABILITY.md`.
+- **Signaling** (WebRTC offer/answer exchange, peer discovery): an
+  **MQTT-over-WSS** broker, configured via `VITE_RELAY_URLS`. Run your own —
+  public MQTT brokers stalled discovery outright here (peers never exchanged
+  SDP), which is a silent failure: without a data channel a peer never enters
+  the roster at all, so it looks like "nobody is home" rather than an error.
+- **NAT traversal** (STUN/TURN): a **coturn** relay, configured via
+  `VITE_TURN_*`. Host it OFF your own ISP if you can — a home router that won't
+  hairpin can't serve a peer sitting beside it, and a relay that only offers
+  UDP will strand mobile carriers. `scripts/verify-turn-baked.sh` guards the
+  build against silently shipping a STUN-only bundle.
 
 Under the hood the transport is [trystero](https://github.com/dmotz/trystero)
 (`@trystero-p2p/mqtt`) with a self-hosted `rtcConfig.iceServers`; discovery
@@ -106,37 +109,44 @@ The activation path (`sf`) is why the mesh is viable at trystero relay
 throughput: an f16 hidden-state frame is `nEmbd × 2` bytes per token per hop,
 and only crosses at stage boundaries — no detokenize, no JSON on the wire.
 
-## Deploy
+## Build it yourself
 
-**`legion.codecai.net` serves `apps/chat` at `/`** (the flagship), with the old
-`apps/demo` at `/classic/`. Both are built by the ONE `legion-chat` service
-(`apps/chat/Dockerfile`) on the `.198` public-edge host behind
-`nginx-proxy` + `acme-companion`. `nginx-proxy` routes by hostname not path, so a
-single container/nginx serves both apps (demo built with `--base=/classic/`).
+One image serves both apps: `apps/chat` at `/` (the flagship) and the older
+`apps/demo` at `/classic/` (built with `--base=/classic/`). See
+`apps/chat/Dockerfile`.
 
-Build-time config comes from `.198:/storage/unstable-legion/.env`:
-- `VITE_TURN_URLS` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL` — self-hosted
-  coturn. **If the `.env` is missing the build silently ships a STUN-only bundle**
-  — always run `scripts/verify-turn-baked.sh` after `docker compose build`.
-- `VITE_RELAY_URLS` — signaling brokers (defaults to `wss://signal.quasarke.net/mqtt`
-  prepended before the public fallbacks).
-- `VITE_OPENPANEL_CLIENT_ID` — OpenPanel analytics (counts/states only, no PII,
-  hard no-op when absent; `docs/TELEMETRY.md`).
+    npm install
+    npm run build -w @unstable-legion/core
+    npm run build -w @unstable-legion/react
+    npm run build -w @unstable-legion/chat
+    docker compose build legion-chat        # both apps, one nginx
 
-Model weights are **not** in the image — the per-layer package lives on the
-host's `webllm-mirror` volume under `stages/<model-id>/`, served at `/webllm/`.
+### The wasm stage runtime
 
-Deploy is manual (no CD credential on the shared edge yet): sync a prepared
-checkout to `.198:/storage/unstable-legion` (keep a timestamped backup for
-rollback), `docker compose build legion-chat`, `scripts/verify-turn-baked.sh`,
-then `docker compose up -d legion-chat`. `scripts/prepare-deploy-context.sh`
-materializes the `codec-local/` + `.deploy-context/legion-stage-runtime/` real
-files first (Docker's build-context tar doesn't dereference the sibling-repo
-symlinks; on Windows checkouts those symlinks materialize as text stubs — don't
-rsync them over a host that already has good copies).
+`@unstable-legion/stage-runtime` needs its emscripten artifact
+(`legion-stage.{js,wasm}`), which is **not** published or checked in — build it
+from that repo with `scripts/build-wasm.sh` inside an activated emsdk
+environment (`source $EMSDK/emsdk_env.sh`), then copy the output into
+`packages/stage-runtime/wasm/`. `scripts/prepare-llama.sh` prepares the patched
+llama.cpp it compiles against.
 
-CI (`.forgejo/workflows/ci.yml`) builds + unit-tests `mesh-core`/`mesh-react`.
-The Forgejo repo is a read-only mirror of GitHub — **commit to GitHub `main`**.
+`scripts/prepare-deploy-context.sh` materializes `codec-local/` and
+`.deploy-context/legion-stage-runtime/` as real files first — Docker's
+build-context tar doesn't dereference the sibling-repo symlinks, and on Windows
+checkouts those symlinks materialize as text stubs.
+
+### Build-time config (`.env`, see `.env.example`)
+
+- `VITE_TURN_URLS` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL` — your TURN
+  relay. **A missing `.env` silently ships a STUN-only bundle**, which strands
+  every cross-NAT peer — run `scripts/verify-turn-baked.sh` after the build to
+  fail loudly instead.
+- `VITE_RELAY_URLS` — signaling brokers (MQTT-over-WSS).
+- `VITE_OPENPANEL_CLIENT_ID` — analytics; a hard no-op when absent
+  (`docs/TELEMETRY.md`).
+
+Model weights are **not** in the image. Point the deployment at a per-layer
+package served under `/webllm/stages/<model-id>/` (see `SLICING.md`).
 
 ## Status
 

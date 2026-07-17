@@ -76,12 +76,11 @@ import {
 const ROOM_ID =
   (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('room') : null) ?? 'legion-chat';
 
-// Self-hosted MQTT-over-WSS signaling relay on the off-ISP VPS (mosquitto
-// behind nginx TLS at signal.quasarke.net, split-horizon-resolved to the VPS
-// from both LAN and public). PREPENDED so peer discovery/SDP exchange no longer
-// depends on flaky/overloaded public MQTT brokers (the public brokers stalled
-// discovery — peers never exchanged offers). Env-overridable; the public
-// defaults stay as fallback. See homelab-compose mail-stack/vps-relay.
+// Self-hosted MQTT-over-WSS signaling relay, PREPENDED so peer discovery/SDP
+// exchange doesn't depend on flaky/overloaded public MQTT brokers (those
+// stalled discovery outright — peers never exchanged offers, which reads as
+// "nobody is here" rather than an error). Set VITE_RELAY_URLS to your own;
+// the public defaults remain only as a last-resort fallback.
 const SELF_RELAY_URLS = (import.meta.env.VITE_RELAY_URLS ?? 'wss://signal.quasarke.net/mqtt')
   .split(/[\s,]+/)
   .filter(Boolean);
@@ -106,17 +105,16 @@ const TURN_EXTRAS = TURN_URLS_RAW
       }))
   : [];
 
-// SELF-HOSTED-ONLY ICE (2026-07-16). `rtcConfig.iceServers` REPLACES
-// trystero's built-in public STUN list (Google + Cloudflare) — trystero
-// spreads rtcConfig last. We point at our OWN off-ISP coturn edge
-// (relay.quasarke.net / 51.81.33.184, an OVH VPS): being off-LAN it has a
-// different public IP than the home network, so the co-located desktop
-// reaches it without router hairpin (the thing that broke a LAN-hosted
-// STUN), and remote peers reach it too. VITE_TURN_URLS uses the IP
-// literal, so there is NO DNS lookup at gather time — which also sidesteps
-// this network's port-53 interception (the `701 STUN host lookup` flood).
-// coturn answers STUN on the same host:port as TURN, so the STUN url is
-// derived from each `turn:` url. Zero third-party servers.
+// SELF-HOSTED-ONLY ICE. `rtcConfig.iceServers` REPLACES trystero's built-in
+// public STUN list (Google + Cloudflare) — trystero spreads rtcConfig last.
+// Point this at your OWN coturn, ideally off-ISP: a relay with a different
+// public IP than the home network is reachable from a co-located desktop
+// WITHOUT router hairpin (hairpin is what broke a LAN-hosted STUN), and from
+// remote peers too. Prefer an IP literal in VITE_TURN_URLS so there's no DNS
+// lookup at gather time — that also sidesteps networks that intercept port 53
+// (which shows up as a `701 STUN host lookup` flood). coturn answers STUN on
+// the same host:port as TURN, so the STUN url is derived from each `turn:`
+// url. Zero third-party servers.
 const SELF_STUN_URLS = [
   ...new Set(TURN_EXTRAS.map((e) => e.urls).filter((u) => u.startsWith('turn:')).map((u) => `stun:${u.slice(5).split('?')[0]}`)),
 ];
@@ -207,7 +205,7 @@ function Dashboard(props: {
   const priorityScore = useMemo(() => bindPriorityScore(standingLedger, () => Date.now()), [standingLedger]);
 
   // One OpenPanel telemetry handle per Dashboard mount — the ONLY analytics
-  // stack (telemetry.quasarke.net). A hard no-op unless VITE_OPENPANEL_CLIENT_ID
+  // stack (self-hosted). A hard no-op unless VITE_OPENPANEL_CLIENT_ID
   // is set at build time, so the app never depends on analytics being up.
   const telemetryRef = useRef<ReturnType<typeof createTelemetry> | null>(null);
   if (telemetryRef.current === null) telemetryRef.current = createTelemetry(telemetryConfigFromEnv(import.meta.env));

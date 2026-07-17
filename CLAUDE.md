@@ -18,9 +18,10 @@ parallelism over WebRTC — activations on the wire, not a chatbot per peer). Se
   → [`.cursor/rules/mesh-protocol.mdc`](.cursor/rules/mesh-protocol.mdc)
 - **Empty ICE states = dead signaling (MQTT), not TURN.** Signaling is upstream;
   diagnose it first. `window.__legionIce` / `window.__legionChat` are your probes.
-- **Self-hosted infra only** — no third-party STUN/MQTT brokers; signaling
-  (`signal.quasarke.net` MQTT/WSS) + TURN (`51.81.33.184` coturn) are off-ISP.
-  Mind split-horizon DNS. → [`.cursor/rules/infra-and-deploy.mdc`](.cursor/rules/infra-and-deploy.mdc)
+- **Self-hosted infra only** — no third-party STUN/MQTT brokers. Signaling
+  (MQTT/WSS) + TURN (coturn) come from `VITE_RELAY_URLS` / `VITE_TURN_*`; host
+  them off-ISP. Deployment topology lives in the private IaC, never here — this
+  repo is public. → [`.cursor/rules/infra-and-deploy.mdc`](.cursor/rules/infra-and-deploy.mdc)
 - **Deploy:** `.env` must bake `VITE_TURN_*` + `VITE_RELAY_URLS`; run
   `scripts/verify-turn-baked.sh`; a missing `.env` fails silently.
 - **Rebuild `mesh-core` dist** after `src` edits; add a `node:test` regression

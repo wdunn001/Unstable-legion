@@ -1,7 +1,7 @@
 /**
  * telemetry — a small, pure wrapper around OpenPanel's web tracker
  * (`op1.js`), the ONE analytics stack this project uses (self-hosted;
- * ingest edge = telemetry.quasarke.net, dashboard = analytics.quasarke.net
+ * ingest + dashboard are both self-hosted (see docs/TELEMETRY.md)
  * behind Authentik). The tracker is loaded via OpenPanel's standard
  * `window.op` command-queue snippet — NO npm SDK dependency, NO CDN: the
  * script is self-served by our own instance, and the whole thing is a

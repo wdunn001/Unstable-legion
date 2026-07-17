@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # populate-webllm-mirror.sh — reproducibly populate the MLC web-llm model
-# mirror that legion.codecai.net / cdn.codecai.net serve at /webllm/.
+# mirror served at /webllm/.
 #
-# WHY THIS EXISTS: the mirror (/storage/mzfs/webllm-mirror on the .198 edge,
-# bind-mounted read-only into the demo container) was originally filled by a
-# manual extraction with no committed populator — a fresh host would serve
+# WHY THIS EXISTS: the mirror (bind-mounted read-only into the container — see
+# LEGION_WEBLLM_MIRROR_DIR in docker-compose.yml) was originally filled by a
+# manual extraction with no committed populator, so a fresh host would serve
 # 404s for every chat model. This script captures the model list + fetch so
-# the mirror is reproducible. (The old persona/small-model chat is "leave as-is"
-# per the pivot plan; this is the minimum to keep /classic reproducible.)
+# the mirror is reproducible.
 #
 # The models are @mlc-ai/web-llm prebuilt repos on HuggingFace (mlc-ai/*).
 # Each is served at <mirror>/<model-id>/resolve/main/<files> — i.e. the exact
@@ -16,13 +15,13 @@
 # resolve/main/ subtree reproduces the served paths.
 #
 # Usage:  populate-webllm-mirror.sh [MIRROR_DIR]
-#   MIRROR_DIR defaults to /storage/mzfs/webllm-mirror
-# Env:    IPV4=1 forces IPv4 (the .88 box has an IPv6 blackhole to HF).
+#   MIRROR_DIR defaults to $LEGION_WEBLLM_MIRROR_DIR, else ./webllm-mirror
+# Env:    IPV4=1 forces IPv4 (some networks blackhole IPv6 to HF).
 # Idempotent: skips a model whose mlc-chat-config.json already exists.
 # =============================================================================
 set -euo pipefail
 
-MIRROR_DIR="${1:-/storage/mzfs/webllm-mirror}"
+MIRROR_DIR="${1:-${LEGION_WEBLLM_MIRROR_DIR:-./webllm-mirror}}"
 HF_BASE="https://huggingface.co/mlc-ai"
 
 # The MLC model set the /classic chat catalog references (default fp16 +

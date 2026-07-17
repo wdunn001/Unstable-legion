@@ -27,18 +27,17 @@ services:
       # TURN config is baked into the bundle at build time (both apps/chat
       # and the /classic apps/demo build share these — see the Dockerfile).
       # Leave all blank for STUN-only behavior (works for same-LAN peers,
-      # fails for cross-NAT). Flip on by setting these to point at coturn:
-      #   VITE_TURN_URLS=turn:legion.codecai.net:3478
-      #   VITE_TURN_USERNAME=legion
-      #   VITE_TURN_CREDENTIAL=<from /storage/coturn/turnserver.conf>
+      # fails for cross-NAT). Point them at your own coturn to fix that —
+      # see .env.example. Read the credential from your relay's
+      # turnserver.conf; never commit it.
       args:
         VITE_TURN_URLS: ${VITE_TURN_URLS:-}
         VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-}
         VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-}
         VITE_TURN_USE_DEFAULT: ${VITE_TURN_USE_DEFAULT:-}
-        # OpenPanel analytics (telemetry.quasarke.net). Leave CLIENT_ID
-        # blank to ship WITHOUT tracking (a no-op). Set it (from the
-        # "Legion Chat" OpenPanel project) to enable RUM + failure events.
+        # OpenPanel analytics (self-hosted — see docs/TELEMETRY.md). Leave
+        # CLIENT_ID blank to ship WITHOUT tracking (a no-op). Set it from your
+        # OpenPanel project to enable RUM + failure events.
         VITE_OPENPANEL_CLIENT_ID: ${VITE_OPENPANEL_CLIENT_ID:-}
         VITE_OPENPANEL_API_URL: ${VITE_OPENPANEL_API_URL:-}
         VITE_OPENPANEL_SCRIPT_URL: ${VITE_OPENPANEL_SCRIPT_URL:-}
@@ -47,27 +46,26 @@ services:
     expose:
       - "80"
     environment:
-      # cdn.codecai.net is an alias onto the same nginx: it serves the model
-      # mirror (/webllm/...) — including the per-layer stage packages — with
-      # its own ACME cert, so model artifacts can be fetched from a dedicated
-      # CDN hostname (immutable, content-addressed → long-cache friendly)
-      # instead of contending with the app origin. Same content, same box for
-      # now; a caching front / object-store can slot behind this name later
-      # without touching the app.
-      VIRTUAL_HOST: legion.codecai.net,cdn.codecai.net
+      # These target an nginx-proxy + acme-companion front. Set them in your
+      # .env; nothing environment-specific is committed here.
+      #
+      # A second CDN alias is worth having: pointing model artifacts at a
+      # dedicated hostname (immutable, content-addressed → long-cache friendly)
+      # keeps them from contending with the app origin, and lets a caching
+      # front or object store slot in behind that name later without touching
+      # the app. Same content, same box until it isn't.
+      VIRTUAL_HOST: ${LEGION_VIRTUAL_HOST:-legion.localhost}
       VIRTUAL_PORT: "80"
-      LETSENCRYPT_HOST: legion.codecai.net,cdn.codecai.net
-      LETSENCRYPT_EMAIL: licensing@quasarke.com
+      LETSENCRYPT_HOST: ${LEGION_LETSENCRYPT_HOST:-}
+      LETSENCRYPT_EMAIL: ${LEGION_LETSENCRYPT_EMAIL:-}
     volumes:
-      # Shared MLC web-llm mirror — populated by the mass-zero scripts/mirror-webllm-models.sh
-      # script. Same volume the leet container reads at
-      # /usr/share/nginx/html/webllm; legion mounts it read-only so we can't
-      # accidentally corrupt the mirror. Same-origin from legion.codecai.net's
-      # perspective — no CORS needed. Serves both the chat app's Qwen3-8B
-      # stage shards (stages/qwen3-8b-q4/) and /classic's MLC model set.
-      - /storage/mzfs/webllm-mirror:/usr/share/nginx/html/webllm:ro
+      # The model mirror, mounted READ-ONLY so a bad deploy can't corrupt it.
+      # Serves the chat app's per-layer stage shards (stages/<model-id>/) and
+      # /classic's MLC model set. Same-origin with the app → no CORS needed.
+      # Populate it with scripts/populate-webllm-mirror.sh.
+      - ${LEGION_WEBLLM_MIRROR_DIR:-./webllm-mirror}:/usr/share/nginx/html/webllm:ro
     networks:
-      - nginx-proxy
+      - ${LEGION_PROXY_NETWORK:-nginx-proxy}
 
 networks:
   nginx-proxy:
