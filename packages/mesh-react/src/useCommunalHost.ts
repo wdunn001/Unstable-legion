@@ -697,6 +697,40 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const hostSessionCountRef = useRef(hostSessionCount);
   hostSessionCountRef.current = hostSessionCount;
 
+  // ── Progress clears a stale retry/error ───────────────────────────────
+  // A slow-but-ADVANCING download is not a failure. A single fetch reject on
+  // a throttled network fails the whole load attempt → `scheduleRetry` sets
+  // the "Failed to fetch — retrying" error, and until now that error only
+  // cleared on `load-succeeded` (the WHOLE stage completing) — so it
+  // persisted, and its attempt counter escalated toward the give-up 'error'
+  // label, even as shards kept landing on the next attempt. Whenever the
+  // loaded stage reports FRESH forward progress (bytes/shards increased),
+  // clear that stale error and reset the backoff escalation, so the UI shows
+  // real progress and never gives up while it's genuinely making headway. A
+  // true stall (no progress for `stallMs`) is still caught by the load
+  // watchdog — this reacts only to actual progress.
+  const lastLoadProgressRef = useRef<{ bytes: number; shards: number }>({ bytes: 0, shards: 0 });
+  useEffect(() => {
+    const p = host.loadProgress;
+    if (!p) {
+      // Between attempts the progress clears — reset the baseline so the
+      // next attempt's first shard counts as progress even if it re-fetches
+      // from a lower byte count than a prior aborted attempt reached.
+      lastLoadProgressRef.current = { bytes: 0, shards: 0 };
+      return;
+    }
+    const prev = lastLoadProgressRef.current;
+    const advanced = p.bytesFetched > prev.bytes || p.shardsFetched > prev.shards;
+    lastLoadProgressRef.current = { bytes: p.bytesFetched, shards: p.shardsFetched };
+    if (!advanced) return;
+    // Keep the claim's retry bookkeeping (key/inFlight) but zero its attempt
+    // count: a failure AFTER progress restarts backoff from 0 instead of
+    // escalating, and the give-up label never trips while headway is made.
+    if (retryRef.current) retryRef.current = { ...retryRef.current, attempt: 0 };
+    setErrorState((e) => (e === undefined ? e : undefined));
+    setPhase((ph) => (ph === 'retrying' || ph === 'error' ? 'loading' : ph));
+  }, [host.loadProgress]);
+
   // ── Assembly loop ─────────────────────────────────────────────────────
   // Runs ONLY on the elected leader tab (`hostingActive`) — a follower
   // never computes a claim, never preloads, never advertises. See
