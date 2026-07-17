@@ -34,6 +34,13 @@ export default defineConfig({
     // workaround needed once that dist is rebuilt/picked up.)
   },
   preview: { port: 5173, host: '0.0.0.0' },
+  // speechWorker.ts (via @unstable-legion/speech/worker -> lazy
+  // @huggingface/transformers import) needs its worker bundle
+  // code-split, which Rollup can't do under the default 'iife' worker
+  // output format ("UMD and IIFE output formats are not supported for
+  // code-splitting builds") — 'es' matches the `{ type: 'module' }` every
+  // worker in this app is already constructed with at runtime.
+  worker: { format: 'es' },
   build: {
     target: 'es2022',
     sourcemap: true,
@@ -63,6 +70,11 @@ export default defineConfig({
       // in-memory WASM/WebGPU state — looks exactly like a crash.
       // Root-caused while building workstream C3's e2e specs.
       '@unstable-legion/stage-runtime',
+      // Same lazy-discovery gotcha as stage-runtime above, for the same
+      // reason: only imported from src/workers/speechWorker.ts, a
+      // separate module graph entry point Vite doesn't crawl from the
+      // main thread until the ASR-host toggle actually constructs one.
+      '@unstable-legion/speech',
       '@codecai/web',
       '@codecai/web-llm',
       '@codecai/web-safety',

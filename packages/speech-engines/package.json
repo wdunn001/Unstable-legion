@@ -1,7 +1,7 @@
 {
-  "name": "@unstable-legion/react",
+  "name": "@unstable-legion/speech",
   "version": "0.0.1",
-  "description": "React bindings + UI components for @unstable-legion/core. Hooks (useMeshChat, useMeshRoster, useMeshTools, useMcpAttachments, usePersona, useLocalLlm, useCodecMap) + components (PersonaForm, MeshRosterPanel, MeshChatPanel, LlmStatusPanel, McpStatusRow, SafetyDialog). @unstable-legion/core pulls the full codecai / trystero / msgpack stack as a dep, so installing this package gets everything.",
+  "description": "Browser speech-to-text mesh capability (PoC) — a `SpeechEngine` interface, a transformers.js Whisper implementation, WebAudio decode/resample helpers, a Web Worker host + client, and the `transcribe` mesh tool built on top. Backs the `asr.transcribe` skill defined in `@unstable-legion/core`'s `speech.ts`.",
   "license": "BSL-1.1",
   "type": "module",
   "main": "./dist/cjs/index.cjs",
@@ -12,9 +12,17 @@
       "types": "./dist/types/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.cjs"
+    },
+    "./worker": {
+      "types": "./dist/types/worker.d.ts",
+      "import": "./dist/esm/worker.js"
     }
   },
-  "files": ["dist/", "README.md", "LICENSE"],
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "npm run build:esm && npm run build:cjs && npm run build:types",
     "build:esm": "tsc -p tsconfig.esm.json",
@@ -25,22 +33,16 @@
   },
   "dependencies": {
     "@unstable-legion/core": "0.0.1",
-    "@unstable-legion/speech": "0.0.1",
-    "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"
-  },
-  "peerDependencies": {
-    "react": ">=18.0.0"
+    "@huggingface/transformers": "^3.8.1"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "react": "^18.2.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/wdunn001/unstable-legion.git",
-    "directory": "packages/mesh-react"
+    "directory": "packages/speech-engines"
   },
-  "keywords": ["react", "unstable-legion", "codec", "mesh", "browser-ai", "webrtc", "trystero", "mqtt", "mcp", "webgpu"]
+  "keywords": ["speech", "asr", "whisper", "transformers.js", "mesh", "browser-ai"]
 }

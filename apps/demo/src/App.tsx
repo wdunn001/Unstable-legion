@@ -7,18 +7,21 @@
  * This file is the showcase: pick a strategy, configure persona
  * defaults, render the components.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { joinRoom, defaultRelayUrls, selfId } from '@trystero-p2p/mqtt';
 import {
   Detokenizer,
   // engine_run handler builds its own detokenizer
 } from '@codecai/web';
 import {
+  ASR_SKILL,
+  ASR_TOOL_NAME,
   DEFAULT_MODEL_CATALOG,
   registerRouteSkillTool,
   useAudioKeepalive,
   useDeviceCompat,
   useMeshRoster,
+  useSpeechHost,
   AudioKeepaliveToggle,
   LlmStatusPanel,
   McpStatusRow,
@@ -47,11 +50,13 @@ import {
   type MeshToolDescriptor,
   type UseMcpAttachmentsHandle,
   type UseLocalLlmHandle,
+  type UseSpeechHostHandle,
   type CodecMapHandle,
 } from '@unstable-legion/react';
 import { StagePipelinePanel } from './components/StagePipelinePanel.js';
 import { CommunalHostPanel } from './components/CommunalHostPanel.js';
 import { CommunalChatPanel } from './components/CommunalChatPanel.js';
+import { SpeechPanel } from './components/SpeechPanel.js';
 
 // `?room=` override lets e2e runs (and anyone testing against a live
 // deploy) use an isolated room instead of the shared public one —
@@ -206,15 +211,37 @@ export function App() {
     }
   }, [deviceCompat?.tier, persona.available, updatePersona]);
 
+  // Speech mesh-capability (PoC) — opt-in ASR hosting. Owned here (not
+  // inside Dashboard/SpeechPanel) so its readiness can feed directly into
+  // the `cap`/`effectiveOptedIn` computation below instead of a separate
+  // `peer.setCap` call from the panel — see `useSpeechHost`'s doc comment
+  // for why that avoids clobbering other panels' cap merges.
+  const [asrHostEnabled, setAsrHostEnabled] = useState(false);
+  const createSpeechWorker = useCallback(
+    () => new Worker(new URL('./workers/speechWorker.ts', import.meta.url), { type: 'module' }),
+    [],
+  );
+  const speechHost = useSpeechHost({
+    registry,
+    enabled: asrHostEnabled,
+    createWorker: createSpeechWorker,
+  });
+
   // Effective opt-in list — auto-add `route_skill` when the persona
-  // has any delegating zones; otherwise the dispatcher would reject
-  // inbound route_skill calls even though the tool is registered.
+  // has any delegating zones (otherwise the dispatcher would reject
+  // inbound route_skill calls even though the tool is registered), and
+  // auto-add the ASR tool once this peer's speech host is ready.
   const effectiveOptedIn = useMemo(() => {
+    let names = persona.availableTools;
     const delegating = persona.delegating ?? [];
-    if (delegating.length === 0) return persona.availableTools;
-    if (persona.availableTools.includes('route_skill')) return persona.availableTools;
-    return [...persona.availableTools, 'route_skill'];
-  }, [persona.availableTools, persona.delegating]);
+    if (delegating.length > 0 && !names.includes('route_skill')) {
+      names = [...names, 'route_skill'];
+    }
+    if (speechHost.ready && !names.includes(ASR_TOOL_NAME)) {
+      names = [...names, ASR_TOOL_NAME];
+    }
+    return names;
+  }, [persona.availableTools, persona.delegating, speechHost.ready]);
 
   const cap = useMemo(() => {
     if (!persona.nick) return null;
@@ -223,12 +250,16 @@ export function App() {
       persona.systemPrompt.length > 120
         ? persona.systemPrompt.slice(0, 117) + '…'
         : persona.systemPrompt;
+    const skills =
+      speechHost.ready && !persona.skills.includes(ASR_SKILL)
+        ? [...persona.skills, ASR_SKILL]
+        : persona.skills;
     const baseCap = {
       v: 1 as const,
       nick: persona.nick,
       modelId: persona.modelId,
       available: persona.available,
-      skills: persona.skills,
+      skills,
       systemPromptSummary: summary,
       tools,
     };
@@ -241,7 +272,7 @@ export function App() {
       ...(authoritative.length > 0 ? { authoritative } : {}),
       ...(delegating.length > 0 ? { delegating } : {}),
     };
-  }, [persona, registry, effectiveOptedIn, mcp.attachedTools]);
+  }, [persona, registry, effectiveOptedIn, mcp.attachedTools, speechHost.ready]);
 
   // Resolve the persona's modelId to its tokenizer-map family so the
   // local detokenizer renders this peer's frames correctly. The
@@ -302,6 +333,9 @@ export function App() {
         compatTier={deviceCompat?.tier}
         compatReason={deviceCompat?.reason}
         baseCap={cap}
+        speechHost={speechHost}
+        asrHostEnabled={asrHostEnabled}
+        onToggleAsrHost={setAsrHostEnabled}
       />
     </MeshProvider>
   );
@@ -344,6 +378,9 @@ function Dashboard(props: {
   compatTier?: 'full' | 'small-only' | 'thinclient' | 'unknown';
   compatReason?: string;
   baseCap: Omit<MeshPeerCap, 'ts'> & { ts?: number };
+  speechHost: UseSpeechHostHandle;
+  asrHostEnabled: boolean;
+  onToggleAsrHost: (enabled: boolean) => void;
 }) {
   // Thin-client notice dismissal — persisted to localStorage so it
   // doesn't reappear on every reload on the same device.
@@ -493,6 +530,12 @@ function Dashboard(props: {
         emptyMessage="no MCP endpoints attached. add via the persona form (change nick → MCP list)."
       />
       <AudioKeepaliveToggle handle={audioKeepalive} />
+      <SpeechPanel
+        speechHost={props.speechHost}
+        enabled={props.asrHostEnabled}
+        onToggleEnabled={props.onToggleAsrHost}
+        callTool={tools.callTool}
+      />
       <StagePipelinePanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} standingLedger={standingLedger} />
       <CommunalHostPanel baseCap={props.baseCap} keepaliveEnabled={audioKeepalive.enabled} standingLedger={standingLedger} />
       <CommunalChatPanel standingLedger={standingLedger} />

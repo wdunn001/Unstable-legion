@@ -206,6 +206,17 @@ export {
   type RegisterRouteSkillToolOptions,
 } from './tools.js';
 
+// ── Speech mesh-capability contract (PoC) ────────────────────────────
+export {
+  ASR_SKILL,
+  ASR_TOOL_NAME,
+  TTS_SKILL,
+  TTS_TOOL_NAME,
+  type AsrTranscribeArgs,
+  type AsrTranscribeContent,
+  type AsrTranscribeSegment,
+} from './speech.js';
+
 // ── Hierarchical skill resolver (Layer 4) ──────────────────────────
 export {
   routeBySkill,
