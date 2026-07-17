@@ -275,14 +275,17 @@ function Dashboard(props: {
     peer,
     baseCap: props.baseCap,
     createStageWorker,
-    // OPTIONAL-STAGE0: capable hosts claim over [0, totalLayers) so the
-    // lowest claim owns the embeddings (an isFirst communal host). Without
-    // this, every peer hosts its own stage-0 privately and NOBODY advertises
-    // [0, driverLayers), so a thin / text-relay client (a phone) can never
-    // route its first stage and sits forever at "waiting for host to cover
-    // every layer". Turning it on is the host-side half of the thin-driver
-    // feature — the driver-side (text-relay) is inert without it.
-    supportThinDrivers: true,
+    // OPTIONAL-STAGE0: when true, capable hosts claim over [0, totalLayers)
+    // so the lowest claim owns the embeddings (an isFirst communal host) that
+    // a thin/text-relay client needs. DISABLED for now: enabling it regressed
+    // the working body host — a host claiming a range that ends at the final
+    // layer failed to load with `missing token_embd.weight` (this model ties
+    // input/output embeddings, so the output stage needs the embeddings
+    // artifact, which the fragment resolver doesn't include unless the stage
+    // is also isFirst). Needs that fragment fix — and likely a better design
+    // that reuses a driver's already-loaded [0, driverLayers) stage rather
+    // than spinning up a second isFirst stage — before it's re-enabled.
+    supportThinDrivers: false,
     modelId: modelConfig.modelId,
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
