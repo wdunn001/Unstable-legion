@@ -39,8 +39,14 @@ export interface UseThreadsHandle {
   /** Overwrite a message's content in-place (streaming updates) — does
    * NOT persist by itself; call `flushActiveThread` to save. */
   updateMessageContent: (messageId: string, content: string) => void;
+  /** Replace a message's tool-activity trace (TOOL-NODES chips) — same
+   * in-memory-until-flush semantics as `updateMessageContent`. */
+  setMessageToolTrace: (messageId: string, toolTrace: readonly string[]) => void;
   /** Mark a message as having recovered from a mid-stream host death. */
   markReconnected: (messageId: string) => void;
+  /** Record a message's decode throughput (tok/s) for the metric badge —
+   * same in-memory-until-flush semantics as `updateMessageContent`. */
+  setMessageTokPerSec: (messageId: string, tokPerSec: number) => void;
   /** Persist the current in-memory active thread to IndexedDB. */
   flushActiveThread: () => Promise<void>;
 }
@@ -164,11 +170,33 @@ export function useThreads(): UseThreadsHandle {
     [withActiveThread],
   );
 
+  const setMessageToolTrace = useCallback(
+    (messageId: string, toolTrace: readonly string[]) => {
+      withActiveThread((t) => ({
+        ...t,
+        messages: t.messages.map((m) => (m.id === messageId ? { ...m, toolTrace: [...toolTrace] } : m)),
+        updatedAt: Date.now(),
+      }));
+    },
+    [withActiveThread],
+  );
+
   const markReconnected = useCallback(
     (messageId: string) => {
       withActiveThread((t) => ({
         ...t,
         messages: t.messages.map((m) => (m.id === messageId ? { ...m, reconnected: true } : m)),
+      }));
+    },
+    [withActiveThread],
+  );
+
+  const setMessageTokPerSec = useCallback(
+    (messageId: string, tokPerSec: number) => {
+      withActiveThread((t) => ({
+        ...t,
+        messages: t.messages.map((m) => (m.id === messageId ? { ...m, tokPerSec } : m)),
+        updatedAt: Date.now(),
       }));
     },
     [withActiveThread],
@@ -192,7 +220,9 @@ export function useThreads(): UseThreadsHandle {
     deleteThread: deleteThreadFn,
     appendMessage,
     updateMessageContent,
+    setMessageToolTrace,
     markReconnected,
+    setMessageTokPerSec,
     flushActiveThread,
   };
 }

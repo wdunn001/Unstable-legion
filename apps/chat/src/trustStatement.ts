@@ -19,6 +19,29 @@ export const TRUST_STATEMENT_PARAGRAPHS: readonly string[] = [
 export const TRUST_BADGE_TEXT =
   'Community-powered — messages are processed on other members’ computers.';
 
+/**
+ * OPTIONAL-STAGE0 — extra paragraph shown ONLY to a THIN driver (a device
+ * with no usable WebGPU that can't run even the first stage locally — see
+ * `docs/OPTIONAL-STAGE0.md`). A thin driver ships its RAW TOKEN IDS (trivially
+ * its prompt text) to a remote isFirst host instead of computing the private
+ * first stage locally, so the very first hop can read the prompt directly —
+ * strictly weaker privacy than the capable path. Surfaced verbatim, never
+ * hidden, per `docs/TRUST.md`. */
+export const THIN_DRIVER_TRUST_ADDENDUM =
+  'Heads up: this device can’t run any part of the model itself, so it sends your message to the mesh as raw text tokens. A remote host performs the very first step your own computer would normally do privately — which means the first host on your route can read your prompt directly, with even less standing between your words and a stranger than the notice above already describes. Everything above still applies, only more so.';
+
+/**
+ * OPTIONAL-STAGE0 Phase 2 (text-relay) — extra paragraph shown ONLY when
+ * this device is running in TEXT-RELAY mode (a thin driver that additionally
+ * has no tokenizer of its own — see `useCommunalChat`'s `textRelay` option
+ * and `docs/OPTIONAL-STAGE0.md`). Makes the SAME underlying trust posture as
+ * `THIN_DRIVER_TRUST_ADDENDUM` more literal: not just token ids (which
+ * already trivially reveal the prompt) but the PROMPT TEXT ITSELF leaves
+ * this device in the clear, because there is no on-device tokenizer to turn
+ * it into ids first. Surfaced verbatim, never hidden, per `docs/TRUST.md`. */
+export const TEXT_RELAY_TRUST_ADDENDUM =
+  'This device also has no tokenizer of its own, so what leaves it isn’t even token ids — it’s your message as plain text. The remote host reads it exactly as you typed it before doing anything else with it.';
+
 const ACK_STORAGE_KEY = 'unstable-legion-chat:trust-ack-v1';
 
 /** Persisted acknowledgement is keyed by the host-set the user acked

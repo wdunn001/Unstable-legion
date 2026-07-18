@@ -47,7 +47,7 @@ export interface UseStagePipelineOptions {
   avgLayerBytes?: number;
   nEmbd?: number;
   ctxSize?: number;
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   defaultMaxDecodeTokens?: number;
   leaderLockName?: string;
   /** Forwarded to `runDriverStageSession`. The default `bootstrapStepMs`

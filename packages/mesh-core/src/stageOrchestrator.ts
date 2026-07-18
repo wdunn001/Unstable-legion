@@ -13,30 +13,26 @@
  *   wasm/WebGPU stage runtime is wired by the demo layer) → on host
  *   death/graceful-leave/stall, abort → continue-from-history replan.
  *
- * SCOPE NOTE (read before extending): this module always assumes the
- * local peer runs stage 0 (the harness's exact proven topology — local
- * stage-A + N remote stages). It talks directly to `plan.stages[1]`'s
- * peer for outbound `sf` frames and expects `stage.token` to arrive
- * DIRECTLY from `plan.stages[stages.length-1]`'s peer ("direct token
- * return", matching the harness comment in host.ts — no relay hop). For
- * a 2-stage plan (1 local + 1 remote) this is exactly Phase B, proven.
- * For N>2 stages, the intermediate hosts (stage 1..N-2) are each
- * expected to run their OWN mesh-core-based host-loop that receives an
- * `sf` frame, computes its slice, and forwards the boundary activation
- * to the next stage's peer — that host-role loop is NOT implemented in
- * this pass (out of mesh-core's boundary per the workstream brief:
- * "driver's local stage-A execution is wired by the demo layer", and by
- * the same logic, other stages' engine execution is also demo/host-layer
- * work). Follow-up: a symmetric `runStageHostSession` counterpart.
+ * TOPOLOGY: the local peer runs stage 0; outbound `sf` frames go to
+ * stage 1 (`firstRemotePeerId`, addressed BY INDEX — a Set-order bug once
+ * sent them to the final stage, producing multi-host gibberish), and
+ * `stage.token` arrives DIRECTLY from the FINAL stage's peer (sender-agnostic,
+ * settled by `stageTokenCallId`). N>2 stages now work: the driver opens each
+ * hop with its `stageIndex`/`isFinal`/`prevPeerId`/`nextPeerId` (see
+ * `startCommunalSession`/`attachOneStage`), and each intermediate host's
+ * `useStageHost` relay loop forwards its boundary activation to `nextPeerId`
+ * instead of sampling. A hop ≥2 gets NO wireHeader (it takes its upstream
+ * relay's header inline). The final stage still returns the token straight to
+ * the driver — no relay hop on the token path.
  *
  * VERSION NOTE: this stays MESH_PROTOCOL_VERSION-compatible (v1,
  * additive) — no subprotocol/generation bump (assessment doc §2.4) is
  * implemented here; that's explicitly out of scope for this pass.
  */
 import {
-  createActivationWireEncoder,
-  type ActivationWireEncoder,
-} from '@unstable-legion/stage-runtime';
+  createLegionActivationWireEncoder,
+  type LegionActivationWireEncoder,
+} from './activationWireCodec.js';
 import { PendingToolCallTracker } from './tools.js';
 import {
   decodeStageControl,
@@ -50,6 +46,7 @@ import {
   stageTokenCallId,
   type StageControlMessage,
   type StageLoadPayload,
+  type StageLoadProgressPayload,
 } from './stageControl.js';
 import { encodeStageFrameEnvelope } from './stageFrameEnvelope.js';
 import { deterministicHash, type CommunalHostStageAd } from './communalTopology.js';
@@ -83,8 +80,29 @@ export interface DriverStageHooks {
 export interface StageOrchestratorTimeouts {
   /** Preflight stage.ping -> stage.pong timeout. Default 10_000. */
   pingMs?: number;
-  /** stage.load -> stage.ready timeout (model fetch across LAN/WAN). Default 120_000. */
+  /**
+   * @deprecated Superseded by the progress-aware pair below. Still honored
+   * as the `loadStallMs` default when that isn't given, so existing callers
+   * keep working. A multi-GB load has no fixed duration a flat timeout can
+   * safely encode (see loadWatchdog.ts) — this used to fire mid-download and
+   * force a spurious replan.
+   */
   loadMs?: number;
+  /**
+   * NO-PROGRESS window for a stage load: the deadline is reset on every
+   * `stage.load.progress` push from the host, so a healthy-but-slow load
+   * never trips it; only genuine silence does. Kept at the old flat `loadMs`
+   * value by default so a host on an OLD build that sends no progress frames
+   * degrades to exactly the previous behavior (no regression). Default:
+   * `loadMs ?? 300_000`.
+   */
+  loadStallMs?: number;
+  /**
+   * Absolute backstop for a stage load regardless of progress — guards the
+   * pathological "progress trickles forever, never finishes" case.
+   * Default 1_800_000 (30 min), mirroring the host's own LOAD_CEILING_MS.
+   */
+  loadCeilingMs?: number;
   /** Per-step decode timeout before a TPOT estimate exists. Default 20_000. */
   bootstrapStepMs?: number;
   /** Floor for the adaptive 10x-TPOT per-step timeout. Default 5_000. */
@@ -120,7 +138,7 @@ export interface DriverStageSessionOptions {
   modelId: string;
   prompt: string;
   maxDecodeTokens: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   localHooks: DriverStageHooks;
   replan: ReplanFn;
   /** manifestUrl/shardUrls to send in stage.load for each remote stage —
@@ -135,8 +153,33 @@ export interface DriverStageSessionOptions {
 export type StageOrchestratorEvent =
   | { type: 'planCreated'; plan: StagePlan }
   | { type: 'stageReady'; stageIndex: number; peerId: string }
-  | { type: 'token'; token: number; seq: number; done: boolean }
+  | {
+      type: 'token';
+      token: number;
+      seq: number;
+      done: boolean;
+      /** TEXT-RELAY only — see `CommunalDriverSessionOptions.textRelay`.
+       * The incremental decoded-text delta the isFinal host attached to
+       * this `stage.token` (absent when textRelay is off, or when this
+       * step didn't complete a safely-emittable chunk). */
+      text?: string;
+    }
   | { type: 'progress'; stageIndex: number; tokensDecoded: number }
+  /** A host is still LOADING a stage (shard download / native open / warm-up)
+   * in answer to our stage.load/session.open — surfaced so the chat UI can
+   * show "Loading Qwen3-8B — shard 24/36 · 2.6/4.4 GB" instead of a frozen
+   * spinner during the multi-minute cold load. `stageIndex` is -1 if the
+   * source peer isn't (yet) in the current plan. */
+  | {
+      type: 'loadProgress';
+      stageIndex: number;
+      peerId: string;
+      shardsFetched: number;
+      totalShards: number;
+      bytesFetched: number;
+      totalBytes?: number;
+      phase?: StageLoadProgressPayload['phase'];
+    }
   | { type: 'stall'; reason: string }
   | { type: 'replan'; lostPeerId?: string; graceful: boolean; plan: StagePlan; restartCount: number }
   | { type: 'aborted'; reason: string }
@@ -209,11 +252,61 @@ async function sendAndAwaitControl(
   return decoded;
 }
 
+/** The load a session closure is currently awaiting — shared between
+ * `sendLoadAndAwaitWithProgress` and the closure's `onTool` handler so a
+ * `stage.load.progress` push can reset THIS load's stall clock. */
+interface ActiveLoad {
+  peerId: string;
+  callId: string;
+  stallMs: number;
+}
+
+/**
+ * Progress-aware send-and-await for a stage LOAD (`stage.load` /
+ * `stage.session.open`), replacing a flat `loadMs` timeout that couldn't
+ * tell "slowly downloading 4.4GB" from "host died" — it fired mid-download
+ * and forced a spurious replan (observed live at the 5-minute mark).
+ *
+ * The ready/accept waiter is registered with `stallMs` as its timeout, and
+ * the closure's `onTool` handler calls `tracker.resetTimeout(callId,
+ * stallMs)` on every `stage.load.progress` from this peer — so the deadline
+ * only fires after genuine SILENCE (`stallMs` with no progress), never
+ * during a healthy slow load. A separate `ceilingMs` backstop guards the
+ * "progress forever, never finishes" pathology. `setActiveLoad` publishes
+ * the in-flight load to the shared handler for the duration of the wait.
+ */
+async function sendLoadAndAwaitWithProgress(
+  peer: StageOrchestratorPeer,
+  tracker: PendingToolCallTracker,
+  msg: StageControlMessage,
+  peerId: string,
+  stallMs: number,
+  ceilingMs: number,
+  setActiveLoad: (a: ActiveLoad | undefined) => void,
+): Promise<StageControlMessage> {
+  const waiter = tracker.expect(msg.callId, stallMs);
+  const ceiling = setTimeout(() => {
+    tracker.rejectCall(msg.callId, `stage load exceeded overall ceiling of ${ceilingMs}ms (callId=${msg.callId})`);
+  }, ceilingMs);
+  setActiveLoad({ peerId, callId: msg.callId, stallMs });
+  try {
+    await peer.sendTool(encodeStageControl(msg), peerId);
+    const reply = await waiter;
+    const decoded = decodeStageControl({ kind: 'result', ...reply });
+    if (!decoded) throw new Error(`malformed reply to ${msg.kind} (callId=${msg.callId})`);
+    return decoded;
+  } finally {
+    clearTimeout(ceiling);
+    setActiveLoad(undefined);
+  }
+}
+
 // ── Driver session ───────────────────────────────────────────────────────
 
 export function runDriverStageSession(opts: DriverStageSessionOptions): StageSessionHandle {
   const pingMs = opts.timeouts?.pingMs ?? 10_000;
-  const loadMs = opts.timeouts?.loadMs ?? 120_000;
+  const loadStallMs = opts.timeouts?.loadStallMs ?? opts.timeouts?.loadMs ?? 300_000;
+  const loadCeilingMs = opts.timeouts?.loadCeilingMs ?? 1_800_000;
   const bootstrapStepMs = opts.timeouts?.bootstrapStepMs ?? 20_000;
   const stepTimeoutFloorMs = opts.timeouts?.stepTimeoutFloorMs ?? 5_000;
 
@@ -225,10 +318,12 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
   const generatedTokens: number[] = [];
   let aborted = false;
   let abortReason: string | undefined;
-  let encoder: ActivationWireEncoder | undefined;
+  let encoder: LegionActivationWireEncoder | undefined;
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
+  // The stage load currently being awaited (see sendLoadAndAwaitWithProgress).
+  let activeLoad: ActiveLoad | undefined;
 
   let resolveResult!: (r: StageSessionResult) => void;
   const resultPromise = new Promise<StageSessionResult>((resolve) => {
@@ -244,9 +339,28 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
   const unsubTool = opts.peer.onTool((frame, peerId) => {
     if (!isStageControlFrame(frame)) return;
     if (frame.kind === 'result') {
+      // A load-progress push carries a FRESH callId (never the load's), so
+      // it never settles the ready/accept waiter — decode it first and use
+      // it to reset THIS peer's in-flight load stall clock + drive the UI.
+      const early = decodeStageControl(frame);
+      if (early?.kind === 'stage.load.progress') {
+        const p = early.payload;
+        emitter.emit({
+          type: 'loadProgress',
+          stageIndex: plan.stages.findIndex((s) => s.peerId === peerId),
+          peerId,
+          shardsFetched: p.shardsFetched,
+          totalShards: p.totalShards,
+          bytesFetched: p.bytesFetched,
+          totalBytes: p.totalBytes,
+          phase: p.phase,
+        });
+        if (activeLoad && activeLoad.peerId === peerId) controlTracker.resetTimeout(activeLoad.callId, activeLoad.stallMs);
+        return;
+      }
       const settled = controlTracker.settle(frame) || tokenTracker.settle(frame);
       if (!settled) return; // stray/duplicate — ignore
-      const decoded = decodeStageControl(frame);
+      const decoded = early ?? decodeStageControl(frame);
       if (!decoded) return;
       if (decoded.kind === 'stage.token') {
         emitter.emit({ type: 'token', token: decoded.payload.token, seq: decoded.payload.seq, done: decoded.payload.done });
@@ -335,7 +449,17 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
         wireDtype: opts.wireDtype,
         ...extras,
       });
-      const reply = await sendAndAwaitControl(opts.peer, controlTracker, load, stage.peerId, loadMs);
+      const reply = await sendLoadAndAwaitWithProgress(
+        opts.peer,
+        controlTracker,
+        load,
+        stage.peerId,
+        loadStallMs,
+        loadCeilingMs,
+        (a) => {
+          activeLoad = a;
+        },
+      );
       if (reply.kind !== 'stage.ready') throw new Error(`unexpected reply to stage.load from ${stage.peerId}: ${reply.kind}`);
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: stage.peerId });
     }
@@ -356,7 +480,7 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
     await preflightAll(p);
     await loadDownstreamFirst(p);
     await opts.localHooks.reset();
-    encoder = createActivationWireEncoder({
+    encoder = createLegionActivationWireEncoder({
       modelId: opts.modelId,
       stageIndex: 0,
       nEmbd: opts.localHooks.nEmbd,
@@ -456,8 +580,19 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
         stepTimeoutMs = Math.max(stepTimeoutFloorMs, 10 * meanOf(tpotSamples));
         generatedTokens.push(tok.token);
         if (tok.done) {
-          notifyRemotesDone('driver finished generation (eos)');
+          // Order matters: `finish()` first (sets `finished = true`,
+          // unsubscribes OUR OWN onTool listener) THEN notify — a
+          // self-hosted hop's `stage.stop` loops back through the SAME
+          // `peer.onTool` this driver listens on (see peer.ts's
+          // self-loopback doc comment), and the 'stage.stop' branch below
+          // would otherwise misread our own outbound "session's done"
+          // courtesy notice as an external host telling US to replan,
+          // firing a spurious 'stall' event a tick after a clean finish.
+          // Reversing this order is safe: notifyRemotesDone only needs
+          // `currentRemotePeerIds`/`opts.peer.sendTool`, neither of which
+          // `finish()` touches.
           void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+          notifyRemotesDone('driver finished generation (eos)');
           emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           return;
         }
@@ -468,8 +603,10 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       }
     }
     if (!aborted && !finished) {
-      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
+      // See the tok.done branch above for why `finish()` must run BEFORE
+      // notifyRemotesDone (self-hosted-hop stage.stop echo).
       void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
       emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
     }
   }
@@ -485,8 +622,10 @@ export function runDriverStageSession(opts: DriverStageSessionOptions): StageSes
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(plan), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {
-        notifyRemotesDone('driver finished generation (eos)');
+        // See runDecodeLoop's tok.done branch above for why `finish()`
+        // must run BEFORE notifyRemotesDone (self-hosted-hop stage.stop echo).
         void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+        notifyRemotesDone('driver finished generation (eos)');
         emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         return;
       }
@@ -598,6 +737,57 @@ export interface CommunalDriverSessionOptions {
    * replan-jitter formula (higher priority -> shorter jitter -> recovers
    * first). Default `() => 0` until M4. */
   priorityScore?: (peerId: string) => number;
+  /**
+   * OPTIONAL-STAGE0 (thin drivers): when `true`, this driver hosts NO stage
+   * locally — the route's FIRST remote stage is an isFirst host `[0, X)`
+   * that owns the embeddings and prefills from the token-ids carried in the
+   * activation-frame `tokens` sideband (see `docs/OPTIONAL-STAGE0.md`). The
+   * orchestrator therefore never asks `localHooks` for a real boundary
+   * activation — it ships a zero-filled placeholder activation of the right
+   * shape (the isFirst host ignores it and embeds from `tokens`), and skips
+   * the local KV `reset`. `localHooks.tokenize`/`detokenize`/`nEmbd` are
+   * still used (all CPU, no WebGPU); `prefill`/`decode`/`reset` are NOT
+   * invoked. This is a MODE FLAG on the SAME session state machine, not a
+   * forked function — churn/replan/attach-order all behave identically.
+   * Default `false`. */
+  thinDriver?: boolean;
+  /**
+   * TEXT-RELAY (Phase 2 of OPTIONAL-STAGE0, docs/OPTIONAL-STAGE0.md):
+   * extends `thinDriver` for a device that holds NO tokenizer at all (not
+   * even the CPU-only wasm one `thinTokenizer` needs) — memory-constrained
+   * phones that can't spare the tokenizer runtime's own footprint. Only
+   * meaningful together with `thinDriver: true` (a capable driver runs a
+   * real local stage-0 and has real token ids to work with; this flag has
+   * nothing to change there).
+   *
+   * Input: the driver never calls `localHooks.tokenize` — it ships the raw
+   * PROMPT TEXT to the isFirst remote host via `stage.session.open`'s
+   * `promptText` field (see `stageControl.ts`), which tokenizes it
+   * server-side with its own vocab and uses the result for this session's
+   * first prefill. `promptTokens` therefore stays empty for the life of a
+   * textRelay session — `tokenHistory().promptTokens` is not meaningful in
+   * this mode.
+   *
+   * Output: the isFinal host detokenizes every sampled token and streams
+   * the incremental decoded text back via `stage.token`'s `text` field
+   * (see the `'token'` event's `text`); this session accumulates it
+   * internally and resends `prompt + accumulatedText` as the NEW
+   * `promptText` on a continue-from-history replan (the new isFirst host
+   * re-tokenizes the reconstructed history — detok→retok is not always
+   * token-identical for a BPE tokenizer; a known, accepted minor drift on
+   * the replan path only, not solved perfectly here). `generatedTokens`
+   * (and therefore `tokenHistory()`/`result().tokens`) still fills with the
+   * real numeric token ids the isFinal host echoes back — those drive the
+   * decode loop exactly as in the token-id thin path; only the DRIVER's
+   * own tokenize/detokenize calls are elided.
+   *
+   * TRUST: same posture as `thinDriver`'s token-id path, made MORE literal —
+   * the PROMPT TEXT itself (not just token ids, which already trivially
+   * reveal it) leaves the device to the remote first host. The app MUST
+   * surface this (see `docs/TRUST.md` + the apps/chat trust UI). Default
+   * `false`.
+   */
+  textRelay?: boolean;
 }
 
 /**
@@ -635,12 +825,41 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): StageSessionHandle {
   const pingMs = opts.timeouts?.pingMs ?? 10_000;
-  const loadMs = opts.timeouts?.loadMs ?? 120_000;
+  const loadStallMs = opts.timeouts?.loadStallMs ?? opts.timeouts?.loadMs ?? 300_000;
+  const loadCeilingMs = opts.timeouts?.loadCeilingMs ?? 1_800_000;
   const bootstrapStepMs = opts.timeouts?.bootstrapStepMs ?? 20_000;
   const stepTimeoutFloorMs = opts.timeouts?.stepTimeoutFloorMs ?? 5_000;
   const queueWaitMs = opts.queueWaitMs ?? 30_000;
   const replanJitterMs = opts.replanJitterMs ?? 1500;
   const priorityScore = opts.priorityScore ?? (() => 0);
+  const thinDriver = opts.thinDriver ?? false;
+  // TEXT-RELAY only ever makes sense layered on top of thinDriver (see this
+  // option's doc comment) — guard against a caller setting it alone so a
+  // misconfigured session fails loudly at construction instead of silently
+  // running the capable local-stage path while also trying to ship promptText.
+  const textRelay = opts.textRelay ?? false;
+  if (textRelay && !thinDriver) {
+    throw new Error('runCommunalDriverSession: textRelay requires thinDriver: true');
+  }
+
+  // OPTIONAL-STAGE0: in thin mode the local hooks never touch a stage-0
+  // worker — `prefill`/`decode` return a zero-filled activation of the wire
+  // shape the isFirst remote host expects but IGNORES (it embeds from the
+  // frame's `tokens` sideband instead), and `reset` is a no-op (no local KV
+  // to drop). `tokenize`/`detokenize`/`nEmbd` pass through unchanged. This is
+  // the whole of the "mode flag, not a function fork": the rest of the
+  // session machine below is byte-for-byte the capable-driver path.
+  const nEmbd = opts.localHooks.nEmbd;
+  const hooks: DriverStageHooks = thinDriver
+    ? {
+        nEmbd,
+        tokenize: (text) => opts.localHooks.tokenize(text),
+        detokenize: (tokens) => opts.localHooks.detokenize(tokens),
+        reset: async () => {},
+        prefill: async (tokens) => ({ activation: new Float32Array(Math.max(1, tokens.length) * nEmbd) }),
+        decode: async () => ({ activation: new Float32Array(nEmbd) }),
+      }
+    : opts.localHooks;
 
   const emitter = makeEmitter();
   let route = opts.route;
@@ -648,12 +867,19 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   let restartCountValue = 0;
   let promptTokens: number[] = [];
   const generatedTokens: number[] = [];
+  // TEXT-RELAY: every `stage.token.text` delta received so far, in order —
+  // reused as `prompt + accumulatedText` on a continue-from-history replan
+  // (the new isFirst host's `promptText` to re-tokenize). Unused when
+  // textRelay is off.
+  let accumulatedText = '';
   let aborted = false;
   let abortReason: string | undefined;
-  let encoder: ActivationWireEncoder | undefined;
+  let encoder: LegionActivationWireEncoder | undefined;
 
   const controlTracker = new PendingToolCallTracker();
   const tokenTracker = new PendingToolCallTracker();
+  // The stage load currently being awaited (see sendLoadAndAwaitWithProgress).
+  let activeLoad: ActiveLoad | undefined;
 
   let resolveResult!: (r: StageSessionResult) => void;
   const resultPromise = new Promise<StageSessionResult>((resolve) => {
@@ -662,17 +888,57 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   let finished = false;
 
   let currentRemotePeerIds: Set<string> = new Set();
+  // The attached remote stage of each stageIndex, so the driver addresses
+  // stage 1 (where outbound `sf` frames go) and the final stage BY INDEX, not
+  // by Set-insertion order. `firstRemotePeerId` used to return
+  // `[...currentRemotePeerIds][0]`, but `startCommunalSession` attaches
+  // downstream-first, so `[0]` was the FINAL peer — the driver shoved stage-0's
+  // activation straight into the last stage, skipping every middle hop. Only
+  // invisible with a single remote stage (Set has one element); this is the
+  // multi-host gibberish bug.
+  let attachedByStage: Map<number, Attached> = new Map();
   let sessionAbortController: { cancelled: boolean } = { cancelled: false };
 
   const unsubTool = opts.peer.onTool((frame, peerId) => {
     if (!isStageControlFrame(frame)) return;
     if (frame.kind === 'result') {
+      // Load-progress push (fresh callId, never settles a waiter) — reset the
+      // in-flight load's stall clock + surface counts to the UI. See path-1's
+      // handler and StageLoadProgressPayload's doc.
+      const early = decodeStageControl(frame);
+      if (early?.kind === 'stage.load.progress') {
+        const p = early.payload;
+        emitter.emit({
+          type: 'loadProgress',
+          stageIndex: route.plan.stages.find((s) => s.peerId === peerId)?.stageIndex ?? -1,
+          peerId,
+          shardsFetched: p.shardsFetched,
+          totalShards: p.totalShards,
+          bytesFetched: p.bytesFetched,
+          totalBytes: p.totalBytes,
+          phase: p.phase,
+        });
+        if (activeLoad && activeLoad.peerId === peerId) controlTracker.resetTimeout(activeLoad.callId, activeLoad.stallMs);
+        return;
+      }
       const settled = controlTracker.settle(frame) || tokenTracker.settle(frame);
       if (!settled) return;
-      const decoded = decodeStageControl(frame);
+      const decoded = early ?? decodeStageControl(frame);
       if (!decoded) return;
       if (decoded.kind === 'stage.token') {
-        emitter.emit({ type: 'token', token: decoded.payload.token, seq: decoded.payload.seq, done: decoded.payload.done });
+        // TEXT-RELAY: accumulate every incremental text delta the isFinal
+        // host attaches (see StageTokenPayload.text) — reused as the
+        // `promptText` sent to the isFirst host on a continue-from-history
+        // replan. A no-op string concat when textRelay is off (`text` is
+        // never populated by an old-bundle/non-textRelay host).
+        if (decoded.payload.text) accumulatedText += decoded.payload.text;
+        emitter.emit({
+          type: 'token',
+          token: decoded.payload.token,
+          seq: decoded.payload.seq,
+          done: decoded.payload.done,
+          ...(decoded.payload.text !== undefined ? { text: decoded.payload.text } : {}),
+        });
       } else if (decoded.kind === 'stage.progress') {
         const stageIndex = route.plan.stages.find((s) => s.peerId === peerId)?.stageIndex ?? -1;
         emitter.emit({ type: 'progress', stageIndex, tokensDecoded: decoded.payload.tokensDecoded });
@@ -723,11 +989,11 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
 
   interface Attached {
     peerId: string;
-    wireDtype: 'f32' | 'f16';
+    wireDtype: 'f32' | 'f16' | 'i8';
     nEmbd: number;
     isFirst: boolean;
     isFinal: boolean;
-    encoder: ActivationWireEncoder;
+    encoder: LegionActivationWireEncoder;
   }
 
   /** Attach to one remote stage: preflight ping -> `stage.session.open`
@@ -736,7 +1002,16 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
    * wireDtypes) -> on `stage.session.busy` either wait out the host's own
    * queue (same callId) or fall through to the next candidate. Throws
    * only once every candidate in `candidates` has been tried and failed. */
-  async function attachOneStage(stageIndex: number, candidates: readonly CommunalHostStageAd[]): Promise<Attached> {
+  async function attachOneStage(
+    stageIndex: number,
+    candidates: readonly CommunalHostStageAd[],
+    relay: { isFinal: boolean; prevPeerId: string; nextPeerId?: string },
+    /** TEXT-RELAY only — the prompt (or reconstructed history) text to send
+     * on THIS stage's open. Only ever passed for `stageIndex === 1` by
+     * `startCommunalSession` below; `undefined` everywhere else, including
+     * whenever textRelay is off. */
+    promptText?: string,
+  ): Promise<Attached> {
     let lastErr: unknown;
     for (const cand of candidates) {
       if (sessionAbortController.cancelled) throw new Error('attach cancelled (superseded by a newer replan)');
@@ -748,7 +1023,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           continue;
         }
 
-        const candEncoder = createActivationWireEncoder({
+        const candEncoder = createLegionActivationWireEncoder({
           modelId: opts.modelId,
           stageIndex: 0,
           nEmbd: opts.localHooks.nEmbd,
@@ -761,16 +1036,40 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           totalLayers: route.plan.totalLayers,
           ctxSize: cand.ctxSize,
           wireDtype: cand.wireDtype,
-          wireHeader: bytesToBase64(candEncoder.headerBytes()),
+          // RELAY: only stage 1 gets a header here — inbound frames come from
+          // the DRIVER's encoder (candEncoder). A hop ≥2's inbound frames come
+          // from the PREVIOUS relay's own encoder, so we omit the header and
+          // the host takes it inline (awaitingHeader). See StageSessionOpenPayload.
+          ...(stageIndex === 1 ? { wireHeader: bytesToBase64(candEncoder.headerBytes()) } : {}),
+          // TEXT-RELAY: promptText only ever accompanies stage 1's open (the
+          // isFirst host); textOutput accompanies whichever hop is THIS
+          // route's final stage (stage 1 itself in a 2-total-stage route, a
+          // later hop in a multi-stage one). Both absent when textRelay is off.
+          ...(promptText !== undefined ? { promptText } : {}),
+          ...(textRelay && relay.isFinal ? { textOutput: true } : {}),
+          stageIndex,
+          isFinal: relay.isFinal,
+          prevPeerId: relay.prevPeerId,
+          ...(relay.nextPeerId !== undefined ? { nextPeerId: relay.nextPeerId } : {}),
         });
-        const reply = await sendAndAwaitControl(opts.peer, controlTracker, open, cand.peerId, loadMs);
+        const reply = await sendLoadAndAwaitWithProgress(
+          opts.peer,
+          controlTracker,
+          open,
+          cand.peerId,
+          loadStallMs,
+          loadCeilingMs,
+          (a) => {
+            activeLoad = a;
+          },
+        );
         if (reply.kind === 'stage.session.accept') {
           return {
             peerId: cand.peerId,
             wireDtype: cand.wireDtype,
             nEmbd: reply.payload.nEmbd,
             isFirst: reply.payload.isFirst,
-            isFinal: reply.payload.isFinal,
+            isFinal: relay.isFinal,
             encoder: candEncoder,
           };
         }
@@ -785,7 +1084,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
                   wireDtype: cand.wireDtype,
                   nEmbd: decoded.payload.nEmbd,
                   isFirst: decoded.payload.isFirst,
-                  isFinal: decoded.payload.isFinal,
+                  isFinal: relay.isFinal,
                   encoder: candEncoder,
                 };
               }
@@ -809,31 +1108,64 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   }
 
   function firstRemotePeerId(): string {
-    if (currentRemotePeerIds.size === 0) throw new Error('no remote stage attached — nothing to send sf frames to');
-    // SCOPE NOTE (top of this section): only the 2-total-stage topology is
-    // wired end to end, so there is always exactly one remote peer once
-    // attached.
-    return [...currentRemotePeerIds][0]!;
+    // Outbound `sf` frames go to stage 1 — the FIRST remote hop after the
+    // driver's local stage 0 — addressed by index, never by Set order.
+    const stage1 = attachedByStage.get(1);
+    if (!stage1) throw new Error('no stage-1 remote attached — nothing to send sf frames to');
+    return stage1.peerId;
   }
 
-  async function startCommunalSession(r: CommunalRoute): Promise<void> {
+  async function startCommunalSession(
+    r: CommunalRoute,
+    /** TEXT-RELAY only — see `attachOneStage`'s `promptText` param. Ignored
+     * (never read) unless `textRelay` is on. */
+    promptTextForStage1?: string,
+  ): Promise<void> {
     const remoteStages = [...r.plan.stages].filter((s) => s.stageIndex > 0).sort((a, b) => b.stageIndex - a.stageIndex);
     if (remoteStages.length === 0) throw new Error('communal route has no remote stages to attach');
     currentRemotePeerIds = new Set();
+    attachedByStage = new Map();
     emitter.emit({ type: 'planCreated', plan: r.plan });
-    let winner: Attached | undefined;
+    // Per-hop relay wiring, derived from the PLAN's stage→peer assignment
+    // (deterministic; `attachOrder[k][0]` is the same peer). prev/next must be
+    // known before frames flow — which is after ALL stages attach — so taking
+    // them from the plan (rather than the just-attached peer) is fine, and it
+    // sidesteps the ordering problem (attaching downstream-first, a stage's
+    // upstream neighbor isn't attached yet). If a busy-fallback picks a
+    // different peer than the plan, the neighbor's spoof guard rejects the
+    // mismatched sender → clean replan, never silent corruption.
+    const planByIndex = new Map(r.plan.stages.map((s) => [s.stageIndex, s]));
+    const relayFor = (stageIndex: number): { isFinal: boolean; prevPeerId: string; nextPeerId?: string } => {
+      const self = planByIndex.get(stageIndex);
+      const next = planByIndex.get(stageIndex + 1);
+      return {
+        isFinal: self?.isFinal ?? true,
+        prevPeerId: stageIndex === 1 ? opts.peer.selfId : planByIndex.get(stageIndex - 1)!.peerId,
+        ...(next ? { nextPeerId: next.peerId } : {}),
+      };
+    };
     for (const stage of remoteStages) {
       const candidates = r.attachOrder.get(stage.stageIndex) ?? [];
       if (candidates.length === 0) throw new Error(`route has no attach candidates for stage ${stage.stageIndex}`);
-      const attached = await attachOneStage(stage.stageIndex, candidates);
+      const attached = await attachOneStage(
+        stage.stageIndex,
+        candidates,
+        relayFor(stage.stageIndex),
+        stage.stageIndex === 1 ? promptTextForStage1 : undefined,
+      );
       currentRemotePeerIds.add(attached.peerId);
+      attachedByStage.set(stage.stageIndex, attached);
       emitter.emit({ type: 'stageReady', stageIndex: stage.stageIndex, peerId: attached.peerId });
-      winner = attached;
     }
-    await opts.localHooks.reset();
-    // winner is defined: remoteStages.length > 0 was checked above, and
-    // attachOneStage either returns or throws (never leaves it unset).
-    encoder = winner!.encoder;
+    await hooks.reset();
+    // The driver's outbound encoder is STAGE 1's — the frames it sends must be
+    // decodable by the first hop. (Previously this took the last-iterated
+    // attach = the lowest stageIndex by luck, which happened to be stage 1
+    // only because the loop runs descending; making it explicit removes the
+    // dependence on iteration order.)
+    const stage1 = attachedByStage.get(1);
+    if (!stage1) throw new Error('communal route has no stage 1');
+    encoder = stage1.encoder;
     // No header sf frame here — unlike the legacy path, `stage.session.
     // open`'s `wireHeader` field already carried it (see this section's
     // top doc comment); the very first `sf` send below is a real
@@ -880,6 +1212,33 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     emitter.emit({ type: 'replan', lostPeerId, graceful, plan: newRoute.plan, restartCount: restartCountValue });
 
     try {
+      if (textRelay) {
+        // TEXT-RELAY: reconstruct the "history" as TEXT — prompt + every
+        // text delta decoded so far (see `accumulatedText`'s doc comment) —
+        // and send it as this attach's `promptText`. The new isFirst host
+        // tokenizes it server-side with its own vocab and uses THAT for the
+        // session's first prefill; `promptTokens` is never populated in
+        // this mode (no local tokenizer exists to populate it) and
+        // `generatedTokens` alone would be missing the original prompt, so
+        // — unlike the token-id paths below — there is no local history to
+        // chunk-reprefill. A single placeholder frame is enough to trigger
+        // the host's (already-tokenized) prefill; its own tokens/activation
+        // are ignored by a host that opened this session with `promptText`
+        // (see useStageHost.ts).
+        await startCommunalSession(newRoute, opts.prompt + accumulatedText);
+        // `tokens` is omitted (not `[]`) — the wire codec requires
+        // `tokens.length === derived tokenCount` whenever `tokens` is
+        // PRESENT, and this placeholder's tokenCount is 1 (a single dummy
+        // activation row), not 0. The isFirst host ignores this frame's
+        // tokens/activation entirely anyway (it was opened with
+        // `promptText`, see useStageHost.ts) — there is no real sideband to
+        // carry here.
+        const frame = encoder!.encodeFrame(new Float32Array(nEmbd), { seq: 0, posStart: 0, done: false });
+        const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
+        generatedTokens.push(tok.token);
+        void runDecodeLoop(1);
+        return;
+      }
       await startCommunalSession(newRoute);
       // Continue-from-history: re-prefill in <=256-tok chunks (CHAOS.md /
       // the plan doc's churn requirement) rather than one unbounded
@@ -891,7 +1250,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       for (let i = 0; i < history.length; i += CHUNK) {
         const chunk = history.slice(i, i + CHUNK);
         const positions = chunk.map((_, j) => i + j);
-        const { activation } = await opts.localHooks.prefill(chunk, positions);
+        const { activation } = await hooks.prefill(chunk, positions);
         lastActivation = activation;
       }
       const frame = encoder!.encodeFrame(lastActivation!, { seq: 0, posStart: 0, tokens: history, done: false });
@@ -912,7 +1271,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       const last = generatedTokens[generatedTokens.length - 1];
       if (last === undefined) return;
       try {
-        const { activation } = await opts.localHooks.decode(last);
+        const { activation } = await hooks.decode(last);
         const posStart = promptTokens.length + generatedTokens.length - 1;
         const frame = encoder!.encodeFrame(activation, {
           seq,
@@ -928,8 +1287,19 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
         stepTimeoutMs = Math.max(stepTimeoutFloorMs, 10 * meanOf(tpotSamples));
         generatedTokens.push(tok.token);
         if (tok.done) {
-          notifyRemotesDone('driver finished generation (eos)');
+          // Order matters: `finish()` first (sets `finished = true`,
+          // unsubscribes OUR OWN onTool listener) THEN notify — a
+          // self-hosted hop's `stage.stop` loops back through the SAME
+          // `peer.onTool` this driver listens on (see peer.ts's
+          // self-loopback doc comment), and the 'stage.stop' branch below
+          // would otherwise misread our own outbound "session's done"
+          // courtesy notice as an external host telling US to replan,
+          // firing a spurious 'stall' event a tick after a clean finish.
+          // Reversing this order is safe: notifyRemotesDone only needs
+          // `currentRemotePeerIds`/`opts.peer.sendTool`, neither of which
+          // `finish()` touches.
           void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+          notifyRemotesDone('driver finished generation (eos)');
           emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
           return;
         }
@@ -940,24 +1310,38 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       }
     }
     if (!aborted && !finished) {
-      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
+      // See the tok.done branch above for why `finish()` must run BEFORE
+      // notifyRemotesDone (self-hosted-hop stage.stop echo).
       void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+      notifyRemotesDone('driver finished generation (maxDecodeTokens reached)');
       emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
     }
   }
 
   void (async () => {
     try {
-      promptTokens = await opts.localHooks.tokenize(opts.prompt);
-      await startCommunalSession(route);
+      // TEXT-RELAY: no local tokenizer exists to populate `promptTokens` —
+      // it stays empty for the life of the session (see this option's doc
+      // comment); the raw prompt TEXT goes to the isFirst host instead, via
+      // `startCommunalSession`'s `promptTextForStage1` (threaded into
+      // `stage.session.open`, see `attachOneStage`).
+      promptTokens = textRelay ? [] : await hooks.tokenize(opts.prompt);
+      await startCommunalSession(route, textRelay ? opts.prompt : undefined);
       const positions = promptTokens.map((_, i) => i);
-      const { activation } = await opts.localHooks.prefill(promptTokens, positions);
-      const frame = encoder!.encodeFrame(activation, { seq: 0, posStart: 0, tokens: promptTokens, done: false });
+      const { activation } = await hooks.prefill(promptTokens, positions);
+      // TEXT-RELAY: `tokens` is omitted (not `[]`) — see the identical note
+      // in `triggerReplan`'s textRelay branch. `activation` here is a single
+      // dummy row (tokenCount=1; `hooks.prefill`'s `Math.max(1, tokens.length)`
+      // guard), so an empty `tokens` array would fail the wire codec's
+      // length-must-match-tokenCount check.
+      const frame = encoder!.encodeFrame(activation, { seq: 0, posStart: 0, ...(textRelay ? {} : { tokens: promptTokens }), done: false });
       const tok = await sendFrameAndAwaitToken(frame, firstRemotePeerId(), 0, bootstrapStepMs);
       generatedTokens.push(tok.token);
       if (tok.done) {
-        notifyRemotesDone('driver finished generation (eos)');
+        // See runDecodeLoop's tok.done branch above for why `finish()`
+        // must run BEFORE notifyRemotesDone (self-hosted-hop stage.stop echo).
         void finish({ aborted: false, tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
+        notifyRemotesDone('driver finished generation (eos)');
         emitter.emit({ type: 'finished', tokens: [...promptTokens, ...generatedTokens], restartCount: restartCountValue });
         return;
       }

@@ -295,6 +295,39 @@ code {
   font-size: 12px;
   white-space: nowrap;
 }
+/* Picker variant: the pill wraps a native <select> (accessible, no custom
+   dropdown state) plus a caret. The select is transparent + inherits the
+   pill's font so it reads as the pill, not a form control. */
+.app-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  padding-right: 5px;
+}
+.app-model-picker select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+.app-model-picker select option {
+  /* dropdown list is OS-drawn — force readable colors in dark theme */
+  color: var(--text);
+  background: var(--panel);
+  font-weight: normal;
+}
+.app-model-picker-caret {
+  font-size: 9px;
+  opacity: 0.75;
+  pointer-events: none;
+}
 .app-nick {
   color: var(--muted);
 }
@@ -323,19 +356,13 @@ code {
   min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 320px;
-}
-
-@media (max-width: 900px) {
-  .app-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
-  }
-  .conversation-sidebar,
-  .mesh-sidebar {
-    border: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 220px;
-  }
+  /* Cap the single implicit row at the body's own height — without this
+   * the row auto-sizes to its tallest column (a long conversation), the
+   * shell overflows the viewport, and the WHOLE page scrolls instead of
+   * each column scrolling independently (.chat-scroll / the sidebars all
+   * already carry their own overflow-y). */
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 /* ── Conversation list ───────────────────────────────────────────── */
@@ -410,6 +437,11 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Grid items default to min-height:auto — without an explicit 0 the
+   * pane refuses to shrink below its content and defeats the row cap
+   * above (same trick .app-body's own min-height:0 plays for the shell
+   * flexbox). */
+  min-height: 0;
 }
 .chat-scroll {
   flex: 1;
@@ -523,6 +555,17 @@ code {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.msg-tokrate {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--chip-fg);
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Composer ─────────────────────────────────────────────────────── */
@@ -646,10 +689,29 @@ code {
   white-space: nowrap;
   border-right: 1px solid var(--panel-2);
 }
+.topology-scale {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.topology-scale-scope {
+  color: var(--muted);
+}
 .topology-segment-label {
   padding: 0 4px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.topology-segment-more {
+  flex: none;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
 }
 .topology-segment-local {
   background: var(--accent);
@@ -692,6 +754,59 @@ code {
 }
 .topology-swatch-gap {
   background: var(--warn);
+}
+
+/* Pipeline handoff — per-hop Codec activation-transfer visibility (layer
+ * range, wire dtype, last frame size, direct/relayed). One row per remote
+ * hop of the ACTIVE route; see PipelineHandoff.tsx. */
+.pipeline-hop-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pipeline-hop {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+}
+.pipeline-hop-route {
+  font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+.pipeline-hop-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-hop-chip {
+  font-size: 11px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.pipeline-hop-dtype {
+  color: var(--accent);
+}
+.pipeline-hop-badge-direct {
+  background: var(--chip);
+  color: var(--chip-fg);
+  border-color: var(--chip);
+}
+.pipeline-hop-badge-relayed {
+  background: var(--chip-warn-bg);
+  color: var(--warn);
+  border-color: var(--chip-warn-bg);
+}
+.pipeline-hop-badge-unknown {
+  color: var(--muted);
+}
+.pipeline-hop-badge-local {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .standing-tier {
@@ -794,6 +909,105 @@ code {
   align-self: flex-start;
   font-size: 11px;
 }
+.consent-capacity-summary {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* Host lifecycle status word next to the toggle — the download→load→ready
+ * signal a remote caller's host is in. "Hosting" is the only green state. */
+.consent-status-label {
+  font-weight: 600;
+}
+.consent-status-downloading,
+.consent-status-opening {
+  color: var(--warn);
+}
+.consent-status-hosting {
+  color: var(--accent);
+}
+.consent-status-idle,
+.consent-status-off {
+  color: var(--muted);
+  font-weight: 500;
+}
+.consent-status-error,
+.consent-status-retrying {
+  color: var(--danger);
+}
+
+/* ── Contribute more (contribution budget panel) ─────────────────────── */
+.contribution-expand,
+.contribution-collapse {
+  align-self: flex-start;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.contribution-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px;
+}
+.contribution-hint {
+  margin: 0;
+  color: var(--fg);
+}
+.contribution-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+}
+.contribution-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.contribution-select,
+.contribution-gb-input {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.contribution-field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.contribution-probe-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.contribution-probe-message {
+  color: var(--muted);
+  font-size: 11px;
+}
+.contribution-reset {
+  align-self: flex-start;
+  font-size: 11px;
+}
+.contribution-layers-field {
+  margin-top: 4px;
+}
+.contribution-layers-slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.contribution-layers-note {
+  margin-top: -2px;
+}
 
 .audio-keepalive-row {
   display: flex;
@@ -802,6 +1016,96 @@ code {
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
+}
+
+/* Live model-layer download bar (hosting panel). */
+.host-download {
+  margin: 6px 0 2px;
+}
+.host-download-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* ── Tool contributions (TOOL-NODES) ─────────────────────────────── */
+.tool-contrib-sub {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tool-contrib-builtins {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.tool-contrib-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tool-contrib-name {
+  font-family: inherit;
+}
+.tool-contrib-mcp-attach {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tool-contrib-mcp-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.tool-contrib-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.tool-contrib-mcp-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.tool-contrib-mcp-status.tool-contrib-mcp-attached {
+  color: var(--accent);
+}
+.tool-contrib-mcp-status.tool-contrib-mcp-error {
+  color: var(--warn);
+}
+.tool-contrib-served {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Tool trace chips above an assistant reply. */
+.msg-tool-trace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.msg-tool-chip {
+  font-size: 11px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 2px;
 }
 
 /* ── Trust interstitial (modal) ───────────────────────────────────── */
@@ -880,3 +1184,118 @@ code {
 .chat-notice-message {
   flex: 1 1 auto;
 }
+
+
+/* Narrow desktop: keep all three columns, just slimmer chrome. The real
+ * mobile treatment (collapse strips) lives in the 720px block below. */
+@media (max-width: 900px) {
+  .app-body {
+    grid-template-columns: 220px minmax(0, 1fr) 280px;
+  }
+}
+
+/* ── Mobile (≤720px): chat-first single column with collapse strips ──
+ * ConversationList collapses to a "▸ Chats (N)" strip on top; MeshSidebar
+ * collapses to a "▸ <model readiness>" strip under the chat (a status bar
+ * above the composer's row). Same breakpoint + collapse semantics as
+ * mesh-react's MeshRosterPanel / apps/demo. The .sidebar-toggle strips are
+ * rendered unconditionally by the components and hidden on desktop. */
+.sidebar-toggle {
+  display: none;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-toggle-spacer {
+  flex: 1;
+}
+.sidebar-toggle-action {
+  padding: 0 10px;
+  font-weight: bold;
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    /* Newer mobile browsers: track the ACTUAL visible height as the URL
+     * bar collapses/expands, instead of the static 100% (which leaves the
+     * composer hidden behind iOS Safari's bottom chrome). */
+    height: 100dvh;
+  }
+  .app-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .sidebar-toggle {
+    display: flex;
+  }
+
+  .conversation-sidebar {
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0;
+    overflow: visible;
+  }
+  .conversation-list {
+    padding: 0;
+  }
+  .conversation-list-body {
+    max-height: 50vh;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .conversation-list-body-collapsed {
+    display: none;
+  }
+
+  .mesh-sidebar {
+    border: none;
+    border-top: 1px solid var(--border);
+    padding: 0;
+    max-height: 50vh;
+  }
+  .mesh-sidebar > :not(.sidebar-toggle) {
+    margin: 0 8px 8px;
+  }
+  .mesh-sidebar-collapsed {
+    overflow: hidden;
+  }
+  .mesh-sidebar-collapsed > :not(.sidebar-toggle) {
+    display: none;
+  }
+
+  /* Header: wrap to two lines, drop the decorative separators + trust
+   * badge (the trust interstitial flow still gates sends), ellipsize the
+   * model pill so it can't force overflow. */
+  .app-header {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .app-header-sep,
+  .trust-badge {
+    display: none;
+  }
+  .app-model-pill {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* iOS zooms the page on focus of any input under 16px — same fix the
+   * demo composer ships. */
+  .composer-input,
+  .join-nick-input {
+    font-size: 16px;
+  }
+}
+

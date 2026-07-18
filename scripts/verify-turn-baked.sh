@@ -16,7 +16,7 @@
 #   scripts/verify-turn-baked.sh legion.codecai.net unstable-legion-legion-chat
 set -euo pipefail
 
-EXPECTED_HOST="${1:-legion.codecai.net}"
+EXPECTED_HOST="${1:-51.81.33.184}"
 IMAGE="${2:-unstable-legion-legion-chat}"
 
 echo "Checking built image '$IMAGE' bakes in turn:${EXPECTED_HOST} ..."
@@ -34,5 +34,10 @@ if [ -z "$FOUND" ]; then
   echo "See .env.example. Refusing to treat this build as deployable." >&2
   exit 1
 fi
+
+# NOTE (2026-07-16): the TLS-fallback requirement was removed. The TCP/TLS
+# TURN URLs are dead until the router forwards TCP 3478 + TCP 5349 to .198;
+# shipping them made every ICE attempt fail those candidates (701 flood).
+# Re-add a `turns:` check here only once those router forwards exist.
 
 echo "OK: TURN config is baked into $FOUND"

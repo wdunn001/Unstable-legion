@@ -48,8 +48,14 @@ export function ChatPane(props: ChatPaneProps) {
           role="alert"
           aria-live="polite"
         >
+          {/* Status glyphs only — neither is a button (no onClick lives
+              here). '↻'/'⟳'-style refresh glyphs read as clickable
+              "retry" affordances to users who then click them and nothing
+              happens; '⏳'/'⚠' don't carry that same clickable connotation
+              while still distinguishing "automatically retrying" from
+              "failed". */}
           <span className="chat-notice-icon" aria-hidden="true">
-            {props.notice.kind === 'retrying' ? '↻' : '⚠'}
+            {props.notice.kind === 'retrying' ? '⏳' : '⚠'}
           </span>
           <span className="chat-notice-message">{props.notice.message}</span>
         </div>

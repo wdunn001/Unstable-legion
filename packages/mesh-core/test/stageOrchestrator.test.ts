@@ -17,11 +17,14 @@ import { runDriverStageSession, type StageOrchestratorPeer, type StageOrchestrat
 import {
   decodeStageControl,
   encodeStageControl,
+  makeStageLoadProgress,
   makeStagePong,
   makeStageReady,
   makeStageStop,
   makeStageToken,
 } from '../src/stageControl.ts';
+import { decodeStageFrameEnvelope } from '../src/stageFrameEnvelope.ts';
+import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
 import type { MeshToolFrame } from '../src/types.ts';
 import type { StagePlan } from '../src/stagePlanner.ts';
 
@@ -37,12 +40,39 @@ interface FakeHost {
   /** After receiving this many sf frames, proactively send stage.stop
    * instead of a token (simulate graceful pagehide leave). */
   gracefulStopAtSeq?: number;
+  /** Simulate a slow cold load: emit this many `stage.load.progress` frames
+   * (spaced `loadProgressIntervalMs` apart) before finally replying
+   * `stage.ready`. Exercises the progress-aware load wait. */
+  loadProgressCount?: number;
+  loadProgressIntervalMs?: number;
+  /** Delay (ms) before replying `stage.ready` to a `stage.load`. With no
+   * progress frames + a delay past `loadStallMs`, the driver should stall. */
+  loadReadyDelayMs?: number;
   /** Every `sf` stream starts with one header frame (no seq) before any
    * real activation frame — tracked per-host so a post-replan resend to
    * a fresh host is handled correctly. */
   headerSeen: boolean;
   framesSeen: number;
   tokensSent: number[];
+  /**
+   * When set, this fake host does what a REAL `useStageHost.ts` does with
+   * inbound `sf` bytes instead of ignoring them: unwrap the sessionId
+   * envelope, build a real `ActivationWireDecoder` from the header frame,
+   * then `decodeFrameBytes` every subsequent frame — the exact path this
+   * milestone needs proven end to end (an f16-wire route decodes to f32
+   * buffers of the right byte length on the receiving side, not just at
+   * the codec unit-test layer). Populates `decodedActivationByteLengths`/
+   * `wireFrameByteLengths`/`decodedDtype` for the test to assert on.
+   */
+  decodeWire?: boolean;
+  decoder?: ActivationWireDecoder;
+  /** `activations.byteLength` for every real (non-header) frame decoded —
+   * always `tokenCount * nEmbd * 4` regardless of wire dtype, since
+   * `ActivationWireDecoder.decodeFrameBytes` always reconstructs f32. */
+  decodedActivationByteLengths: number[];
+  /** Raw enveloped wire bytes for every real frame — lets a test compare
+   * f16 vs f32 wire size for the identical activation. */
+  wireFrameByteLengths: number[];
 }
 
 function makeFakeHost(peerId: string, overrides: Partial<FakeHost> = {}): FakeHost {
@@ -53,6 +83,8 @@ function makeFakeHost(peerId: string, overrides: Partial<FakeHost> = {}): FakeHo
     headerSeen: false,
     framesSeen: 0,
     tokensSent: [],
+    decodedActivationByteLengths: [],
+    wireFrameByteLengths: [],
     ...overrides,
   };
 }
@@ -93,7 +125,28 @@ function createMockMesh(selfId: string) {
             { isFirst: decoded.payload.layerStart === 0, isFinal: host.isFinal, nEmbd: 8 },
             decoded.callId,
           );
-          queueMicrotask(() => deliverToolToDriver(encodeStageControl(ready), targetId));
+          const progressCount = host.loadProgressCount ?? 0;
+          const interval = host.loadProgressIntervalMs ?? 0;
+          // Emit N spaced load-progress pushes (fresh callId each — they must
+          // NOT settle the ready waiter) to mimic a slow shard download.
+          for (let i = 0; i < progressCount; i++) {
+            setTimeout(() => {
+              const prog = makeStageLoadProgress(decoded.sessionId, {
+                shardsFetched: i + 1,
+                totalShards: progressCount,
+                bytesFetched: (i + 1) * 100,
+                totalBytes: progressCount * 100,
+                phase: i + 1 >= progressCount ? 'warming' : 'downloading',
+              });
+              deliverToolToDriver(encodeStageControl(prog), targetId);
+            }, i * interval);
+          }
+          const readyAt = host.loadReadyDelayMs ?? (progressCount > 0 ? progressCount * interval : 0);
+          if (readyAt > 0) {
+            setTimeout(() => deliverToolToDriver(encodeStageControl(ready), targetId), readyAt);
+          } else {
+            queueMicrotask(() => deliverToolToDriver(encodeStageControl(ready), targetId));
+          }
         }
         // stage.stop from driver -> nothing to simulate; host just stops mattering.
       }
@@ -102,18 +155,34 @@ function createMockMesh(selfId: string) {
       toolListeners.add(cb);
       return () => toolListeners.delete(cb);
     },
-    async sendStageFrame(_bytes, peers) {
+    async sendStageFrame(bytes, peers) {
       for (const targetId of targetsOf(peers)) {
         const host = hosts.get(targetId);
         if (!host) continue;
         if (!host.headerSeen) {
           // Every `sf` stream opens with one header frame (no seq) —
-          // nothing to reply to, just note we've seen it.
+          // nothing to reply to, just note we've seen it. When
+          // `decodeWire` is set, do what `useStageHost.ts`'s `onStageFrame`
+          // really does: unwrap the sessionId envelope and build the real
+          // decoder from the header payload.
           host.headerSeen = true;
+          if (host.decodeWire) {
+            const envelope = decodeStageFrameEnvelope(bytes);
+            if (!envelope) throw new Error(`${targetId}: malformed sf envelope on header frame`);
+            host.decoder = createActivationWireDecoder(envelope.payload);
+          }
           continue;
         }
         const seq = host.framesSeen;
         host.framesSeen += 1;
+        if (host.decodeWire) {
+          const envelope = decodeStageFrameEnvelope(bytes);
+          if (!envelope) throw new Error(`${targetId}: malformed sf envelope on frame seq=${seq}`);
+          if (!host.decoder) throw new Error(`${targetId}: frame arrived before header was decoded`);
+          host.wireFrameByteLengths.push(bytes.byteLength);
+          const decodedFrame = host.decoder.decodeFrameBytes(envelope.payload);
+          host.decodedActivationByteLengths.push(decodedFrame.activations.byteLength);
+        }
         if (host.dieAtSeq !== undefined && seq >= host.dieAtSeq) {
           continue; // simulate death: never reply
         }
@@ -389,4 +458,167 @@ test('external abort() cleanly finishes the session with partial history intact'
   const result = await handle.result();
   assert.equal(result.aborted, true);
   assert.equal(result.abortReason, 'caller cancelled');
+});
+
+// ── Wire dtype: the receiving side actually decodes f16 -> f32 ─────────────
+//
+// Every other test in this file passes `wireDtype: 'f16'` too, but their
+// mock host ignores the bytes entirely — fine for proving the CONTROL flow
+// (replan/abort/token accounting), but it never actually exercises the
+// codec. These two tests turn `decodeWire: true` on so the mock host does
+// what `useStageHost.ts` really does: unwrap the envelope, build a real
+// `ActivationWireDecoder` from the header, and `decodeFrameBytes` every
+// frame — proving an f16 route delivers f32 buffers of the correct byte
+// length to the receiving side, and that the wire bytes it took to get
+// there are smaller than the f32 equivalent.
+
+test('f16 route: the receiving side decodes every frame to a full-precision f32 buffer of the right byte length', async () => {
+  const NEMBD = 16;
+  const mesh = createMockMesh('driver');
+  const hostA = makeFakeHost('hostA', { decodeWire: true });
+  mesh.hosts.set('hostA', hostA);
+  const plan = twoStagePlan('hostA');
+  const hooks = makeMockLocalHooks(NEMBD);
+
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan,
+    modelId: 'm',
+    prompt: 'hello world',
+    maxDecodeTokens: 3,
+    wireDtype: 'f16',
+    localHooks: hooks,
+    replan: () => null,
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: FAST_TIMEOUTS,
+  });
+
+  const result = await handle.result();
+  assert.equal(result.aborted, false);
+
+  // maxDecodeTokens=3: prefill produces 1 generated token (the prompt's
+  // first continuation), then the decode loop runs while
+  // generatedTokens.length < 3 — 2 more steps. Total frames sent: 1
+  // prefill (2 prompt tokens) + 2 decode (1 token each) = 3.
+  assert.equal(hostA.decodedActivationByteLengths.length, 3);
+  // The prefill frame carries 2 tokens; every decode frame carries 1 —
+  // decodeFrameBytes ALWAYS reconstructs f32 (4 bytes/elem) regardless of
+  // what crossed the wire as f16 (2 bytes/elem) — this is the exact
+  // guarantee `StageWorkerClient.prefill/decode`'s hard f32 requirement
+  // depends on.
+  assert.equal(hostA.decodedActivationByteLengths[0], 2 * NEMBD * 4);
+  for (let i = 1; i < hostA.decodedActivationByteLengths.length; i++) {
+    assert.equal(hostA.decodedActivationByteLengths[i], 1 * NEMBD * 4);
+  }
+  assert.equal(hostA.decoder?.dtype, 'f16');
+  assert.equal(hostA.decoder?.nEmbd, NEMBD);
+});
+
+test('f16 vs f32 route: identical activations produce smaller wire frames on the f16 route', async () => {
+  const NEMBD = 4096; // production hidden_size — small nEmbd values make msgpack/envelope overhead dominate the ratio
+  async function runOnce(wireDtype: 'f32' | 'f16'): Promise<FakeHost> {
+    const mesh = createMockMesh('driver');
+    const hostA = makeFakeHost('hostA', { decodeWire: true });
+    mesh.hosts.set('hostA', hostA);
+    const plan = twoStagePlan('hostA');
+    const hooks = makeMockLocalHooks(NEMBD);
+    const handle = runDriverStageSession({
+      peer: mesh.peer,
+      plan,
+      modelId: 'm',
+      prompt: 'hi',
+      // prefill (seq=0) produces 1 generated token; maxDecodeTokens=2 lets
+      // exactly one decode step (seq=1) run after it, so
+      // wireFrameByteLengths has [prefill, decodeStep] — index 1 is the
+      // hot per-token path this test wants to compare.
+      maxDecodeTokens: 2,
+      wireDtype,
+      localHooks: hooks,
+      replan: () => null,
+      loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+      timeouts: FAST_TIMEOUTS,
+    });
+    await handle.result();
+    return hostA;
+  }
+
+  const hostF32 = await runOnce('f32');
+  const hostF16 = await runOnce('f16');
+
+  // Compare the decode-step frame (the hot per-token path), not the
+  // (larger, one-time) prefill frame — index 1.
+  const b32 = hostF32.wireFrameByteLengths[1]!;
+  const b16 = hostF16.wireFrameByteLengths[1]!;
+  console.log(`[wire-dtype] orchestrator-level decode frame bytes: f32=${b32}B f16=${b16}B`);
+  assert.ok(b16 < b32 * 0.55, `expected f16 (${b16}B) well under half+overhead of f32 (${b32}B)`);
+  // But the DECODED side always reconstructs the same f32 byte length —
+  // the size win is wire-only, never visible to the native stage input.
+  assert.equal(hostF32.decodedActivationByteLengths[1], hostF16.decodedActivationByteLengths[1]);
+});
+
+// ── Progress-aware load wait (the silent-cold-load fix) ──────────────────────
+
+test('progress-aware load: ready that arrives well past loadStallMs still succeeds while progress flows', async () => {
+  const mesh = createMockMesh('driver');
+  // Ready arrives at ~250ms — 2.5x the 100ms stall window — but 5 progress
+  // pushes at 50ms intervals keep resetting the stall clock, so a healthy
+  // slow load is NOT mistaken for a dead host (the exact bug: a 4.4GB solo
+  // load tripped the flat 5-min timeout mid-download and forced a replan).
+  const hostA = makeFakeHost('hostA', { loadProgressCount: 5, loadProgressIntervalMs: 50 });
+  mesh.hosts.set('hostA', hostA);
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan: twoStagePlan('hostA'),
+    modelId: 'm',
+    prompt: 'hello world',
+    maxDecodeTokens: 2,
+    wireDtype: 'f16',
+    localHooks: makeMockLocalHooks(),
+    replan: () => null,
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: { pingMs: 200, loadStallMs: 100, loadCeilingMs: 60_000, bootstrapStepMs: 500, stepTimeoutFloorMs: 50 },
+  });
+  const events = collectEvents(handle);
+  const result = await handle.result();
+
+  assert.equal(result.aborted, false, 'a healthy slow load must not abort');
+  assert.ok(!events.some((e) => e.type === 'stall'), 'no stall while progress flows');
+  const loadEvents = events.filter((e) => e.type === 'loadProgress');
+  assert.equal(loadEvents.length, 5, 'every load-progress push surfaced as an event');
+  assert.ok(
+    loadEvents.some((e) => e.type === 'loadProgress' && e.phase === 'warming'),
+    'the warming-phase tail surfaced',
+  );
+  assert.ok(events.some((e) => e.type === 'stageReady' && e.peerId === 'hostA'));
+  assert.ok(events.some((e) => e.type === 'finished'));
+});
+
+test('progress-aware load: genuine silence past loadStallMs still stalls (fast-fail preserved)', async () => {
+  const mesh = createMockMesh('driver');
+  // No progress frames + ready delayed to 300ms > the 80ms stall window ⇒
+  // the load must fail fast (host truly dead), not hang for the ceiling.
+  const hostA = makeFakeHost('hostA', { loadReadyDelayMs: 300 });
+  mesh.hosts.set('hostA', hostA);
+  const handle = runDriverStageSession({
+    peer: mesh.peer,
+    plan: twoStagePlan('hostA'),
+    modelId: 'm',
+    prompt: 'hi',
+    maxDecodeTokens: 1,
+    wireDtype: 'f16',
+    localHooks: makeMockLocalHooks(),
+    replan: () => null, // no spare ⇒ stall funnels to a clean abort
+    loadExtras: () => ({ shardUrls: ['https://x/shard.gguf'], ctxSize: 512 }),
+    timeouts: { pingMs: 200, loadStallMs: 80, loadCeilingMs: 60_000, bootstrapStepMs: 500, stepTimeoutFloorMs: 50 },
+  });
+  const startedAt = Date.now();
+  const result = await handle.result();
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(result.aborted, true, 'a silent (dead) host load must fail, not hang');
+  // Fast-fail at the ~80ms STALL window, nowhere near the 60s ceiling — the
+  // whole point is that silence is caught quickly while healthy slow loads
+  // (previous test) survive indefinitely.
+  assert.ok(elapsed < 2_000, `aborted fast (${elapsed}ms), not hung to the ceiling`);
+  assert.match(result.abortReason ?? '', /timed out|load/i);
 });

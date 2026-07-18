@@ -29,7 +29,8 @@
  *   7. Designate a hot spare when an eligible extra host exists
  *      (CHAOS.md Layer 3).
  */
-import { splitLayerRangesWeighted, activationBytes, type LayerRange } from '@unstable-legion/stage-runtime';
+import { splitLayerRangesWeighted, type LayerRange } from '@unstable-legion/stage-runtime';
+import { legionActivationBytes } from './activationWireCodec.js';
 import type { MeshRosterEntry } from './types.js';
 
 // ── Input shapes ─────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ export interface PlanPipelineOptions {
    * when replanning. */
   excludePeerIds?: readonly string[];
   /** Wire dtype used for the per-token hop-cost estimate. Default 'f16'. */
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   /** Designate a hot spare when an eligible extra host exists. Default true. */
   wantHotSpare?: boolean;
   /** Consider `available === false` peers too. Default false (skip them). */
@@ -106,6 +107,63 @@ export interface StagePlan {
   /** Peers that were considered but not selected (diagnostics — lets a
    * caller/UI/tests explain "why wasn't X picked"). */
   unselectedPeerIds: readonly string[];
+}
+
+// ── Plan validity ──────────────────────────────────────────────────────────
+
+export type PlanValidity = { valid: true } | { valid: false; reason: string };
+
+/**
+ * Structural invariants a plan MUST satisfy to be executable, checked before
+ * a session commits to it. Historically nothing validated a plan — a planner
+ * could (and did) emit a route the runtime silently ran wrong, e.g. layers
+ * skipped between two stages producing garbage tokens. This catches the
+ * malformed shapes early, with a human reason, so the caller can refuse or
+ * replan instead of streaming gibberish.
+ *
+ * Enforced: at least one stage; stages ordered `0..n-1` with no dup/missing
+ * index; exactly one `isFirst` (at stageIndex 0, starting at layer 0) and
+ * exactly one `isFinal` (the last, ending at `totalLayers`); CONTIGUITY —
+ * every boundary meets (`layerStart[i+1] === layerEnd[i]`) so no layer is
+ * skipped or double-run; each range non-empty.
+ */
+export function validateStagePlan(plan: StagePlan): PlanValidity {
+  const stages = plan.stages;
+  if (stages.length === 0) return { valid: false, reason: 'plan has no stages' };
+
+  const ordered = [...stages].sort((a, b) => a.stageIndex - b.stageIndex);
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i]!.stageIndex !== i) {
+      return { valid: false, reason: `stage indexes are not a contiguous 0..${ordered.length - 1} run (saw ${ordered.map((s) => s.stageIndex).join(',')})` };
+    }
+  }
+
+  const firsts = ordered.filter((s) => s.isFirst);
+  if (firsts.length !== 1) return { valid: false, reason: `expected exactly one isFirst stage, found ${firsts.length}` };
+  const finals = ordered.filter((s) => s.isFinal);
+  if (finals.length !== 1) return { valid: false, reason: `expected exactly one isFinal stage, found ${finals.length}` };
+  if (ordered[0]!.isFirst !== true) return { valid: false, reason: 'stage 0 must be isFirst' };
+  if (ordered[ordered.length - 1]!.isFinal !== true) return { valid: false, reason: 'the last stage must be isFinal' };
+
+  if (ordered[0]!.layerStart !== 0) return { valid: false, reason: `first stage must start at layer 0, starts at ${ordered[0]!.layerStart}` };
+  if (ordered[ordered.length - 1]!.layerEnd !== plan.totalLayers) {
+    return { valid: false, reason: `last stage must end at totalLayers (${plan.totalLayers}), ends at ${ordered[ordered.length - 1]!.layerEnd}` };
+  }
+
+  for (let i = 0; i < ordered.length; i++) {
+    const s = ordered[i]!;
+    if (s.layerEnd <= s.layerStart) {
+      return { valid: false, reason: `stage ${s.stageIndex} has an empty/inverted range [${s.layerStart},${s.layerEnd})` };
+    }
+    if (i > 0 && s.layerStart !== ordered[i - 1]!.layerEnd) {
+      return {
+        valid: false,
+        reason: `layer discontinuity between stage ${i - 1} [..,${ordered[i - 1]!.layerEnd}) and stage ${i} [${s.layerStart},..) — ${s.layerStart > ordered[i - 1]!.layerEnd ? 'a gap skips layers' : 'an overlap double-runs layers'}`,
+      };
+    }
+  }
+
+  return { valid: true };
 }
 
 // ── Fragment-id convention (SLICING.md §2 "layer-00000.gguf" naming) ────
@@ -374,7 +432,7 @@ export function planPipeline(
     }
 
     const perTokenHopBytes =
-      stages.length > 1 ? activationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
+      stages.length > 1 ? legionActivationBytes(1, req.nEmbd, wireDtype) * (stages.length - 1) : 0;
 
     const selectedIds = new Set(stages.map((s) => s.peerId));
     const unselectedPeerIds = eligible.filter((h) => !selectedIds.has(h.peerId)).map((h) => h.peerId);

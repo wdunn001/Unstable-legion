@@ -1,0 +1,48 @@
+---
+description: Wire protocol, runtime guards, and the additive-versioning idiom. Read before editing guards, types, or anything on the trystero wire.
+globs: packages/mesh-core/src/**,packages/mesh-react/src/**
+---
+
+# Mesh protocol + guards
+
+## Wire actions (trystero data channel)
+
+| Action | Payload | Role |
+|--------|---------|------|
+| `cap`  | `MeshPeerCap` | advertise model / stageHost capacity / tools / standing (join, 30s heartbeat, change) |
+| `sf`   | `Uint8Array`  | activation-wire frames (hidden states between stages) — **bandwidth-critical** |
+| `tc`   | `MeshToolFrame` | stage session control (ping/open/token/stop) + tool calls |
+| `cm`/`cf` | `MeshChatMessage` / Codec frame | chat metadata + token frames for display |
+
+## The additive idiom (LOAD-BEARING — do not break)
+
+This is a P2P mesh; you **cannot** assume every peer runs the same bundle
+version. Guards MUST tolerate version skew:
+
+- **New descriptor fields are optional.** Validate them as
+  `if (x.field !== undefined && !valid(x.field)) return false;` — never hard-require
+  a field a slightly-older bundle omits. A too-strict guard silently drops an
+  otherwise-capable peer from the *entire* mesh (this actually happened: a
+  required `wireDtype` on `loadedStages` rejected a whole cap; now it's optional,
+  defaulted to `f16` at ingestion in `collectCommunalAds`).
+- JSON drops `undefined` keys on the wire — a producer setting `field: undefined`
+  transmits an object *without* that key. Guards see absent, not undefined-value.
+- `MESH_PROTOCOL_VERSION` gates the envelope; within a version, changes are additive.
+- Missing optional values get a concrete default at **ingestion**, so downstream
+  consumers never see `undefined` (e.g. `wireDtype ?? 'f16'`).
+
+## Debugging the wire (runtime)
+
+- `window.__legionIce.snapshot()` → `{connected, connecting, failed, total}`;
+  `window.__legionIce.connections[].states` → per-PC ICE transitions.
+- `window.__legionChat` → chat/mesh state (`remoteCount`, `capacityPercent`, …).
+- **Empty ICE state sequences = signaling is dead** (peers never exchanged SDP),
+  NOT a TURN problem. Signaling (MQTT) is upstream of ICE/TURN of the guard —
+  diagnose it first. Caps can still arrive over MQTT while data channels are down.
+
+## Build note
+
+`apps/chat` and `mesh-react` consume `mesh-core` from `dist/` (`dist/esm`).
+After editing `mesh-core/src`, **rebuild** (`npm run build -w @unstable-legion/core`)
+or the app uses stale compiled JS. The Docker build recompiles from src.
+Unit tests: `node:test` under `packages/*/test`.

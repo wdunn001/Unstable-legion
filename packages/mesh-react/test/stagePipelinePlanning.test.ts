@@ -9,7 +9,11 @@ import {
   buildStageHostCap,
   planPipelineForDriver,
   sanitizeWasmHeapBudget,
+  sanitizeWeightBudget,
+  chooseMaxSessions,
+  unionLoadedStages,
   WASM_HEAP_CEILING_BYTES,
+  CONTRIBUTION_BUDGET_CEILING_BYTES,
 } from '../src/stagePipelinePlanning.ts';
 import type { MeshRosterEntry } from '@unstable-legion/core';
 
@@ -55,6 +59,73 @@ test('sanitizeWasmHeapBudget: caps at WASM_HEAP_CEILING_BYTES, falls back on bad
   assert.equal(sanitizeWasmHeapBudget(-5), WASM_HEAP_CEILING_BYTES);
 });
 
+// ── sanitizeWeightBudget (contribute-more: weight budget decoupled from wasmHeapBudget) ──
+
+test('sanitizeWeightBudget: no contributionBudgetBytes override -> EXACT same figure as sanitizeWasmHeapBudget (default unchanged, ~11 layers for Qwen3-8B)', () => {
+  const limits = { maxStorageBufferBindingSize: 8_000_000_000 };
+  const CHAT_AVG_LAYER_BYTES = 140_000_000;
+  const weight = sanitizeWeightBudget(limits, { minBytes: CHAT_AVG_LAYER_BYTES });
+  assert.equal(weight, sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize));
+  assert.equal(weight, WASM_HEAP_CEILING_BYTES);
+  assert.equal(Math.floor(weight / CHAT_AVG_LAYER_BYTES), 11);
+});
+
+test('sanitizeWeightBudget: an override raises the budget past the wasm-heap ceiling — claim capacity actually grows', () => {
+  const limits = { maxStorageBufferBindingSize: 24_000_000_000, contributionBudgetBytes: 12_000_000_000 };
+  const CHAT_AVG_LAYER_BYTES = 140_000_000;
+  const weight = sanitizeWeightBudget(limits, { minBytes: CHAT_AVG_LAYER_BYTES });
+  assert.equal(weight, 12_000_000_000);
+  assert.ok(weight > WASM_HEAP_CEILING_BYTES);
+  const layers = Math.floor(weight / CHAT_AVG_LAYER_BYTES);
+  assert.ok(layers > 11, `expected >11 layers with a raised budget, got ${layers}`);
+});
+
+test('sanitizeWeightBudget: an override is clamped to CONTRIBUTION_BUDGET_CEILING_BYTES (~32GB), never unbounded', () => {
+  const limits = { maxStorageBufferBindingSize: 100_000_000_000, contributionBudgetBytes: 999_000_000_000 };
+  assert.equal(sanitizeWeightBudget(limits), CONTRIBUTION_BUDGET_CEILING_BYTES);
+});
+
+test('sanitizeWeightBudget: an override below minBytes is clamped UP to minBytes (never affords zero layers)', () => {
+  const limits = { maxStorageBufferBindingSize: 8_000_000_000, contributionBudgetBytes: 1000 }; // absurdly small
+  const minBytes = 140_000_000;
+  assert.equal(sanitizeWeightBudget(limits, { minBytes }), minBytes);
+});
+
+test('sanitizeWeightBudget: a bad override (0, negative, NaN) falls back to the safe default, never throws', () => {
+  const base = { maxStorageBufferBindingSize: 2_000_000_000 };
+  const fallback = sanitizeWasmHeapBudget(base.maxStorageBufferBindingSize);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: 0 }), fallback);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: -5 }), fallback);
+  assert.equal(sanitizeWeightBudget({ ...base, contributionBudgetBytes: Number.NaN }), fallback);
+});
+
+test('sanitizeWeightBudget: does NOT affect wasmHeapBudget/chooseMaxSessions — a big weight budget never inflates session sizing', () => {
+  const limits = { maxStorageBufferBindingSize: 24_000_000_000, contributionBudgetBytes: 24_000_000_000 };
+  // wasmHeapBudget is computed straight from maxStorageBufferBindingSize,
+  // completely independent of contributionBudgetBytes.
+  assert.equal(sanitizeWasmHeapBudget(limits.maxStorageBufferBindingSize), WASM_HEAP_CEILING_BYTES);
+  // chooseMaxSessions has no contribution-budget parameter at all — a big
+  // weight budget structurally cannot reach it.
+  assert.equal(chooseMaxSessions(undefined), 4);
+  assert.equal(chooseMaxSessions(4), 4);
+});
+
+test('buildStageHostCap: contributionBudgetBytes populates the cap\'s vramBytes when the real detected vramBytes is absent (WebGPU never exposes it)', () => {
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000, contributionBudgetBytes: 12_000_000_000 },
+    { keepalive: false, visible: true, uptimeMs: 0 },
+  );
+  assert.equal(cap.vramBytes, 12_000_000_000);
+});
+
+test('buildStageHostCap: a REAL detected vramBytes always wins over contributionBudgetBytes', () => {
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000, vramBytes: 4_000_000_000, contributionBudgetBytes: 12_000_000_000 },
+    { keepalive: false, visible: true, uptimeMs: 0 },
+  );
+  assert.equal(cap.vramBytes, 4_000_000_000);
+});
+
 test('buildLocalCapacityCap: min(limit, ceiling), no stability/vram fields', () => {
   const cap = buildLocalCapacityCap({ maxStorageBufferBindingSize: 900_000_000 });
   assert.equal(cap.maxStorageBufferBytes, 900_000_000);
@@ -95,6 +166,44 @@ test('buildStageHostCap: omits cachedFragments when empty, omits optional stabil
 test('buildStageHostCap: negative uptimeMs is clamped to 0', () => {
   const cap = buildStageHostCap({ maxStorageBufferBindingSize: 500_000_000 }, { keepalive: false, visible: true, uptimeMs: -50 });
   assert.equal(cap.stability?.uptimeMs, 0);
+});
+
+// ── REUSE-STAGE0: unionLoadedStages (the unified cap publisher's core) ──
+
+test('unionLoadedStages: concatenates base + extra without clobbering either', () => {
+  const base = [{ modelId: 'm', layerStart: 2, layerEnd: 36, includeEmbeddings: false, includeOutput: true, ctxSize: 4096, maxSessions: 4, activeSessions: 1, epoch: 1 }];
+  const extra = [{ modelId: 'm', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, maxSessions: 1, activeSessions: 0, epoch: 1 }];
+  const union = unionLoadedStages(base, extra);
+  assert.equal(union.length, 2);
+  assert.deepEqual(union[0], base[0]);
+  assert.deepEqual(union[1], extra[0]);
+});
+
+test('unionLoadedStages: either side absent/empty is a safe no-op, never throws', () => {
+  const one = [{ modelId: 'm', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, maxSessions: 1, activeSessions: 0, epoch: 1 }];
+  assert.deepEqual(unionLoadedStages(one, undefined), one);
+  assert.deepEqual(unionLoadedStages(undefined, one), one);
+  assert.deepEqual(unionLoadedStages(undefined, undefined), []);
+  assert.deepEqual(unionLoadedStages([], []), []);
+});
+
+test('buildStageHostCap fed a unionLoadedStages(...) result: BOTH the [0,2) includeEmbeddings:true entry and the [2,36) entry are present in the published cap — the exact unified-publisher scenario a REUSE-STAGE0 peer hits when it serves stage-0 AND hosts the body', () => {
+  const stageZero = { modelId: 'qwen3-8b', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, wireDtype: 'i8' as const, maxSessions: 1, activeSessions: 1, epoch: 1 };
+  const body = { modelId: 'qwen3-8b', layerStart: 2, layerEnd: 36, includeEmbeddings: false, includeOutput: true, ctxSize: 4096, wireDtype: 'i8' as const, maxSessions: 4, activeSessions: 2, epoch: 3 };
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000 },
+    { keepalive: true, visible: true, uptimeMs: 1000 },
+    undefined,
+    { maxSessions: 4, activeSessions: 2 },
+    unionLoadedStages([body], [stageZero]),
+  );
+  assert.equal(cap.loadedStages?.length, 2);
+  const first = cap.loadedStages?.find((s) => s.layerStart === 0 && s.layerEnd === 2);
+  const second = cap.loadedStages?.find((s) => s.layerStart === 2 && s.layerEnd === 36);
+  assert.ok(first, 'the [0,2) stage-0 entry must survive the union onto the wire cap');
+  assert.equal(first?.includeEmbeddings, true);
+  assert.ok(second, 'the [2,36) body-host entry must survive the union onto the wire cap — neither producer clobbers the other');
+  assert.equal(second?.includeEmbeddings, false);
 });
 
 // ── planPipelineForDriver ──────────────────────────────────────────────

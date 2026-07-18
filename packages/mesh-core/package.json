@@ -32,7 +32,7 @@
     "@codecai/web-safety": "file:../../codec-local/packages/web-safety",
     "@codecai/web-llm": "file:../../codec-local/packages/web-llm",
     "@msgpack/msgpack": "^3.0.0",
-    "@trystero-p2p/mqtt": "^0.24.0",
+    "@trystero-p2p/mqtt": "0.24.0",
     "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"
   },
   "devDependencies": {

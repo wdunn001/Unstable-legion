@@ -19,6 +19,7 @@ import {
   isMeshToolFrame,
 } from './guards.js';
 import { Roster } from './roster.js';
+import { installIceDiagnostics } from './iceDiagnostics.js';
 import {
   type MeshChatMessage,
   type MeshPeerCap,
@@ -42,6 +43,16 @@ export interface TrysteroRoom {
   onPeerJoin(cb: (peerId: string) => void): void;
   onPeerLeave(cb: (peerId: string) => void): void;
   leave(): void;
+  /**
+   * Trystero's own live-connection map (`@trystero-p2p/core`'s room.mjs
+   * returns `[id, peer.connection]` pairs) — only peers with a COMPLETED
+   * WebRTC connection appear here (unlike `iceDiagnostics.ts`'s wrap,
+   * which also sees in-flight/failed attempts). Optional: a fake room in
+   * a unit test, or a future non-WebRTC Trystero strategy, may not
+   * implement it — `peerConnectionType` below treats its absence as
+   * 'unknown', never a hard error.
+   */
+  getPeers?(): Record<string, RTCPeerConnection>;
 }
 
 export type JoinRoomFn = (
@@ -116,8 +127,76 @@ export interface Peer {
   sendStageFrame(bytes: Uint8Array, peers?: string | string[]): Promise<void>;
   /** Subscribe to inbound stage-activation frames. */
   onStageFrame(cb: (bytes: Uint8Array, peerId: string) => void): () => void;
+  /**
+   * Best-effort DIRECT (P2P) vs RELAYED (via TURN) classification for a
+   * currently-connected peer's WebRTC path — pure observability for the
+   * pipeline-handoff UI, no orchestrator/relay behavior depends on this.
+   * Mirrors `iceDiagnostics.ts`'s `captureSelectedPair`: reads the
+   * nominated candidate-pair off `getStats()` and inspects both
+   * candidates' `candidateType` ('relay' on either side -> 'relayed';
+   * both host/srflx/prflx -> 'direct'). Resolves 'unknown' whenever the
+   * answer can't be determined — no connection for that peerId, the
+   * underlying Trystero room doesn't expose `getPeers` (e.g. a non-WebRTC
+   * strategy, or the Node bridge), or the stats call fails. Never throws
+   * — `getStats()` is best-effort exactly like `iceDiagnostics.ts`
+   * already treats it.
+   *
+   * Optional on the interface (additive surface — existing `Peer`
+   * literals built by hand for tests, e.g. skillResolver.test.ts's mock
+   * peer, don't need updating).
+   */
+  peerConnectionType?(peerId: string): Promise<'direct' | 'relayed' | 'unknown'>;
   /** Leave the room and stop the heartbeat. */
   leave(): void;
+}
+
+// ── Self-addressed sends: loopback instead of Trystero ──────────────────
+//
+// Trystero has no data channel to ourselves — `room.makeAction(...)[0]`
+// (the sender) only knows about REMOTE peer connections, so naming our
+// own `selfId` as a `sendTool`/`sendStageFrame` target throws ("no peer
+// with id <selfId> found") instead of silently no-op'ing. This used to be
+// purely theoretical (nothing ever addressed itself) until M3's communal
+// pipeline made it real: `planCommunalRoute` can legitimately pick THIS
+// peer as a segment's host — e.g. the only candidate when solo, or a
+// mixed mesh where this peer covers one hop and a remote peer covers
+// another — because a driver's own `useCommunalHost` contribution is a
+// perfectly valid host, advertised on the very same roster remote hosts
+// are. `stageOrchestrator.ts`'s `runCommunalDriverSession` has no
+// special-cased "is this peerId mine" branch (by design — see that
+// module's SCOPE NOTE), so it happily emits a `stage.session.open`/`sf`
+// call straight at `selfId` for a self-hosted hop. The fix belongs HERE,
+// not in the orchestrator: `useStageHost`'s "answer" effect already
+// listens on `peer.onTool`/`peer.onStageFrame` and runs the exact
+// session-open/prefill/decode machinery a self-hosted hop needs — it
+// just never gets invoked because the call never arrives locally. Routing
+// a self-addressed `sendTool`/`sendStageFrame` to the LOCAL listener
+// registry instead of Trystero makes that existing host-answer loop
+// transparently serve the driver's own communal claim, with zero
+// duplicated attach/session logic and zero orchestrator changes — and it
+// generalizes for free to a mixed route (self covers one segment, a real
+// remote peer covers another): only the genuinely-remote portion of a
+// `peers` target ever reaches Trystero.
+export interface SplitPeerTarget {
+  /** True when `selfId` was one of the addressed targets — the caller
+   * must deliver the frame to its own local listeners. */
+  loopback: boolean;
+  /** What's left to actually hand to Trystero's sender. `undefined` means
+   * "broadcast to every connected peer" (Trystero's own `peers` contract —
+   * preserved as-is, no loopback inferred, since nothing named `selfId`
+   * explicitly). An empty array means "nothing left to send over the
+   * wire" — callers MUST skip the underlying Trystero send in that case;
+   * an empty-array target isn't guaranteed to be a harmless no-op across
+   * every Trystero strategy, and it's also just wasted work. */
+  remote: string | string[] | undefined;
+}
+
+export function splitPeerTarget(peers: string | string[] | undefined, selfId: string): SplitPeerTarget {
+  if (peers === undefined) return { loopback: false, remote: undefined };
+  if (typeof peers === 'string') {
+    return peers === selfId ? { loopback: true, remote: [] } : { loopback: false, remote: peers };
+  }
+  return { loopback: peers.includes(selfId), remote: peers.filter((p) => p !== selfId) };
 }
 
 // ── joinMesh ──────────────────────────────────────────────────────────────
@@ -146,6 +225,11 @@ export interface Peer {
 export function joinMesh(opts: PeerOptions): Peer {
   const { joinRoom, selfId, trysteroConfig, roomId, cap: initialCap } = opts;
   const heartbeatMs = opts.heartbeatMs ?? 30_000;
+
+  // Observe every WebRTC connection attempt (incl. ones that never
+  // complete — invisible to trystero's own API); see iceDiagnostics.ts.
+  // Must run BEFORE joinRoom constructs any RTCPeerConnection.
+  installIceDiagnostics();
 
   const room = joinRoom(trysteroConfig, roomId, {
     onJoinError: (d) => {
@@ -340,18 +424,62 @@ export function joinMesh(opts: PeerOptions): Peer {
       return () => envelopeListeners.delete(cb);
     },
     async sendTool(frame, peers) {
-      await sendTool(frame, peers);
+      const { loopback, remote } = splitPeerTarget(peers, selfId);
+      if (loopback) {
+        for (const cb of toolListeners) cb(frame, selfId);
+      }
+      if (remote === undefined || remote.length > 0) {
+        await sendTool(frame, remote);
+      }
     },
     onTool(cb) {
       toolListeners.add(cb);
       return () => toolListeners.delete(cb);
     },
     async sendStageFrame(bytes, peers) {
-      await sendStageFrameBytes(bytes, peers);
+      const { loopback, remote } = splitPeerTarget(peers, selfId);
+      if (loopback) {
+        for (const cb of stageFrameListeners) cb(bytes, selfId);
+      }
+      if (remote === undefined || remote.length > 0) {
+        await sendStageFrameBytes(bytes, remote);
+      }
     },
     onStageFrame(cb) {
       stageFrameListeners.add(cb);
       return () => stageFrameListeners.delete(cb);
+    },
+    async peerConnectionType(peerId) {
+      try {
+        if (typeof room.getPeers !== 'function') return 'unknown';
+        const pc = room.getPeers()[peerId];
+        if (!pc || typeof pc.getStats !== 'function') return 'unknown';
+        // Same maplike-view cast iceDiagnostics.ts's captureSelectedPair
+        // uses — RTCStatsReport IS a maplike at runtime, older lib.dom
+        // typings just don't declare `.get`.
+        const stats = (await pc.getStats()) as unknown as Map<string, Record<string, unknown>>;
+        let result: 'direct' | 'relayed' | 'unknown' = 'unknown';
+        stats.forEach((report) => {
+          if (report.type !== 'candidate-pair' || !(report as { nominated?: boolean }).nominated) return;
+          const r = report as { localCandidateId?: string; remoteCandidateId?: string };
+          const local = r.localCandidateId ? stats.get(r.localCandidateId) : undefined;
+          const remote = r.remoteCandidateId ? stats.get(r.remoteCandidateId) : undefined;
+          const localType = local?.candidateType as string | undefined;
+          const remoteType = remote?.candidateType as string | undefined;
+          if (localType === 'relay' || remoteType === 'relay') {
+            result = 'relayed';
+          } else if (
+            (localType === 'host' || localType === 'srflx' || localType === 'prflx') &&
+            (remoteType === 'host' || remoteType === 'srflx' || remoteType === 'prflx')
+          ) {
+            result = 'direct';
+          }
+        });
+        return result;
+      } catch {
+        // getStats is best-effort — never let observability break the mesh.
+        return 'unknown';
+      }
     },
     leave() {
       if (heartbeat) clearInterval(heartbeat);

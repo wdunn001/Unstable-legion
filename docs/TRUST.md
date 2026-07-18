@@ -50,6 +50,27 @@ mechanism). Framing the mesh as anything more private than "readable by
 whoever is currently hosting your route" would be a false claim, not
 appropriate caution.
 
+## Thin drivers — an EXTRA privacy cost, stated plainly
+
+A device with no usable WebGPU can't compute even the first stage locally
+(see `docs/OPTIONAL-STAGE0.md`). It runs as a **thin driver**: it ships its
+**raw token-ids** — trivially the text you typed — to a remote *isFirst*
+host, which does the embedding + first layers your own computer would
+normally do privately.
+
+This is **strictly weaker** than the capable path. On a capable device, what
+leaves your machine is already an activation tensor (still host-readable with
+effort, per above). On a thin device, the very first hop receives your prompt
+as tokens it can read directly — no local step stands between your words and
+that host at all.
+
+This is not hidden. `trustStatement.ts`'s `THIN_DRIVER_TRUST_ADDENDUM` is
+shown **verbatim** in the trust interstitial to any device detected as a thin
+driver (`TrustInterstitial`'s `thinDriver` prop), before its first message,
+in addition to the four paragraphs above. A thin driver should treat its
+prompts as readable by the single first host with even less protection than
+the general "readable by the room's hosts" claim already implies.
+
 ## Where this is enforced in the product
 
 - **`TrustBadge`** — an always-visible header pill:

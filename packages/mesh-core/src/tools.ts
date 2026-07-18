@@ -376,6 +376,41 @@ export class PendingToolCallTracker {
     return true;
   }
 
+  /**
+   * Reschedule a pending call's timeout — the progress-driven "reset the
+   * stall clock on every heartbeat" idiom (see loadWatchdog.ts's module
+   * doc for why a flat timeout can't tell "slow but healthy" from "dead").
+   * A caller awaiting a long, unbounded operation (a multi-GB model load)
+   * registers with the STALL window as its `expect` timeout, then calls
+   * this on each progress signal so the deadline only fires after genuine
+   * silence. Returns false (no-op) if nothing is pending for `callId`.
+   */
+  resetTimeout(callId: string, timeoutMs: number): boolean {
+    const entry = this.pending.get(callId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      this.pending.delete(callId);
+      entry.reject(new Error(`tool-call ${callId} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    return true;
+  }
+
+  /**
+   * Reject one specific pending call — used for an overall CEILING backstop
+   * kept distinct from the per-call stall timer (`resetTimeout` above): an
+   * unbounded-but-healthy operation must still fail eventually if progress
+   * trickles forever without finishing. Returns false if not pending.
+   */
+  rejectCall(callId: string, reason: string): boolean {
+    const entry = this.pending.get(callId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    this.pending.delete(callId);
+    entry.reject(new Error(reason));
+    return true;
+  }
+
   /** Drop all pending calls with a rejection — call on peer.leave(). */
   abortAll(reason: string): void {
     for (const [, entry] of this.pending) {

@@ -10,8 +10,8 @@ a report instead of a silent spinner.
 
 | Purpose | Host | Auth |
 |---|---|---|
-| Ingest (tracker script + `/api/*`) | `telemetry.quasarke.net` | ungated (only `/assets/site.js` + `/v1/*` are open; everything else 403s) |
-| Dashboard | `analytics.quasarke.net` | behind Authentik forward-auth |
+| Ingest (tracker script + `/api/*`) | your OpenPanel ingest host (`VITE_OPENPANEL_API_URL` / `VITE_OPENPANEL_SCRIPT_URL`) | ungated (expose only the tracker asset + `/v1/*`; 403 everything else) |
+| Dashboard | your OpenPanel dashboard host | put it behind your own SSO |
 
 The tracker (`op1.js`) is **self-served by our own OpenPanel instance** — no
 CDN, no third-party host. `apps/chat` loads it via OpenPanel's standard
@@ -55,21 +55,19 @@ No message text, no tokens, no user identifiers.
 ## CSP / connect-src
 
 `apps/chat/nginx.conf` ships **no Content-Security-Policy header**, so there
-is nothing to allow-list — the tracker script load and the XHR/beacon to
-`telemetry.quasarke.net` are not blocked. **If a CSP is ever added**, it must
-include `telemetry.quasarke.net` in both `script-src` (the tracker) and
-`connect-src` (event ingest).
+is nothing to allow-list — the tracker script load and the XHR/beacon to your
+ingest host are not blocked. **If a CSP is ever added**, it must include that
+host in both `script-src` (the tracker) and `connect-src` (event ingest).
 
 ## USER ACTION REQUIRED to turn it on
 
 Tracking is a no-op until a real client id is set. To enable it:
 
-1. Sign in to `analytics.quasarke.net` (Authentik) and create a **"Legion
-   Chat"** project. Copy its **public client id**.
-2. Add `https://legion.codecai.net` to that project's **CORS allow-list**
+1. In your OpenPanel dashboard, create a project and copy its **public client
+   id**.
+2. Add your deployment's origin to that project's **CORS allow-list**
    (OpenPanel matches origins EXACTLY — no subdomain wildcards).
-3. On the deploy host, set `VITE_OPENPANEL_CLIENT_ID=<that id>` in
-   `.198:/storage/unstable-legion/.env` (see `.env.example`) and rebuild
-   `legion-chat`.
+3. Set `VITE_OPENPANEL_CLIENT_ID=<that id>` in your build `.env` (see
+   `.env.example`) and rebuild `legion-chat`.
 
 Until then the app ships and runs normally with analytics disabled.

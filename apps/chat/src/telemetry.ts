@@ -1,7 +1,7 @@
 /**
  * telemetry — a small, pure wrapper around OpenPanel's web tracker
  * (`op1.js`), the ONE analytics stack this project uses (self-hosted;
- * ingest edge = telemetry.quasarke.net, dashboard = analytics.quasarke.net
+ * ingest + dashboard are both self-hosted (see docs/TELEMETRY.md)
  * behind Authentik). The tracker is loaded via OpenPanel's standard
  * `window.op` command-queue snippet — NO npm SDK dependency, NO CDN: the
  * script is self-served by our own instance, and the whole thing is a
@@ -116,14 +116,50 @@ function ensureWindowOp(): OpCommand {
   return w.op;
 }
 
+/**
+ * Install a one-time global `error` listener that swallows uncaught errors
+ * originating from the tracker script file itself, so a bug inside OpenPanel's
+ * `op1.js` (e.g. its self-init reading `document.currentScript`, which is null
+ * for a dynamically-inserted async script — the observed
+ * `Cannot read properties of undefined (reading '1')`) can never surface as an
+ * app-level "Uncaught" error or trip any framework error boundary/overlay. This
+ * closes the one hole in this module's "analytics can never break the app"
+ * guarantee: `safeCall` already contains errors from OUR calls into `op`, but
+ * an error thrown while the browser EVALUATES the async script runs off our
+ * stack, so it needs a separate net. Matched narrowly by the script URL — no
+ * unrelated error is ever suppressed. Idempotent.
+ */
+function installTrackerErrorGuard(url: string): void {
+  const w = window as unknown as { __opTrackerGuardUrls?: Set<string> };
+  if (!w.__opTrackerGuardUrls) {
+    w.__opTrackerGuardUrls = new Set<string>();
+    window.addEventListener(
+      'error',
+      (event) => {
+        // `filename` is the script URL the error was thrown from; only
+        // suppress errors whose source is a registered tracker script.
+        if (event.filename && w.__opTrackerGuardUrls?.has(event.filename)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
+  }
+  w.__opTrackerGuardUrls.add(url);
+}
+
 function defaultLoadScript(url: string): void {
   if (typeof document === 'undefined') return;
   if (document.querySelector(`script[data-op-tracker="${url}"]`)) return;
+  installTrackerErrorGuard(url);
   const el = document.createElement('script');
   el.src = url;
   el.async = true;
   el.defer = true;
   el.setAttribute('data-op-tracker', url);
+  // A load/parse failure of best-effort analytics must also stay silent.
+  el.onerror = () => undefined;
   document.head.appendChild(el);
 }
 

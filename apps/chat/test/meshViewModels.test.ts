@@ -11,6 +11,7 @@ import type { CommunalTopology, MeshRosterEntry } from '@unstable-legion/core';
 import {
   deriveCapacityView,
   deriveChatNotice,
+  deriveCrewScale,
   deriveLeaderboard,
   deriveOccupancy,
   deriveStandingView,
@@ -198,6 +199,90 @@ test('deriveTopologySegments: local + covered + gap segments in layer order', ()
   );
 });
 
+test('deriveTopologySegments: covered segment reports the FULL host count, not just the shown one', () => {
+  const view = deriveTopologySegments(
+    topology({
+      segments: [
+        {
+          layerStart: 2,
+          layerEnd: 36,
+          candidates: [
+            candidate({ peerId: 'peer-a' }),
+            candidate({ peerId: 'peer-b' }),
+            candidate({ peerId: 'peer-c' }),
+            candidate({ peerId: 'peer-a' }), // dupe across a churn transient — must not double-count
+          ],
+        },
+      ],
+    }),
+    { selfId: 'self', nickOf: () => undefined },
+  );
+  const covered = view.find((s) => s.kind === 'covered');
+  assert.equal(covered?.hostCount, 3); // 3 distinct hosts, deduped
+  assert.equal(view.find((s) => s.kind === 'local')?.hostCount, undefined); // local carries no count
+});
+
+test('deriveCrewScale: counts ALL hosts including self, redundant full copies, and seats', () => {
+  // Two segments; segment A has 3 hosts (incl. self), segment B has 2 → 2
+  // full copies (the bottleneck), seats = min(Σ maxSessions) across segments.
+  const scale = deriveCrewScale(
+    topology({
+      segments: [
+        {
+          layerStart: 2,
+          layerEnd: 20,
+          candidates: [
+            candidate({ peerId: 'a', maxSessions: 4 }),
+            candidate({ peerId: 'b', maxSessions: 4 }),
+            candidate({ peerId: 'self', maxSessions: 4 }), // you ARE a host — must be counted
+          ],
+        },
+        {
+          layerStart: 20,
+          layerEnd: 36,
+          candidates: [candidate({ peerId: 'a', maxSessions: 5 }), candidate({ peerId: 'c', maxSessions: 5 })],
+        },
+      ],
+    }),
+  );
+  assert.ok(scale);
+  assert.equal(scale.hosts, 4); // a, b, self, c — self INCLUDED
+  assert.equal(scale.fullModels, 2); // min(3 hosts on A, 2 on B)
+  assert.equal(scale.seats, 10); // min(Σ4+4+4=12 on A, Σ5+5=10 on B)
+  assert.equal(scale.label, '4 hosts · 2 full copies · 10 seats');
+});
+
+test('deriveCrewScale: a solo self-host reads "1 host", never 0 (consistent with fullModels/seats)', () => {
+  const scale = deriveCrewScale(
+    topology({
+      segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate({ peerId: 'self', maxSessions: 3 })] }],
+    }),
+  );
+  assert.ok(scale);
+  assert.equal(scale.hosts, 1); // you, hosting alone
+  assert.equal(scale.fullModels, 1);
+  assert.equal(scale.seats, 3);
+  assert.equal(scale.label, '1 host · 3 seats'); // full-copies omitted at 1 (noise)
+});
+
+test('deriveCrewScale: a coverage gap means no complete copy and no seats (0 full copies)', () => {
+  const scale = deriveCrewScale(
+    topology({
+      segments: [{ layerStart: 2, layerEnd: 20, candidates: [candidate({ peerId: 'a' }), candidate({ peerId: 'b' })] }],
+      gaps: [{ layerStart: 20, layerEnd: 36 }],
+    }),
+  );
+  assert.ok(scale);
+  assert.equal(scale.hosts, 2);
+  assert.equal(scale.fullModels, 0);
+  assert.equal(scale.seats, 0);
+  assert.equal(scale.label, '2 hosts'); // full-copies/seats omitted when zero
+});
+
+test('deriveCrewScale: no communal segments at all -> undefined (nothing to summarize)', () => {
+  assert.equal(deriveCrewScale(topology({ segments: [] })), undefined);
+});
+
 // ── deriveChatNotice — honest driver-side failure/reconnect copy ─────────
 
 const READY_CAPACITY = deriveCapacityView(
@@ -225,6 +310,28 @@ test('deriveChatNotice: no-feasible-route error → actionable "layers X–Y nee
   assert.equal(notice.kind, 'error');
   assert.match(notice.message, /Qwen3-8B · Q4_K_M/);
   assert.match(notice.message, /layers 14–27 need a host/);
+});
+
+test('deriveChatNotice: thin device + coverage gap → honest "this device can\'t run a stage", not the generic assembling copy', () => {
+  const notice = deriveChatNotice(
+    { phase: 'error', error: 'no feasible communal route — coverage has a gap' },
+    0,
+    GAP_CAPACITY,
+    true, // isThinDevice
+  )!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /isn't powerful enough to run a model stage/i);
+  assert.match(notice.message, /layers 14–27 still need a host/);
+  assert.match(notice.message, /more powerful device/i);
+  // Must NOT reuse the misleading "assembling / waiting for hosts" framing.
+  assert.doesNotMatch(notice.message, /isn't fully assembled/i);
+});
+
+test('deriveChatNotice: thin device + whole model uncovered → "no member is hosting the first stage"', () => {
+  const noCoverage = deriveCapacityView(topology({ coverageFraction: 0, gaps: [] }), MODEL_LABEL);
+  const notice = deriveChatNotice({ phase: 'error', error: 'no feasible route — coverage gap' }, 0, noCoverage, true)!;
+  assert.equal(notice.kind, 'error');
+  assert.match(notice.message, /no member is hosting the first stage/i);
 });
 
 test('deriveChatNotice: host-loss error → "Lost connection to a host …"', () => {

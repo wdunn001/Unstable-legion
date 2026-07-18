@@ -149,10 +149,13 @@ export {
 export {
   buildStageHostCap,
   buildLocalCapacityCap,
+  unionLoadedStages,
   planPipelineForDriver,
   sanitizeWasmHeapBudget,
+  sanitizeWeightBudget,
   chooseMaxSessions,
   WASM_HEAP_CEILING_BYTES,
+  CONTRIBUTION_BUDGET_CEILING_BYTES,
   DEFAULT_MAX_SESSIONS,
   MAX_SESSIONS_HARD_CAP,
   type StageHostLimits,
@@ -175,7 +178,23 @@ export {
   type ExpireResult,
   type PopResult,
 } from './stageSessionAdmission.js';
-export { detectWebGpuLimits, type WebGpuLimitsResult } from './webgpuLimits.js';
+export {
+  detectWebGpuLimits,
+  isThinDriver,
+  isThinDriverForModel,
+  requiredStorageBufferBytesForManifest,
+  USABLE_STAGE_HOST_MIN_BYTES,
+  type WebGpuLimitsResult,
+} from './webgpuLimits.js';
+
+// ── Same-origin tab colocation — one shared host per browser profile ──
+export {
+  getOrCreateFailureDomainId,
+  createColocationCoordinator,
+  type SharedHostStatus,
+  type ColocationCoordinatorOptions,
+  type ColocationCoordinatorHandle,
+} from './colocation.js';
 
 // ── M3: communal pipeline — self-assembly host loop ─────────────────
 export {
@@ -211,7 +230,24 @@ export {
   type UseCommunalChatOptions,
   type UseCommunalChatHandle,
   type CommunalChatStatus,
+  type StageLoadProgressView,
+  type ResidentStageZero,
 } from './useCommunalChat.js';
+// ── REUSE-STAGE0 Phase 1: serve the resident stage-0 worker to thin/
+// text-relay clients as an isFirst communal stage ────────────────────
+export {
+  useLocalStageServe,
+  type UseLocalStageServeOptions,
+  type UseLocalStageServeHandle,
+} from './useLocalStageServe.js';
+export {
+  createLocalStageServeEngine,
+  sameServedConfig,
+  type LocalStageServeEngine,
+  type LocalStageServeEngineOptions,
+  type ServedStageClient,
+  type ServedStageConfig,
+} from './localStageServeEngine.js';
 export {
   STAGE_MODEL_ID,
   STAGE_TOTAL_LAYERS,
@@ -225,7 +261,21 @@ export {
   stageWasmGlueUrl,
 } from './stageModelSource.js';
 export { StageWorkerClient, type StageWorkerLog } from './stageWorkerClient.js';
-export type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+export type { StageWorkerRequest, StageWorkerResponse, StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
+
+// ── WebGPU device buffer-limit patch (FIX for 8B+ models — see
+// webgpuDevicePatch.ts's module doc) — installed by a stage-hosting
+// worker entry point before the wasm module instantiates. ───────────────
+export {
+  patchWebGpuDeviceLimits,
+  mergeAdapterLimitsIntoRequiredLimits,
+  type WebGpuLimitKey,
+  type WebGpuLimitsSource,
+} from './webgpuDevicePatch.js';
+
+// ── Progress-based stall watchdog (replaces a flat load-timeout with a
+// "no progress for N ms" one — see loadWatchdog.ts's module doc). ───────
+export { runWithStallWatchdog, StallTimeoutError, type StallWatchdogOptions } from './loadWatchdog.js';
 
 // ── UI components (host styles them via `ul-*` classes) ─────────────
 export { LlmStatusPanel, type LlmStatusPanelProps } from './components/LlmStatusPanel.js';
@@ -246,6 +296,7 @@ export { PersonaForm, type PersonaFormProps } from './components/PersonaForm.js'
 // ── Core re-exports for convenience ─────────────────────────────────
 export type {
   MeshChatMessage,
+  MeshLoadedStage,
   MeshPeerCap,
   MeshRosterEntry,
   MeshToolCall,

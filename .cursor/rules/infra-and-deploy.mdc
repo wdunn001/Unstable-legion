@@ -1,0 +1,75 @@
+---
+description: Mesh infrastructure (signaling + TURN) constraints and how to build/ship. Read before touching relay/ICE config, the Dockerfile, or the loader.
+globs: apps/chat/Dockerfile,apps/chat/nginx.conf,docker-compose.yml,scripts/**,.env.example
+---
+
+# Infrastructure + build
+
+Deployment topology — hosts, IPs, paths, DNS, credentials, build boxes — is
+deliberately NOT in this repo: it is public. Everything environment-specific
+comes from `.env` / `.env.example` and CI variables. If you are about to write a
+hostname, an IP, a `/storage/...` path, or a build-machine detail into a file
+here (or into a commit message): don't.
+
+## Mesh infra: SELF-HOST IT — do not reintroduce public dependencies
+
+Both are configured via env and both must be self-hosted. This is an explicit
+product decision, not an accident of setup:
+
+- **Signaling** (peer discovery / SDP exchange) — an MQTT-over-WSS broker, via
+  `VITE_RELAY_URLS`. Public MQTT brokers stalled SDP outright: peers never
+  exchanged offers. That failure is SILENT and easy to misread — a peer only
+  enters the roster once a WebRTC **data channel** opens, so broken signaling
+  looks like "nobody else is here" rather than an error. `window.__legionIce`
+  distinguishes them: an EMPTY snapshot means discovery never happened
+  (signaling), NOT that TURN failed.
+- **STUN/TURN** — coturn, via `VITE_TURN_*`. Prefer a relay OFF your own ISP: a
+  home router that won't hairpin cannot serve a peer sitting right beside it,
+  and a UDP-only relay strands mobile carriers. Pointing at it by IP avoids a
+  DNS dependency at ICE-gather time.
+- **NO third-party STUN/brokers** (Google/Cloudflare/AWS). Don't add them back
+  "for reliability."
+
+## Build
+
+`legion-chat` builds BOTH apps into one image: `apps/chat` at `/` and
+`apps/demo` at `/classic/` (`--base=/classic/`), one nginx, routed by hostname
+not path.
+
+1. `scripts/prepare-deploy-context.sh` — materialize `codec-local/` +
+   `.deploy-context/legion-stage-runtime/` as REAL files. Docker's build-context
+   tar doesn't dereference the sibling-repo symlinks, and on Windows checkouts
+   they materialize as text stubs — never copy those over good ones.
+2. `.env` must carry real `VITE_TURN_*` + `VITE_RELAY_URLS`. **A missing `.env`
+   silently builds a STUN-only bundle with NO error** — every cross-NAT peer is
+   then stranded.
+3. `docker compose build legion-chat` → **`scripts/verify-turn-baked.sh`** (fails
+   loud if TURN isn't in the bundle) → `docker compose up -d legion-chat`.
+
+**Build from a clean tree, and never hand-patch individual files into a
+long-lived build directory.** `vite build` is esbuild — it does **NOT**
+typecheck, so a missing required field ships as `undefined` instead of failing.
+Combined with a partially-updated tree that is a silent, deploy-only bug: it has
+already cost us a config field that was present locally, absent in the built
+tree, and shipped as `undefined` — making every chat reload the entire model.
+Run `tsc --noEmit` + the unit tests before shipping.
+
+Model weights are NOT in the image — serve a per-layer package at
+`/webllm/stages/<model-id>/` (see `SLICING.md`).
+
+## The wasm stage runtime is NOT published
+
+`packages/stage-runtime/wasm/legion-stage.{js,wasm}` is gitignored on purpose —
+build it yourself from the `legion-stage-runtime` repo:
+`scripts/prepare-llama.sh` (git-am's the patch series onto the upstream pin),
+then `scripts/build-wasm.sh` inside an activated emsdk env
+(`source $EMSDK/emsdk_env.sh` — bash only; `sh` has no `source`). Copy the
+output into `packages/stage-runtime/wasm/`.
+
+## Source-of-truth + persistence rules
+
+- **Forgejo is a read-only pull mirror.** Commit to **GitHub `main`**.
+- **Persist host-side infra changes to the private IaC repo** in the same task —
+  host edits drift and get wiped otherwise. They do not belong in this repo.
+- **Secrets** (TURN credential, etc.) never enter chat/context/commits — read
+  them server-side from `.env`/conf in-shell.

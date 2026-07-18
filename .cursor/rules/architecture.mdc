@@ -1,0 +1,58 @@
+---
+description: Unstable Legion core architecture — pipeline-split communal inference. Read before touching mesh/stage/chat code.
+alwaysApply: true
+---
+
+# Architecture: one LLM split across many browser tabs
+
+Unstable Legion is **not** "each peer runs its own chatbot." It is ONE
+distributed Qwen3-8B whose 36 transformer layers are **split across peers**
+(pipeline parallelism over WebRTC). A prompt is tokenized locally, hidden-state
+**activations** stream stage-to-stage across the mesh, and the final stage
+streams tokens back. Keep this mental model — most bugs come from thinking of
+peers as independent chatbots.
+
+## The pipeline
+
+- **Driver** = the tab asking a question. A **capable driver** hosts embeddings
+  + first layers `[0, driverLayers)` locally in WebGPU; a **thin driver** (no
+  usable WebGPU) hosts nothing and relies on a remote `isFirst` host. Same state
+  machine, a mode flag — not a fork (`docs/OPTIONAL-STAGE0.md`).
+- **Communal hosts** each load a **contiguous** layer range and serve it. They
+  self-assemble to cover `[0, 36)` (`packages/mesh-core/src/communalAssembly.ts`)
+  — no central assignment.
+- Only boundary **activations** cross the wire (f16 default — `docs/WIRE-DTYPE.md`),
+  one header per stream + one frame per token. KV cache stays on each host.
+- The driver plans a route (`stagePlanner.ts` / `communalTopology.ts`) and the
+  orchestrator (`stageOrchestrator.ts`) attaches stages, with **attach-time
+  candidate failover** and **mid-stream stall → continue-from-history replan**.
+
+## Key modules (mesh-core)
+
+- `peer.ts` — trystero peer, wire actions, roster, ICE diagnostics install.
+- `guards.ts` — runtime validation of every inbound wire message (see the
+  mesh-protocol rule; additive idiom is load-bearing).
+- `communalAssembly.ts` — a host decides which layer range to claim/grow/shrink.
+- `communalTopology.ts` — flatten roster `loadedStages` → coverage/gaps/route.
+- `stagePlanner.ts` — capacity + stability ranking of candidate hosts.
+- `stageOrchestrator.ts` — drive a session: attach, prefill, decode, replan.
+- `stageControl.ts` — stage session control frames (ping/open/token/stop).
+- `hostHealth.ts` — driver-side demotion tracker (cooldown/backoff) — WIP wiring.
+
+## Known resilience gaps (be careful, don't regress)
+
+- A stage assigned to an unresponsive host stalls that request. Failover exists
+  **only when another candidate covers the same range**. A single host camping a
+  **center** range can leave a non-contiguous gap the survivors can't tile — the
+  driver's replan only stitches *already-loaded* ranges, it can't force a reload.
+  Design direction: bridge with temporary multi-segment hosting, then heal slowly
+  toward a contiguous split; demote blockers with hysteresis (don't thrash).
+- One incompatible/broken peer must not sink the mesh. That's why guards are
+  additive and why host-health demotion exists.
+
+## Repo shape
+
+`packages/mesh-core` (framework-free TS) → `packages/mesh-react` (hooks:
+`useCommunalChat`, `useCommunalHost`, `useStageHost`) → `apps/chat` (THE product,
+`legion.codecai.net/`) and `apps/demo` (`/classic/`). The sliced llama.cpp
+WebGPU **stage runtime** is the sibling `legion-stage-runtime` repo.

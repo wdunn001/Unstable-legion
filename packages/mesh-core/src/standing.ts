@@ -73,6 +73,23 @@ export const DEFAULT_LOWEST_LANE = 0;
  * it only fuzzes ties among near-identical peers. */
 export const DEFAULT_NOISE_AMPLITUDE = 0.25;
 
+/** TOOL-NODES: flat standing credit for one SUCCESSFULLY served tool call
+ * (a GPU-less peer's contribution — see `docs/TOOL-NODES.md`). Sized so a
+ * handful of served tool calls buys a tool-provider node real priority in
+ * the same units layer-serving hosts earn, letting a no-GPU peer that only
+ * ever answers tool calls still climb above an unseen/debt-carrying peer.
+ * A failed/denied tool call credits nothing (parity with `recordService`'s
+ * `sessionCompleted` gate — you're paid for work that actually landed). */
+export const DEFAULT_TOOL_SERVICE_CREDIT = 5;
+
+/** TOOL-NODES: flat standing debit for CONSUMING one tool call (the driver
+ * that asked). Symmetric with `recordConsumption`'s "more utilization =
+ * less" half, and — like it — NOT gated on success: you occupied the
+ * provider's turn whether or not the tool ultimately answered. Smaller than
+ * the service credit so a peer that both serves and consumes tool calls
+ * still nets positive for being a net contributor. */
+export const DEFAULT_TOOL_CONSUME_DEBIT = 1;
+
 /** The default noise source re-samples once per this many milliseconds
  * (per peer) rather than every call, so a peer can't average out the
  * noise by hammering `priorityScore` in a tight loop to back out an
@@ -152,6 +169,32 @@ export interface RecordConsumptionInput {
   framesConsumed: number;
   /** Wall-clock milliseconds those pipeline slots were held. */
   consumingMs: number;
+}
+
+export interface RecordToolServiceInput {
+  /** The GPU-less (or any) peer that EXECUTED the tool call. */
+  providerPeerId: string;
+  /** Tool name — diagnostic only; not part of the credit math (all tools
+   * credit the same flat unit today — see `docs/TOOL-NODES.md` follow-ups
+   * for per-tool weighting). */
+  toolName?: string;
+  /** Credit is applied ONLY when `true` (an `ok` MeshToolResult). A
+   * failed/denied/timed-out call marks the provider "seen" (no longer a
+   * newcomer) but credits nothing, exactly like `recordService`'s
+   * `sessionCompleted` gate. */
+  succeeded: boolean;
+  /** Optional override for the flat credit unit (default
+   * `DEFAULT_TOOL_SERVICE_CREDIT`). */
+  credit?: number;
+}
+
+export interface RecordToolConsumptionInput {
+  /** The peer that ASKED for (consumed) the tool call. */
+  consumerPeerId: string;
+  toolName?: string;
+  /** Optional override for the flat debit unit (default
+   * `DEFAULT_TOOL_CONSUME_DEBIT`). */
+  debit?: number;
 }
 
 export interface StandingSnapshot {
@@ -262,6 +305,35 @@ export class StandingLedger {
     rec.eventCount += 1;
     const delta = input.layersConsumed * input.framesConsumed * (input.consumingMs / 1000);
     rec.debit = applyDelta(rec.debit, Math.max(0, delta), now, this.config.halfLifeMs);
+  }
+
+  /**
+   * TOOL-NODES: record a tool call this driver observed a provider SERVE.
+   * Credits the provider a flat `DEFAULT_TOOL_SERVICE_CREDIT` (overridable)
+   * on success — the GPU-less contribution path — into the SAME decayed
+   * credit accumulator as `recordService`, so a tool-provider node's
+   * standing and a layer-serving host's standing are directly comparable and
+   * feed one `priorityScore`. A failed call still marks the provider seen
+   * (no newcomer re-farming) but credits nothing.
+   */
+  recordToolService(input: RecordToolServiceInput, now: number): void {
+    const rec = this.getOrInit(input.providerPeerId, now);
+    rec.eventCount += 1;
+    if (!input.succeeded) return;
+    const credit = input.credit ?? DEFAULT_TOOL_SERVICE_CREDIT;
+    rec.credit = applyDelta(rec.credit, Math.max(0, credit), now, this.config.halfLifeMs);
+  }
+
+  /**
+   * TOOL-NODES: record that this peer CONSUMED a tool call (debit half).
+   * Not gated on success — asking for a tool occupied the provider's turn
+   * regardless of outcome, mirroring `recordConsumption`.
+   */
+  recordToolConsumption(input: RecordToolConsumptionInput, now: number): void {
+    const rec = this.getOrInit(input.consumerPeerId, now);
+    rec.eventCount += 1;
+    const debit = input.debit ?? DEFAULT_TOOL_CONSUME_DEBIT;
+    rec.debit = applyDelta(rec.debit, Math.max(0, debit), now, this.config.halfLifeMs);
   }
 
   /** Current decayed standing: decayed credit minus decayed debit. `0`

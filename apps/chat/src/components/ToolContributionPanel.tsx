@@ -1,0 +1,112 @@
+/**
+ * ToolContributionPanel — "contribute tools, no GPU needed".
+ *
+ * The GPU-less counterpart of the hosting consent banner: any tab can
+ * switch on built-in tools (current_time / ping / fetch_text) or attach an
+ * MCP endpoint, advertise them on its peer cap, and serve calls routed to
+ * it by whichever driver's model asked for the tool (docs/TOOL-NODES.md).
+ * State + persistence live in `useToolContribution`; serving lives in
+ * `useMeshTools` (Dashboard). This component is presentation only.
+ */
+import { useState } from 'react';
+import type { McpError } from '@unstable-legion/core';
+import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
+
+function describeMcpError(err: McpError): string {
+  switch (err.kind) {
+    case 'cors':
+      return 'blocked (CORS)';
+    case 'timeout':
+      return 'timed out';
+    case 'network':
+      return 'unreachable';
+    default:
+      return 'protocol error';
+  }
+}
+
+const BUILTIN_HINTS: Record<string, string> = {
+  current_time: 'Answer "what time is it" from your clock',
+  ping: 'Echo + mesh hop latency probe',
+  fetch_text: 'Fetch a URL through your browser (CORS applies)',
+};
+
+export function ToolContributionPanel(props: { tools: UseToolContributionHandle }) {
+  const { tools } = props;
+  const [mcpUrl, setMcpUrl] = useState('');
+  const [attachBusy, setAttachBusy] = useState(false);
+
+  async function handleAttach() {
+    const url = mcpUrl.trim();
+    if (!url || attachBusy) return;
+    setAttachBusy(true);
+    try {
+      tools.addMcpEndpoint(url);
+      setMcpUrl('');
+    } finally {
+      setAttachBusy(false);
+    }
+  }
+
+  return (
+    <section className="mesh-card tool-contrib-panel" data-testid="tool-contrib-panel">
+      <h3>Tool contributions</h3>
+      <p className="tool-contrib-sub">
+        No GPU needed — serve tool calls to the mesh and earn standing. The model can use any tool a live peer
+        advertises.
+      </p>
+      <div className="tool-contrib-builtins">
+        {tools.builtinNames.map((name) => (
+          <label key={name} className="tool-contrib-row" title={BUILTIN_HINTS[name] ?? name}>
+            <input type="checkbox" checked={tools.optedIn.includes(name)} onChange={() => tools.toggleTool(name)} />
+            <span className="tool-contrib-name">{name}</span>
+          </label>
+        ))}
+      </div>
+      <div className="tool-contrib-mcp">
+        <div className="tool-contrib-mcp-attach">
+          <input
+            type="text"
+            className="tool-contrib-mcp-input"
+            placeholder="MCP endpoint URL (https://…)"
+            value={mcpUrl}
+            onChange={(e) => setMcpUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void handleAttach();
+            }}
+          />
+          <button type="button" className="btn-secondary" disabled={!mcpUrl.trim() || attachBusy} onClick={() => void handleAttach()}>
+            Attach
+          </button>
+        </div>
+        {tools.mcpEndpoints.map((url) => {
+          const status = tools.mcp.statuses.get(url);
+          const toolNames = tools.mcp.attachedTools.filter((t) => t.url === url).map((t) => t.toolName);
+          return (
+            <div key={url} className="tool-contrib-mcp-row">
+              <span className="tool-contrib-mcp-url" title={url}>
+                {url.replace(/^https?:\/\//, '')}
+              </span>
+              <span className={`tool-contrib-mcp-status tool-contrib-mcp-${status?.phase ?? 'pending'}`}>
+                {status?.phase === 'attached'
+                  ? `${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}`
+                  : status?.phase === 'error'
+                    ? describeMcpError(status.error)
+                    : 'attaching…'}
+              </span>
+              <button type="button" className="btn-link" onClick={() => tools.removeMcpEndpoint(url)}>
+                detach
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {tools.optedIn.length > 0 && (
+        <p className="tool-contrib-served">
+          Advertising {tools.optedIn.length} tool{tools.optedIn.length === 1 ? '' : 's'} · served {tools.servedCount} call
+          {tools.servedCount === 1 ? '' : 's'} this session
+        </p>
+      )}
+    </section>
+  );
+}

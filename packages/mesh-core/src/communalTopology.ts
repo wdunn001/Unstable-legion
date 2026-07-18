@@ -48,6 +48,7 @@
  */
 import { hostStabilityScore, type StageHostCap } from './stagePlanner.js';
 import type { MeshLoadedStage, MeshRosterEntry } from './types.js';
+import { legionActivationBytes } from './activationWireCodec.js';
 
 // ── Deterministic hash (shared with communalAssembly.ts / stageOrchestrator.ts) ──
 
@@ -80,7 +81,7 @@ export interface CommunalHostStageAd {
   includeEmbeddings: boolean;
   includeOutput: boolean;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   maxSessions: number;
   activeSessions: number;
   epoch: number;
@@ -95,6 +96,36 @@ export interface CommunalHostStageAd {
    * `BuildCommunalTopologyOptions.rttByPeerId` — e.g. from a ping cache.
    * Undefined = unknown, ranked as if worst (Infinity). */
   rttMs?: number;
+  /** Denormalized from the advertising peer's `cap.stageHost.
+   * failureDomainId` (see `types.ts`'s doc comment) — undefined for a
+   * peer that predates the field or didn't set one. Use `adFailureDomainId`
+   * rather than this field directly: it applies the "absent -> own peerId"
+   * fallback every caller needs. */
+  failureDomainId?: string;
+}
+
+/** "This ad's failure domain" — its explicit `failureDomainId` when
+ * present, else its own `peerId` (back-compat: a peer that never opted
+ * into colocation coordination is, by definition, its own independent
+ * failure domain — see `types.ts`'s doc comment on the field). ALWAYS use
+ * this instead of reading `.failureDomainId` directly so every caller
+ * applies the same fallback. */
+export function adFailureDomainId(ad: Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>): string {
+  return ad.failureDomainId ?? ad.peerId;
+}
+
+/** Distinct failure-domain ids represented among `candidates` — the
+ * REPLICATION-correct count for "how many independent copies of this
+ * segment exist" (see `communalAssembly.ts`'s doc comment: two co-located
+ * tabs covering the same segment must count as ONE, not two). */
+export function distinctFailureDomainIds(candidates: readonly Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>[]): Set<string> {
+  return new Set(candidates.map(adFailureDomainId));
+}
+
+/** `distinctFailureDomainIds(candidates).size` — the common case callers
+ * actually want (they only need the count, not the set itself). */
+export function distinctFailureDomainCount(candidates: readonly Pick<CommunalHostStageAd, 'peerId' | 'failureDomainId'>[]): number {
+  return distinctFailureDomainIds(candidates).size;
 }
 
 export interface CommunalSegment {
@@ -158,27 +189,37 @@ function toAd(
     includeEmbeddings: stage.includeEmbeddings,
     includeOutput: stage.includeOutput,
     ctxSize: stage.ctxSize,
-    wireDtype: stage.wireDtype,
+    // Default a dtype-less peer (older bundle) to f16 so the ad — and every
+    // downstream consumer (e.g. the activation-wire encoder) — never sees
+    // undefined. Both driver and host use whatever this resolves to.
+    wireDtype: stage.wireDtype ?? 'f16',
     maxSessions: stage.maxSessions,
     activeSessions: stage.activeSessions,
     epoch: stage.epoch,
     headroom: Math.max(0, stage.maxSessions - stage.activeSessions),
     stabilityScore: entry.stageHost ? hostStabilityScore(entry.stageHost as StageHostCap) : 0,
     rttMs: rttByPeerId?.[entry.peerId],
+    failureDomainId: entry.stageHost?.failureDomainId,
   };
 }
 
 /** Flatten a roster snapshot's `loadedStages` for `modelId`, clipped to the
- * communal layer space `[driverLayers, totalLayers)` — an ad that starts
- * before `driverLayers` or extends past `totalLayers` is malformed for
+ * communal layer space `[communalStart, totalLayers)` — an ad that starts
+ * before `communalStart` or extends past `totalLayers` is malformed for
  * this model/split and dropped rather than trusted partially (a peer
  * advertising garbage shouldn't corrupt the topology; it should just not
- * count). */
+ * count).
+ *
+ * `communalStart` defaults to `driverLayers` (the capable-driver regime: a
+ * driver hosts `[0, driverLayers)` locally, the mesh covers the rest). The
+ * OPTIONAL-STAGE0 thin-driver regime passes `communalStart: 0` instead, so
+ * an isFirst host advertising `[0, X)` (embeddings included) is KEPT rather
+ * than dropped — see `docs/OPTIONAL-STAGE0.md`. */
 export function collectCommunalAds(
   roster: readonly MeshRosterEntry[],
   modelId: string,
   totalLayers: number,
-  driverLayers: number,
+  communalStart: number,
   opts: BuildCommunalTopologyOptions = {},
 ): CommunalHostStageAd[] {
   const excluded = new Set(opts.excludePeerIds ?? []);
@@ -189,7 +230,7 @@ export function collectCommunalAds(
     if (!stages) continue;
     for (const stage of stages) {
       if (stage.modelId !== modelId) continue;
-      if (stage.layerStart < driverLayers) continue;
+      if (stage.layerStart < communalStart) continue;
       if (stage.layerEnd > totalLayers) continue;
       if (stage.layerEnd <= stage.layerStart) continue;
       ads.push(toAd(entry, stage, opts.rttByPeerId));
@@ -205,6 +246,13 @@ export interface BuildCommunalTopologyRequest {
    * topology covers is `[driverLayers, totalLayers)`. See the plan doc's
    * "Stage 0 = every consumer hosts it locally" decision. */
   driverLayers: number;
+  /** OPTIONAL-STAGE0 (thin drivers): the layer the coverage walk STARTS at.
+   * Defaults to `driverLayers` — the capable-driver regime, unchanged. Pass
+   * `0` to build the thin-driver view: coverage of `[0, totalLayers)`, where
+   * a weak/no-GPU device hosts NO stage locally and instead relies on a
+   * remote isFirst host covering the `[0, X)` prefix (embeddings included).
+   * See `docs/OPTIONAL-STAGE0.md`. */
+  communalStart?: number;
 }
 
 /** Build a `CommunalTopology` from a roster snapshot's ad union. See the
@@ -215,14 +263,18 @@ export function buildCommunalTopology(
   opts: BuildCommunalTopologyOptions = {},
 ): CommunalTopology {
   const { modelId, totalLayers, driverLayers } = req;
+  const communalStart = req.communalStart ?? driverLayers;
   if (!Number.isInteger(totalLayers) || totalLayers <= 0) {
     throw new RangeError(`buildCommunalTopology: totalLayers must be a positive integer, got ${totalLayers}`);
   }
   if (!Number.isInteger(driverLayers) || driverLayers < 0) {
     throw new RangeError(`buildCommunalTopology: driverLayers must be a non-negative integer, got ${driverLayers}`);
   }
+  if (!Number.isInteger(communalStart) || communalStart < 0 || communalStart > totalLayers) {
+    throw new RangeError(`buildCommunalTopology: communalStart must be an integer in [0, totalLayers], got ${communalStart}`);
+  }
 
-  const communalLayerCount = Math.max(0, totalLayers - driverLayers);
+  const communalLayerCount = Math.max(0, totalLayers - communalStart);
   if (communalLayerCount === 0) {
     // The driver alone covers the whole model — nothing communal needed.
     return {
@@ -238,11 +290,11 @@ export function buildCommunalTopology(
     };
   }
 
-  const ads = collectCommunalAds(roster, modelId, totalLayers, driverLayers, opts);
+  const ads = collectCommunalAds(roster, modelId, totalLayers, communalStart, opts);
 
   const segments: CommunalSegment[] = [];
   const gaps: CommunalGap[] = [];
-  let cursor = driverLayers;
+  let cursor = communalStart;
 
   while (cursor < totalLayers) {
     const reaching = ads.filter((a) => a.layerStart <= cursor && a.layerEnd > cursor);
@@ -313,7 +365,16 @@ export interface PlanCommunalRouteOptions {
    * Required whenever `topology.segments` is non-empty. */
   nEmbd?: number;
   /** Wire dtype for the hop-cost estimate. Default 'f16'. */
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
+  /**
+   * Maximum TOTAL stages (local stage 0 + remote hops) this route may have.
+   * Undefined = no cap. With the host-side relay this stays uncapped; set it
+   * to `2` as a runtime kill-switch to pin the mesh to the proven single-remote
+   * shape without a code change. A topology needing more hops than this yields
+   * `null` (the caller then surfaces "coverage is split across N hosts").
+   * Mirrors the legacy `PlanPipelineOptions.maxStages`.
+   */
+  maxStages?: number;
 }
 
 /** Rank candidates for a segment: headroom desc, priorityScore desc,
@@ -418,6 +479,8 @@ export function planCommunalRoute(
     };
   }
   if (opts.nEmbd === undefined) return null;
+  // Capability/kill-switch gate: local stage 0 + one remote hop per segment.
+  if (opts.maxStages !== undefined && 1 + topology.segments.length > opts.maxStages) return null;
 
   const priorityScore = opts.priorityScore ?? (() => 0);
   const spreadWidth = opts.spreadWidth ?? 3;
@@ -461,12 +524,12 @@ export function planCommunalRoute(
   const stages = [localStage, ...remoteStages];
   const perTokenHopBytes =
     stages.length > 1
-      ? // one hop per stage boundary — activationBytes lives in
-        // @unstable-legion/stage-runtime; inlined here (4 bytes/elem f32,
-        // 2 bytes/elem f16) to avoid a circular import back into
-        // stagePlanner.ts's dependency, matching that module's own
-        // constant rather than re-deriving it differently.
-        (wireDtype === 'f16' ? 2 : 4) * opts.nEmbd * (stages.length - 1)
+      ? // one hop per stage boundary — legionActivationBytes (this repo's
+        // own dispatcher, handling f32/f16 via @unstable-legion/stage-runtime
+        // and i8 locally) avoids a circular import back into
+        // stagePlanner.ts's dependency while matching that module's own
+        // byte-cost math exactly.
+        legionActivationBytes(1, opts.nEmbd, wireDtype) * (stages.length - 1)
       : 0;
 
   const allAdPeerIds = new Set(topology.segments.flatMap((s) => s.candidates.map((c) => c.peerId)));
@@ -515,4 +578,101 @@ export function communalAttachOrder(
     out.set(i + 1, [chosen, ...rest]);
   });
   return out;
+}
+
+// ── OPTIONAL-STAGE0: thin-driver route planning ─────────────────────────
+//
+// A thin driver (weak/no WebGPU) hosts NO stage locally. It needs the mesh
+// to provide the FIRST stage too — an isFirst host covering `[0, X)` with
+// embeddings, which prefills from the token-ids the driver ships in the
+// activation-frame `tokens` sideband (see `docs/OPTIONAL-STAGE0.md` and
+// `stageFrameEnvelope.ts`). Build the topology with `communalStart: 0`, then
+// plan a route whose stages are ALL remote (no synthetic local stage 0) and
+// whose first stage is isFirst.
+
+/** True iff `topology` (built with `communalStart: 0`) is routable for a
+ * thin driver: fully covered AND its lowest segment starts at layer 0 with
+ * at least one candidate that includes embeddings (a real isFirst host). A
+ * capable-driver topology that merely happens to be gap-free is NOT thin-
+ * routable — the `[0, driverLayers)` prefix + embeddings must exist on the
+ * mesh, not be assumed local. */
+export function thinDriverFirstStageCovered(topology: CommunalTopology): boolean {
+  if (topology.gaps.length > 0) return false;
+  const first = topology.segments[0];
+  return !!first && first.layerStart === 0 && first.candidates.some((c) => c.includeEmbeddings);
+}
+
+/**
+ * Thin-driver analog of `planCommunalRoute`: turn a `communalStart: 0`
+ * topology into a `StagePlan` with NO local driver stage — stage 1 is the
+ * remote isFirst host `[0, X)`, subsequent stages chain downstream, and the
+ * last is isFinal. Returns `null` when the topology isn't thin-routable
+ * (`thinDriverFirstStageCovered` false) or `nEmbd` wasn't supplied.
+ *
+ * SCOPE NOTE (shared with `planCommunalRoute`/`runCommunalDriverSession`):
+ * this can express a multi-remote-segment thin route, but only the single-
+ * remote-stage shape (ONE host covering `[0, totalLayers)`, isFirst+isFinal
+ * — the "one spacious host claims the whole gap" common case) is wired end
+ * to end for `sf` traffic. Multi-hop relay across >1 remote segment has no
+ * host-side forwarding loop anywhere in this repo yet — the identical
+ * documented limitation the capable-driver path carries.
+ */
+export function planThinDriverRoute(
+  topology: CommunalTopology,
+  opts: PlanCommunalRouteOptions,
+): ReturnType<typeof planCommunalRoute> {
+  if (!thinDriverFirstStageCovered(topology)) return null;
+  if (opts.nEmbd === undefined) return null;
+  // Thin driver has no local stage, so total stages === segments.
+  if (opts.maxStages !== undefined && topology.segments.length > opts.maxStages) return null;
+
+  const priorityScore = opts.priorityScore ?? (() => 0);
+  const spreadWidth = opts.spreadWidth ?? 3;
+  const wireDtype = opts.wireDtype ?? 'f16';
+
+  const remoteStages: {
+    stageIndex: number;
+    peerId: string;
+    layerStart: number;
+    layerEnd: number;
+    isFirst: boolean;
+    isFinal: boolean;
+    capacityBytes: number;
+    assignedBytes: number;
+    cacheHitFraction: number;
+  }[] = [];
+  let hotSparePeerId: string | undefined;
+  const selectedPeerIds = new Set<string>();
+
+  topology.segments.forEach((segment, i) => {
+    const ranked = rankCandidates(segment.candidates, priorityScore);
+    const chosen = spreadPick(ranked, opts.driverPeerId, spreadWidth);
+    selectedPeerIds.add(chosen.peerId);
+    const runnerUp = ranked.find((c) => c.peerId !== chosen.peerId);
+    if (!hotSparePeerId && runnerUp) hotSparePeerId = runnerUp.peerId;
+    remoteStages.push({
+      stageIndex: i + 1,
+      peerId: chosen.peerId,
+      layerStart: segment.layerStart,
+      layerEnd: segment.layerEnd,
+      isFirst: i === 0,
+      isFinal: i === topology.segments.length - 1,
+      capacityBytes: 0,
+      assignedBytes: 0,
+      cacheHitFraction: 0,
+    });
+  });
+
+  const perTokenHopBytes = legionActivationBytes(1, opts.nEmbd, wireDtype) * remoteStages.length;
+  const allAdPeerIds = new Set(topology.segments.flatMap((s) => s.candidates.map((c) => c.peerId)));
+  const unselectedPeerIds = [...allAdPeerIds].filter((id) => !selectedPeerIds.has(id));
+
+  return {
+    modelId: topology.modelId,
+    totalLayers: topology.totalLayers,
+    stages: remoteStages,
+    ...(hotSparePeerId ? { hotSparePeerId } : {}),
+    perTokenHopBytes,
+    unselectedPeerIds,
+  };
 }

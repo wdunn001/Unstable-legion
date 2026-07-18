@@ -1,18 +1,16 @@
 name: CI
 
-# Runs on the .88 forgejo-runner (label `docker` -> node:22-bookworm
-# container, host docker.sock mounted). Pure `run:` steps only, matching
-# every other workflow on this Forgejo instance — the runner can't reach the
-# data.forgejo.org action registry, so no `uses:` actions anywhere here.
+# Runs on a self-hosted forgejo-runner (label `docker` -> node:22-bookworm
+# container, host docker.sock mounted). Pure `run:` steps only — the runner
+# has no access to the data.forgejo.org action registry, so no `uses:`
+# actions anywhere here.
 #
-# This repo's Forgejo copy (wdunn001/unstable-legion) is a READ-ONLY PULL
-# MIRROR of the GitHub repo (synced every 2h by
-# /mnt/data/homelab/scripts/forgejo-mirror-sync-throttled.sh, plus Forgejo's
-# own 24h mirror_interval). Confirmed via the API that Actions is enabled on
-# the mirror (`has_actions: true`, Forgejo 11.0.16) and that this version
-# runs Actions off mirror-sync pushes. Because it's read-only, this workflow
-# file is committed on GitHub (origin/main) — the Forgejo remote rejects
-# direct pushes to a pull-mirror, so don't try to land it there.
+# The Forgejo copy of this repo is a READ-ONLY PULL MIRROR of the GitHub repo,
+# so this workflow file is committed on GitHub — a pull-mirror rejects direct
+# pushes, and Actions run off the mirror sync.
+#
+# Anything environment-specific (hosts, ports, sibling repo paths) comes from
+# repo variables/secrets, never from this file: the repo is public.
 #
 # Cross-repo dependency problem: every package in this monorepo carries a
 # `file:` dependency onto a sibling repo that doesn't exist on a fresh
@@ -60,17 +58,20 @@ jobs:
         env:
           REPO_TOKEN: ${{ github.token }}
           DEPLOY_KEY: ${{ secrets.LEGION_STAGE_RUNTIME_DEPLOY_KEY }}
+          # Set these as Forgejo repo VARIABLES (Settings -> Actions ->
+          # Variables). Kept out of the file because this repo is public.
+          SIBLING_SSH_HOST: ${{ vars.SIBLING_GIT_SSH_HOST }}
+          SIBLING_SSH_PORT: ${{ vars.SIBLING_GIT_SSH_PORT }}
+          SIBLING_STAGE_RUNTIME_REPO: ${{ vars.SIBLING_STAGE_RUNTIME_REPO }}
         run: |
           set -eu
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates openssh-client >/dev/null
 
-          # .88 has a documented IPv6 blackhole for some external pulls
-          # (ghcr.io/pkg-containers.githubusercontent.com/codeload.github.com
-          # are pinned to IPv4 in /etc/hosts for docker pulls — see
-          # lab-88-ghcr-ipv6-blackhole). Plain github.com isn't pinned there,
-          # and this job's container doesn't share the host's /etc/hosts, so
-          # onnxruntime-node's postinstall (a transitive dep pulled in by
+          # This runner's network has an IPv6 blackhole for some external
+          # pulls, and the job container doesn't inherit the host's
+          # /etc/hosts pins, so onnxruntime-node's postinstall (a transitive
+          # dep pulled in by
           # @codecai/web-llm's package tree — it downloads a prebuilt native
           # binary from a github.com-hosted release) hung indefinitely the
           # first two times this ran. Force IPv4-first DNS resolution for
@@ -78,7 +79,10 @@ jobs:
           export NODE_OPTIONS=--dns-result-order=ipv4first
 
           mkdir -p /mnt/h/dev
-          git clone -q "http://token:${REPO_TOKEN}@192.168.1.88:8530/${GITHUB_REPOSITORY}.git" /mnt/h/dev/unstable-legion
+          # Clone from THIS instance — github.server_url is set by the runner,
+          # so no host is hardcoded (this file is public; the topology is not).
+          CLONE_URL="${GITHUB_SERVER_URL#http://}"; CLONE_URL="${CLONE_URL#https://}"
+          git clone -q "http://token:${REPO_TOKEN}@${CLONE_URL}/${GITHUB_REPOSITORY}.git" /mnt/h/dev/unstable-legion
           cd /mnt/h/dev/unstable-legion && git checkout -q "${GITHUB_SHA}"
 
           # Sibling 1: Codec (public on GitHub) -> the codec-local symlink target.
@@ -102,12 +106,14 @@ jobs:
           # it. Its own `@codecai/web` file: dependency resolves straight
           # off the Codec sibling we already cloned+built above (both sit
           # under /mnt/h/dev, matching the dev machine's layout exactly).
+          # Host/port come from repo variables — SIBLING_GIT_SSH_HOST and
+          # SIBLING_GIT_SSH_PORT — so this public file carries no topology.
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p 2222 -H 192.168.1.88 >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -p 2222 -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
-            git clone -q "git@192.168.1.88:wdunn001/legion-stage-runtime.git" /mnt/h/dev/legion-stage-runtime
+          ssh-keyscan -p "$SIBLING_SSH_PORT" -H "$SIBLING_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -p $SIBLING_SSH_PORT -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+            git clone -q "git@${SIBLING_SSH_HOST}:${SIBLING_STAGE_RUNTIME_REPO}.git" /mnt/h/dev/legion-stage-runtime
           ( cd /mnt/h/dev/legion-stage-runtime && npm ci --no-audit --no-fund -w packages/stage-runtime && npm run build -w packages/stage-runtime )
 
           cd /mnt/h/dev/unstable-legion

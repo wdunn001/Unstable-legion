@@ -59,17 +59,25 @@
  * one driver's worth of concurrency (see legion-stage-runtime's
  * MULTI-SESSION.md: "1 fused + 2 wanted = 3").
  *
- * Scope: only the FINAL-stage host role is implemented — same scope note
- * as pre-M2 (`stageOrchestrator.ts`'s SCOPE NOTE; N>2-stage relay is out
- * of scope). A `stage.load`/`stage.session.open` for a non-final range
- * still loads and serves sessions correctly.
+ * RELAY: both host roles are implemented. A FINAL stage samples and returns
+ * `stage.token` to its `driverPeerId`. A NON-final stage (driver-assigned
+ * `isFinal:false` in the open, with a `nextPeerId`) instead RE-ENCODES its
+ * boundary activation and `sendStageFrame`s it downstream — see the
+ * `!state.isFinal` branch in `onStageFrame`. It accepts inbound frames from
+ * `prevPeerId` (the driver for stage 1, the previous relay for a hop ≥2), and
+ * a hop ≥2 opened without a `wireHeader` takes its upstream's header inline
+ * (the `awaitingHeader` path). Teardown propagates both directions.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   decodeStageControl,
   decodeStageFrameEnvelope,
   encodeStageControl,
+  encodeStageFrameEnvelope,
+  extractIncrementalTextDelta,
+  INITIAL_TEXT_CURSOR,
   isStageControlFrame,
+  makeStageLoadProgress,
   makeStagePong,
   makeStageProgress,
   makeStageReady,
@@ -77,17 +85,23 @@ import {
   makeStageSessionBusy,
   makeStageStop,
   makeStageToken,
+  type IncrementalTextCursor,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type Peer,
   type StageControlMessageFor,
   type StandingLedger,
+  createLegionActivationWireDecoder,
+  createLegionActivationWireEncoder,
+  type LegionActivationWireDecoder,
+  type LegionActivationWireEncoder,
 } from '@unstable-legion/core';
-import { createActivationWireDecoder, type ActivationWireDecoder } from '@unstable-legion/stage-runtime';
-import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
-import type { WireActivationFrame } from './stageWorkerProtocol.js';
-import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
+import { StageWorkerClient, dummyActivationFrame, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
+import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
+import { buildStageHostCap, chooseMaxSessions, unionLoadedStages, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import { extractHttpStatus, type StageHostLifecycleEvent } from './meshResilience.js';
+import { runWithStallWatchdog, StallTimeoutError } from './loadWatchdog.js';
 import {
   canAdmitNow,
   enqueue,
@@ -117,6 +131,22 @@ export interface UseStageHostOptions {
    * site, which can't live in a shared library). Must be stable
    * (useCallback) or this hook will restart its answer loop every render. */
   createStageWorker: () => Worker;
+  /**
+   * Resolve the shard URLs for a stage this host is asked to SERVE (a
+   * `stage.session.open` the driver doesn't carry explicit `shardUrls`/
+   * `manifestUrl` for). Without this, a served session loads with zero shards
+   * and `legion_stage_open` fails ("paths, path_count, and out_model are
+   * required"). The host resolves from its OWN manifest (it decides where to
+   * fetch), same as its proactive preload path. `useCommunalHost` wires this to
+   * `resolveCommunalShardPlan`. Omitted => served sessions fall back to whatever
+   * `shardUrls`/`manifestUrl` the open message carried (may be empty).
+   */
+  resolveSessionShards?: (req: {
+    modelId: string;
+    layerStart: number;
+    layerEnd: number;
+    totalLayers: number;
+  }) => Promise<readonly string[]>;
   /** Mirrors `useAudioKeepalive().enabled` — feeds `stability.keepalive`. */
   keepaliveEnabled?: boolean;
   /** Fragment ids already resident in this peer's cache (future OPFS
@@ -166,7 +196,7 @@ export interface UseStageHostOptions {
     layerEnd: number;
     totalLayers: number;
     ctxSize: number;
-    wireDtype: 'f32' | 'f16';
+    wireDtype: 'f32' | 'f16' | 'i8';
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
@@ -183,6 +213,28 @@ export interface UseStageHostOptions {
    */
   suppressAdvertise?: boolean;
   /**
+   * REUSE-STAGE0 — additional `cap.stageHost.loadedStages` entries to
+   * UNION into this hook's own publish, so a peer that ALSO serves its
+   * resident `[0, driverLayers)` stage-0 via `useLocalStageServe.ts` (see
+   * that module's doc comment) advertises BOTH entries in ONE
+   * `peer.setCap` call instead of two independent callers racing to
+   * clobber each other's cap (`Peer.setCap` fully REPLACES the previous
+   * cap — see `peer.ts`). Passed straight through to `buildStageHostCap`,
+   * unioned with THIS hook's own `loadedStages` (never de-duplicated
+   * against it — the caller is responsible for not passing an entry that
+   * overlaps this host's own claimed range). Published even while
+   * `enabled` is false (hosting toggled off, or this tab isn't the
+   * hosting-colocation leader) — a peer can serve stage-0 without
+   * participating in `[driverLayers, totalLayers)` hosting at all, so this
+   * hook's own `enabled` gate must not also silence someone else's ad.
+   * Read fresh on every publish tick; pass a NEW array identity only when
+   * it actually changes (a stable/memoized identity avoids unnecessarily
+   * restarting the publish effect's interval every render). `undefined`/
+   * empty = unchanged pre-existing behavior (including the `!enabled`
+   * branch's unconditional cap-wipe).
+   */
+  extraLoadedStages?: readonly MeshLoadedStage[];
+  /**
    * M4 — this host's own contribution-economy ledger. When supplied,
    * every session free (`freeSession`, regardless of WHY — natural
    * finish, abort, idle-evict, forced disconnect) feeds
@@ -195,6 +247,24 @@ export interface UseStageHostOptions {
    * telemetry entirely.
    */
   standingLedger?: StandingLedger;
+  /**
+   * Additive cap field (see `@unstable-legion/core`'s `types.ts` doc
+   * comment) — "this peer, on this browser profile, on this machine".
+   * Passed straight through to `buildStageHostCap`. Cheap defense-in-depth
+   * for the mesh-side distinct-domain accounting; the primary fix for
+   * co-located tabs is the leader/follower split in `useCommunalHost.ts`
+   * (only one tab per origin ever calls this hook with `enabled: true`).
+   */
+  failureDomainId?: string;
+  /**
+   * Operator opt-in weight budget (see `stagePipelinePlanning.ts#
+   * sanitizeWeightBudget`'s doc comment) — merged onto the internally-
+   * detected `StageHostLimits` before `buildStageHostCap` runs, so the
+   * advertised cap's `vramBytes` reflects it (informational only here;
+   * this hook doesn't itself do claim-sizing math). Absent = unchanged
+   * behavior.
+   */
+  contributionBudgetBytes?: number;
   /**
    * M3 follow-up (the documented "forced session termination after
    * teardown grace" gap) — pass a NEW object identity (e.g. `{ reason,
@@ -258,11 +328,39 @@ export interface UseStageHostHandle {
    * backoff + the UI's error card. Distinct from `lastError` (which also
    * catches per-session frame errors). Undefined once a load succeeds. */
   preloadError?: { modelId: string; layerStart: number; layerEnd: number; reason: string; httpStatus?: number };
+  /**
+   * Per-shard download progress for the stage CURRENTLY loading (or the
+   * last one loaded, until a new load starts) — drives a UI progress bar
+   * (see apps/chat's ContributionPanel/HostingConsentBanner) and, via
+   * `runWithStallWatchdog`, this hook's own load watchdog. Undefined
+   * before the first shard of the first load has reported in, and reset
+   * to undefined at the start of every new load.
+   */
+  loadProgress?: StageWorkerLoadProgress;
 }
 
 const DEFAULT_REPUBLISH_MS = 15_000;
 const DEFAULT_PROGRESS_EVERY_N = 8;
 const DEFAULT_IDLE_SWEEP_MS = 30_000;
+// See loadWatchdog.ts's module doc — a multi-GB model download has no
+// fixed duration a flat timeout could safely encode, so the load watchdog
+// resets on every shard-progress tick instead. LOAD_STALL_MS is the real
+// health signal (no progress at all for this long => genuinely stuck);
+// LOAD_CEILING_MS is a generous backstop, not the primary timeout.
+/**
+ * How long a stage stays resident in VRAM after this peer STOPS hosting
+ * before the weights are freed. Deliberately long runway: `enabled` is
+ * `hosting && isLeader`, so colocation leader-election can blip it for a
+ * moment, and a cold reload is a multi-minute multi-GB round trip — holding
+ * VRAM for a while is far cheaper than paying that back for a toggle the user
+ * reverses or a leadership handoff that returns. Re-enabling inside the window
+ * cancels the free entirely and the stage is reused as-is. A true unmount
+ * (tab closed) frees immediately and does not wait this out.
+ */
+const RESIDENT_GRACE_MS = 10 * 60_000;
+
+const LOAD_STALL_MS = 90_000;
+const LOAD_CEILING_MS = 30 * 60_000;
 
 // ── base64 <-> bytes (browser main-thread; Buffer fallback for Node test hosts) ──
 
@@ -292,7 +390,7 @@ interface PendingOpen {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   shardUrls: readonly string[];
   /** M3 preload only (manifest-based artifact-slice fetch) — see
    * `stage-runtime`'s `StageDescriptor.shardHashes`/`shardBytes`.
@@ -303,15 +401,32 @@ interface PendingOpen {
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** Present only for `origin === 'session'` — lets the host build the
-   * decoder at accept time instead of via the legacy first-frame convention. */
+   * decoder at accept time instead of via the legacy first-frame convention.
+   * Absent for a relay hop ≥2, which takes its upstream's header inline. */
   wireHeaderB64?: string;
+  /** RELAY (driver-assigned). Absent ⇒ the pre-relay assumption: this host is
+   * the final stage, the driver is upstream, there is no downstream. */
+  isFinalOverride?: boolean;
+  /** Downstream peer to forward the boundary activation to (iff not final). */
+  nextPeerId?: string;
+  /** Upstream peer whose `sf` frames to accept — the driver for stage 1, the
+   * previous relay for a hop ≥2. Defaults to the opener (`peerId`). */
+  prevPeerId?: string;
+  /** This host's pipeline position (driver-assigned). Default 1 (single remote). */
+  stageIndex?: number;
+  /** TEXT-RELAY — see `stageControl.ts`'s `StageSessionOpenPayload.promptText`
+   * doc comment. Present only for `origin === 'session'`, and only when the
+   * driver requested it (a capable/token-id-thin driver never sets it). */
+  promptText?: string;
+  /** TEXT-RELAY — see `StageSessionOpenPayload.textOutput`'s doc comment. */
+  textOutput?: boolean;
 }
 
 interface HostSessionState {
   sessionId: string;
   driverPeerId: string;
   origin: 'legacy' | 'session';
-  decoder?: ActivationWireDecoder;
+  decoder?: LegionActivationWireDecoder;
   /** Legacy-origin sessions start `true` (first `sf` frame is the wire
    * header); session-origin sessions start `false` (header arrived in
    * the open payload, decoder built immediately). */
@@ -324,6 +439,42 @@ interface HostSessionState {
   layerStart: number;
   layerEnd: number;
   totalLayers: number;
+  /** RELAY: the peer we accept `sf` frames from (upstream). The driver for
+   * stage 1, the previous relay for a hop ≥2. The spoof guard checks THIS,
+   * not `driverPeerId`, so relayed frames aren't dropped. */
+  prevPeerId: string;
+  /** RELAY: the peer we forward our boundary activation to (downstream).
+   * Undefined for the final stage, which samples and returns `stage.token`. */
+  nextPeerId?: string;
+  /** RELAY: the per-session encoder a NON-final host uses to re-encode its
+   * boundary activation for `nextPeerId`. Built lazily on first forward
+   * (needs `client.nEmbd`, known only after the worker loads). Its header is
+   * sent to `nextPeerId` once, before the first activation frame. */
+  forwardEncoder?: LegionActivationWireEncoder;
+  forwardHeaderSent?: boolean;
+  modelId: string;
+  stageIndex: number;
+  wireDtype: 'f32' | 'f16' | 'i8';
+  /** TEXT-RELAY: real token ids this host tokenized server-side from the
+   * open's `promptText` (isFirst stage only). Consumed — and cleared — by
+   * the very first prefill frame (`frame.seq === 0`) for this session,
+   * overriding whatever placeholder `tokens`/activation that frame itself
+   * carried (a textRelay driver has no local tokenizer, so it can't
+   * populate a real sideband). `undefined` for every non-textRelay session,
+   * and for a textRelay session once its first prefill has consumed it. */
+  pendingPromptTokens?: number[];
+  /** TEXT-RELAY: when true (this host was opened with `textOutput: true` —
+   * expected only on the FINAL stage), every sampled token also gets
+   * incrementally detokenized and streamed back via `stage.token.text`. */
+  textOutput: boolean;
+  /** TEXT-RELAY: every token THIS stage has sampled for this session so far
+   * (final-stage sessions with `textOutput` only) — redecoded in full on
+   * each step (see `incrementalTextStream.ts`'s doc comment for why a
+   * per-token-isolated decode is unsound). */
+  sampledTokens?: number[];
+  /** TEXT-RELAY: the incremental-streaming cursor for this session (see
+   * `extractIncrementalTextDelta`). */
+  textCursor?: IncrementalTextCursor;
 }
 
 interface LoadedConfig {
@@ -332,7 +483,28 @@ interface LoadedConfig {
   layerEnd: number;
   totalLayers: number;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
+}
+
+/**
+ * The loaded-worker state that MUST survive a re-subscribe of the "answer"
+ * effect below. It used to live as `let`s inside that effect, which meant a
+ * remount (the effect's deps include `enabled` = hosting&&isLeader, and
+ * leader-election churn flips it) ran the cleanup's `disposeWorker()` and
+ * started a fresh empty closure — silently throwing away a stage that had
+ * ALREADY finished (or was mid-)preloading its 4.4GB into VRAM. The next
+ * `stage.session.open` then cold-re-downloaded from shard 1 ("it says ready,
+ * then loads for 8 min when I send a prompt"), and — worse for a REMOTE
+ * caller — looked like a non-responsive/failed host. Holding this in a
+ * hook-lifetime ref makes the reuse guard in `ensureWorkerLoaded` survive
+ * the churn, and disposal now happens only on true unmount.
+ */
+interface StageEngine {
+  workerClient: StageWorkerClient | undefined;
+  loadedConfig: LoadedConfig | undefined;
+  loadInFlight: Promise<void> | undefined;
+  hostSessions: Map<string, HostSessionState>;
+  loadEpoch: number;
 }
 
 function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
@@ -387,6 +559,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // `priorityScoreRef`/`baseCapRef`).
   const standingLedgerRef = useRef<StandingLedger | undefined>(opts.standingLedger);
   standingLedgerRef.current = opts.standingLedger;
+  // Resolve shards for a SERVED session (same ref discipline) — read fresh
+  // inside the answer loop without making that effect depend on the callback's
+  // identity.
+  const resolveSessionShardsRef = useRef<UseStageHostOptions['resolveSessionShards']>(opts.resolveSessionShards);
+  resolveSessionShardsRef.current = opts.resolveSessionShards;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -399,6 +576,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   const [queueLength, setQueueLength] = useState(0);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
   const [preloadError, setPreloadError] = useState<UseStageHostHandle['preloadError']>(undefined);
+  const [loadProgress, setLoadProgress] = useState<StageWorkerLoadProgress | undefined>(undefined);
 
   // Read by the "publish cap" effect so every heartbeat reflects the
   // CURRENT session occupancy without that effect needing to depend on
@@ -422,6 +600,30 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // effect to restart (same ref-read idiom as `baseCapRef`).
   const suppressAdvertiseRef = useRef(opts.suppressAdvertise ?? false);
   suppressAdvertiseRef.current = opts.suppressAdvertise ?? false;
+  // REUSE-STAGE0 — read fresh by BOTH the "publish cap" effect (unions
+  // into the published `loadedStages`, see `extraLoadedStages`'s doc
+  // comment) and the "answer" effect's `handleSessionOpen` guard below
+  // (ignores a request for a range this host isn't claiming rather than
+  // fighting another server on the same peer for it).
+  const extraLoadedStagesRef = useRef<readonly MeshLoadedStage[]>(opts.extraLoadedStages ?? []);
+  extraLoadedStagesRef.current = opts.extraLoadedStages ?? [];
+  // REUSE-STAGE0 — a CONTENT signature of `extraLoadedStages`. The publish
+  // effect below reads the live array from `extraLoadedStagesRef` and calls
+  // `setStageHostCap`, so depending on the raw `opts.extraLoadedStages`
+  // (a fresh array identity every render) would re-run the effect on every
+  // render → setState → render → … an infinite loop (React #185, seen live
+  // the instant a served stage-0 was adopted). Key the effect on this stable
+  // string instead: it republishes on a real content change (a served
+  // session opening/closing, the entry appearing/disappearing) and never on
+  // bare identity churn.
+  const extraLoadedStagesKey = JSON.stringify(opts.extraLoadedStages ?? []);
+  // REUSE-STAGE0 — the CURRENT claim (`preloadStage`, when set) read fresh
+  // inside the "answer" effect's `handleSessionOpen` without that effect
+  // depending on `opts.preloadStage`'s identity (same ref-read idiom as
+  // every other option this hook reads without restarting the answer
+  // effect on every render).
+  const claimedRangeRef = useRef<UseStageHostOptions['preloadStage']>(opts.preloadStage ?? null);
+  claimedRangeRef.current = opts.preloadStage ?? null;
   // M3 — bridge from the "preload watcher" effect (below) into the
   // "answer" effect's `applyPreload`, same ref-bridge pattern as
   // `republishNowRef` (two independent effects, one triggers the other
@@ -431,6 +633,77 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // (below) into the "answer" effect's `forceDisconnectAll`, same
   // ref-bridge pattern as `preloadRequestRef`/`republishNowRef`.
   const forceDisconnectRequestRef = useRef<(reason: string) => void>(() => undefined);
+
+  // The loaded worker + its sessions live HERE, at hook lifetime — NOT as
+  // `let`s inside the "answer" effect — so a re-subscribe of that effect
+  // (leader-election churn flipping `enabled`, or any other dep change)
+  // cannot dispose a stage the host already spent minutes loading into
+  // VRAM. See StageEngine's doc. Disposal is deferred to true unmount below.
+  const engineRef = useRef<StageEngine | null>(null);
+  if (!engineRef.current) {
+    engineRef.current = { workerClient: undefined, loadedConfig: undefined, loadInFlight: undefined, hostSessions: new Map(), loadEpoch: 0 };
+  }
+  const disposeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Free the resident stage and stop advertising it. */
+  const disposeResident = useCallback((reason: string): void => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    const w = eng.workerClient;
+    eng.workerClient = undefined;
+    eng.loadedConfig = undefined;
+    eng.loadInFlight = undefined;
+    eng.hostSessions.clear();
+    // Never leave an ad up for weights we no longer hold (see disposeWorker).
+    loadedStagesRef.current = [];
+    sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: 0 };
+    republishNowRef.current();
+    if (w) {
+      logRef.current(`[stage-host] freeing resident stage (${reason})`);
+      void w.dispose().catch(() => undefined);
+    }
+  }, [driverMaxSessions]);
+
+  // True unmount (tab/route gone) — free immediately, nothing left to serve.
+  useEffect(() => {
+    return () => disposeResident('unmounted');
+  }, [disposeResident]);
+
+  // A SUSTAINED hosting-off frees the GPU; a transient one must not.
+  //
+  // Two failure modes to thread between. Disposing the instant `enabled` goes
+  // false (the original behavior, via the answer effect's cleanup) throws away
+  // a stage that cost minutes to load whenever leader-election merely blips —
+  // and `enabled` is `hosting && isLeader`, so colocation hands it a reason to
+  // blip. But never disposing (the engineRef refactor's mistake) means
+  // switching hosting OFF silently keeps 4.4GB pinned in VRAM until the tab
+  // closes, and a leadership handoff between two tabs has the old leader
+  // holding its weights while the new one loads its own — double VRAM, on
+  // exactly the hardware where that OOMs.
+  //
+  // So: keep it resident across a blip, free it once the peer has genuinely
+  // stopped hosting. The runway is deliberately long — a cold reload is a
+  // multi-minute 4.4GB round trip, so holding VRAM a while is the far cheaper
+  // bet than paying that back for a toggle the user reverses.
+  useEffect(() => {
+    if (enabled) {
+      // Hosting (re)enabled inside the window — cancel the pending free.
+      if (disposeTimerRef.current !== undefined) {
+        clearTimeout(disposeTimerRef.current);
+        disposeTimerRef.current = undefined;
+      }
+      return;
+    }
+    disposeTimerRef.current = setTimeout(() => {
+      disposeTimerRef.current = undefined;
+      disposeResident(`hosting off for ${Math.round(RESIDENT_GRACE_MS / 60_000)}min`);
+    }, RESIDENT_GRACE_MS);
+    return () => {
+      if (disposeTimerRef.current !== undefined) {
+        clearTimeout(disposeTimerRef.current);
+        disposeTimerRef.current = undefined;
+      }
+    };
+  }, [enabled, disposeResident]);
 
   // ── Feature-detect once ─────────────────────────────────────────────
   useEffect(() => {
@@ -482,14 +755,38 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     if (!peer) return;
     if (!enabled || !limits || !supportState.ok) {
       if (!enabled) {
-        setStageHostCap(undefined);
-        peer.setCap({ ...baseCapRef.current, ts: Date.now() });
+        const extra = extraLoadedStagesRef.current;
+        if (extra.length > 0 && limits) {
+          // REUSE-STAGE0: THIS host's own [driverLayers,totalLayers)
+          // hosting is off (or this tab isn't the hosting-colocation
+          // leader), but a sibling server on this SAME peer
+          // (`useLocalStageServe.ts`) still has something to advertise —
+          // publish JUST that instead of unconditionally wiping
+          // `cap.stageHost` to nothing (the pre-existing behavior below,
+          // preserved byte-for-byte when there is nothing extra to carry).
+          const cap = buildStageHostCap(
+            { ...limits, contributionBudgetBytes: opts.contributionBudgetBytes },
+            { keepalive: !!keepaliveEnabled, visible, onBattery, uptimeMs: Date.now() - mountedAtRef.current },
+            cachedFragments,
+            undefined,
+            extra,
+            opts.failureDomainId,
+          );
+          setStageHostCap(cap);
+          peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
+        } else if (extra.length === 0) {
+          setStageHostCap(undefined);
+          peer.setCap({ ...baseCapRef.current, ts: Date.now() });
+        }
+        // else: extra stages exist but `limits` hasn't resolved yet —
+        // wait for a later tick (this effect re-runs once `limits`
+        // settles) instead of publishing a wrong/incomplete cap.
       }
       return;
     }
     const publish = (): void => {
       const cap = buildStageHostCap(
-        limits,
+        { ...limits, contributionBudgetBytes: opts.contributionBudgetBytes },
         {
           keepalive: !!keepaliveEnabled,
           visible,
@@ -498,7 +795,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         },
         cachedFragments,
         sessionCapacityRef.current,
-        suppressAdvertiseRef.current ? [] : loadedStagesRef.current,
+        // REUSE-STAGE0: union a sibling server's own advertised stage(s)
+        // (e.g. `useLocalStageServe.ts`'s [0,driverLayers) entry) onto
+        // THIS host's own — see `extraLoadedStages`'s doc comment for why
+        // this must be the ONE place `peer.setCap` is called for
+        // `stageHost`, not two independent callers racing to clobber each
+        // other (`Peer.setCap` fully replaces the previous cap).
+        unionLoadedStages(suppressAdvertiseRef.current ? [] : loadedStagesRef.current, extraLoadedStagesRef.current),
+        opts.failureDomainId,
       );
       setStageHostCap(cap);
       peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
@@ -511,7 +815,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       republishNowRef.current = () => undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs]);
+  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes, extraLoadedStagesKey]);
 
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
@@ -519,24 +823,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const meshPeer: Peer = peer;
     const log = (line: string) => logRef.current(line);
 
-    let workerClient: StageWorkerClient | undefined;
-    let loadedConfig: LoadedConfig | undefined;
-    // Guards against two near-simultaneous session-open requests each
-    // starting their OWN `.load()` call: two concurrent driver tabs can
-    // both send `stage.load`/`stage.session.open` before either has
-    // finished loading (a real scenario this hook must handle — that's
-    // the whole point of M2). Without this, the second request would see
-    // `workerClient === undefined` too and race a second full model
-    // fetch, each overwriting `workerClient` when it resolves. Every
-    // caller of `ensureWorkerLoaded` while a load is in flight awaits
-    // THIS SAME promise instead of starting its own.
-    let loadInFlight: Promise<void> | undefined;
-    const hostSessions = new Map<string, HostSessionState>();
+    // Worker/session/load state lives on the hook-lifetime `engineRef` (see
+    // StageEngine's doc), NOT as effect-local `let`s — so a re-subscribe of
+    // THIS effect (leader-election churn etc.) cannot dispose a stage the
+    // host already loaded into VRAM. `engine.loadInFlight` still guards two
+    // near-simultaneous opens from each starting their OWN `.load()` (M2:
+    // two driver tabs can both `stage.session.open` before either finishes —
+    // the second awaits THIS SAME promise). `engine.loadEpoch` bumps every
+    // successful (re)load (MeshLoadedStage.epoch's doc). `hostSessions` is
+    // aliased to the same persistent Map (mutated in place, never reassigned)
+    // so active sessions survive a re-subscribe too.
+    const engine = engineRef.current!;
+    const hostSessions = engine.hostSessions;
     let queue: readonly QueueEntry<PendingOpen>[] = [];
-    // M3: bumped every successful (re)load — see MeshLoadedStage.epoch's
-    // doc comment in types.ts (lets a consumer tell "this is a fresh load
-    // of the same range" apart from stale cap data during a fast reload).
-    let loadEpoch = 0;
 
     function syncPublicState(): void {
       setSessions(
@@ -556,19 +855,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       setQueueLength(queue.length);
       sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: hostSessions.size };
       loadedStagesRef.current =
-        workerClient && loadedConfig
+        engine.workerClient && engine.loadedConfig
           ? [
               {
-                modelId: loadedConfig.modelId,
-                layerStart: loadedConfig.layerStart,
-                layerEnd: loadedConfig.layerEnd,
-                includeEmbeddings: workerClient.isFirst,
-                includeOutput: workerClient.isFinal,
-                ctxSize: loadedConfig.ctxSize,
-                wireDtype: loadedConfig.wireDtype,
+                modelId: engine.loadedConfig.modelId,
+                layerStart: engine.loadedConfig.layerStart,
+                layerEnd: engine.loadedConfig.layerEnd,
+                includeEmbeddings: engine.workerClient.isFirst,
+                includeOutput: engine.workerClient.isFinal,
+                ctxSize: engine.loadedConfig.ctxSize,
+                wireDtype: engine.loadedConfig.wireDtype,
                 maxSessions: driverMaxSessions,
                 activeSessions: hostSessions.size,
-                epoch: loadEpoch,
+                epoch: engine.loadEpoch,
               },
             ]
           : [];
@@ -580,9 +879,19 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     }
 
     async function disposeWorker(): Promise<void> {
-      const w = workerClient;
-      workerClient = undefined;
-      loadedConfig = undefined;
+      const w = engine.workerClient;
+      engine.workerClient = undefined;
+      engine.loadedConfig = undefined;
+      // RETRACT THE ADVERTISEMENT THE INSTANT THE WEIGHTS GO AWAY.
+      // `loadedStagesRef` is what the publish loop broadcasts, and it is only
+      // recomputed by syncPublicState(). Without this call it kept the OLD
+      // stage after a dispose — and since `doLoad` begins with
+      // `await disposeWorker()`, the peer went on telling the mesh "I have
+      // [2,36) loaded" for the ENTIRE multi-minute reload. Drivers believed
+      // the ad, routed real work to a host holding no weights, and sat
+      // waiting through the download. A host must never be listed for a
+      // stage it does not currently have resident.
+      syncPublicState();
       if (w) await w.dispose().catch(() => undefined);
     }
 
@@ -599,17 +908,40 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         ctxSize: req.ctxSize,
         wireDtype: req.wireDtype,
       };
-      if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+      // INSTRUMENTATION: this decision — reuse vs await-in-flight vs full
+      // reload — is the difference between answering instantly and making a
+      // caller wait out a multi-minute reload of weights we may already have.
+      // It used to be silent, so a log could show "loading stage [2,36)" one
+      // second after [2,36) finished preloading with NO way to tell which
+      // branch fired or why. Never make anyone guess at this again.
+      const cfgStr = (c: LoadedConfig | undefined): string =>
+        c ? `[${c.layerStart},${c.layerEnd}) ctx=${c.ctxSize} ${c.wireDtype} ${c.modelId}` : 'none';
+      log(
+        `[stage-host] ensureWorkerLoaded want=${cfgStr(want)} resident=${cfgStr(engine.loadedConfig)} ` +
+          `hasWorker=${!!engine.workerClient} loadInFlight=${!!engine.loadInFlight} sessions=${hostSessions.size} origin=${req.origin}`,
+      );
+      if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) {
+        log(`[stage-host] REUSING resident stage ${cfgStr(engine.loadedConfig)} — no reload`);
+        return;
+      }
 
-      if (loadInFlight) {
+      if (engine.loadInFlight) {
         // Someone else is already loading (the common concurrent-open
         // race) — wait for THAT load, then re-check instead of starting
         // a second one.
-        await loadInFlight.catch(() => undefined);
-        if (workerClient && loadedConfig && sameConfig(loadedConfig, want)) return;
+        log('[stage-host] a load is already in flight — awaiting it instead of starting a second');
+        await engine.loadInFlight.catch(() => undefined);
+        if (engine.workerClient && engine.loadedConfig && sameConfig(engine.loadedConfig, want)) {
+          log(`[stage-host] REUSING stage ${cfgStr(engine.loadedConfig)} after awaiting the in-flight load`);
+          return;
+        }
+        log(
+          `[stage-host] in-flight load settled but did NOT satisfy this request ` +
+            `(resident=${cfgStr(engine.loadedConfig)} hasWorker=${!!engine.workerClient}) — reloading`,
+        );
       }
 
-      if (workerClient && hostSessions.size > 0) {
+      if (engine.workerClient && hostSessions.size > 0) {
         throw new Error(
           `host is already serving ${hostSessions.size} session(s) on a different stage configuration`,
         );
@@ -624,43 +956,117 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           log,
           (message) => onLifecycleRef.current?.({ type: 'worker-crashed', reason: message }),
         );
-        const loadDeadlineMs = 240_000;
-        await Promise.race([
-          client.load(
-            {
-              modelId: req.modelId,
-              layerStart: req.layerStart,
-              layerEnd: req.layerEnd,
-              totalLayers: req.totalLayers,
-              shardUrls: req.shardUrls,
-              shardHashes: req.shardHashes,
-              shardBytes: req.shardBytes,
-              ctxSize: req.ctxSize,
-              // +1: legion_stage_open always creates one FUSED session
-              // internally (used here only for the warm-up dispatch below) —
-              // see this file's top doc comment and MULTI-SESSION.md.
-              maxSessions: driverMaxSessions + 1,
-            },
-            { useMemoryShardStore: req.useMemoryShardStore },
-          ),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`stage worker load exceeded ${loadDeadlineMs}ms (worker died silently or stalled)`)),
-              loadDeadlineMs,
+        setLoadProgress(undefined);
+        // Mirror the local shard-download progress OUT to the driver that
+        // asked us to load (skip the self-directed preload, which has no
+        // waiting driver). Before this the driver saw nothing between
+        // stage.load and stage.ready ~8 min later — its wait was a flat
+        // timeout that fired mid-download and forced a spurious replan, and
+        // the chat UI had no "shard 24/36…" to show. See
+        // StageLoadProgressPayload's doc.
+        let lastProgress: StageWorkerLoadProgress | undefined;
+        const notifyDriverLoadProgress = (p: StageWorkerLoadProgress, phase: 'downloading' | 'opening' | 'warming'): void => {
+          if (req.peerId === '__preload__') return;
+          void meshPeer
+            .sendTool(
+              encodeStageControl(
+                makeStageLoadProgress(req.sessionId, {
+                  shardsFetched: p.shardsFetched,
+                  totalShards: p.totalShards,
+                  bytesFetched: p.bytesFetched,
+                  totalBytes: p.totalBytes,
+                  phase,
+                }),
+              ),
+              req.peerId,
+            )
+            .catch(() => undefined);
+        };
+        // A multi-GB model download has no fixed duration a flat timeout
+        // could safely encode (observed live: Qwen3-8B's 4.7GB tripped a
+        // 240s flat deadline mid-download, killing a perfectly healthy
+        // load — "stage worker load exceeded 240000ms (worker died
+        // silently or stalled)" — then it restarted and re-served from
+        // the OPFS cache). Instead: watch for a STALL (no shard-progress
+        // for LOAD_STALL_MS) and keep a generous LOAD_CEILING_MS backstop
+        // for the pathological "progress never actually finishes" case —
+        // see loadWatchdog.ts's module doc.
+        await runWithStallWatchdog(
+          (progressTick) =>
+            client.load(
+              {
+                modelId: req.modelId,
+                layerStart: req.layerStart,
+                layerEnd: req.layerEnd,
+                totalLayers: req.totalLayers,
+                shardUrls: req.shardUrls,
+                shardHashes: req.shardHashes,
+                shardBytes: req.shardBytes,
+                ctxSize: req.ctxSize,
+                // +1: legion_stage_open always creates one FUSED session
+                // internally (used here only for the warm-up dispatch below) —
+                // see this file's top doc comment and MULTI-SESSION.md.
+                maxSessions: driverMaxSessions + 1,
+              },
+              { useMemoryShardStore: req.useMemoryShardStore },
+              (progress) => {
+                progressTick();
+                setLoadProgress(progress);
+                lastProgress = progress;
+                // Prefer the loader's OWN phase — it knows whether it's still
+                // fetching or already inside legion_stage_open pushing weights
+                // to VRAM. The shard-count guess below is only a fallback for
+                // an older runtime that doesn't report one, and it is wrong in
+                // exactly the case that matters: a cache-warm load hits
+                // shardsFetched===totalShards within seconds and then spends
+                // minutes in the GPU upload.
+                const phase =
+                  progress.phase ??
+                  (progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading');
+                notifyDriverLoadProgress(progress, phase);
+                log(
+                  `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +
+                    (progress.totalBytes
+                      ? ` (${(progress.bytesFetched / 1048576).toFixed(0)}/${(progress.totalBytes / 1048576).toFixed(0)} MB)`
+                      : ''),
+                );
+              },
             ),
-          ),
-        ]);
+          { stallMs: LOAD_STALL_MS, ceilingMs: LOAD_CEILING_MS },
+        ).catch((err) => {
+          if (err instanceof StallTimeoutError) {
+            throw new Error(`stage worker load ${err.message}`);
+          }
+          throw err;
+        });
+        // Keep progress flowing to the driver through the silent warm-up
+        // tail (a throwaway WebGPU dispatch, seconds but not instant) so its
+        // stall clock stays reset and the UI shows "warming up…" rather than
+        // freezing on the last shard count.
+        notifyDriverLoadProgress(
+          lastProgress ?? { shardsFetched: 0, totalShards: 0, bytesFetched: 0 },
+          'warming',
+        );
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
         await warmUpStageWorker(client, log);
-        workerClient = client;
-        loadedConfig = want;
-        loadEpoch += 1;
+        engine.workerClient = client;
+        engine.loadedConfig = want;
+        engine.loadEpoch += 1;
       })();
-      loadInFlight = doLoad;
+      engine.loadInFlight = doLoad;
       try {
         await doLoad;
       } finally {
-        if (loadInFlight === doLoad) loadInFlight = undefined;
+        if (engine.loadInFlight === doLoad) engine.loadInFlight = undefined;
+        // `loadProgress` must mean EXACTLY "a load is in flight right now" —
+        // it's the signal the UI uses to decide whether to show the download
+        // readout AT ALL (see deriveHostingLifecycleState). Left un-cleared it
+        // lingered at its final value forever after a load, which would make a
+        // finished stage look like it were perpetually "opening". Cleared on
+        // success AND failure; the per-shard ticks above re-populate it the
+        // moment the next load (e.g. the user raising their layer budget)
+        // starts fetching.
+        setLoadProgress(undefined);
       }
     }
 
@@ -718,13 +1124,26 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     async function openNow(req: PendingOpen): Promise<void> {
       try {
         await ensureWorkerLoaded(req);
-        const client = workerClient!;
+        const client = engine.workerClient!;
         await client.sessionCreate(req.sessionId);
-        let decoder: ActivationWireDecoder | undefined;
+        let decoder: LegionActivationWireDecoder | undefined;
         let awaitingHeader = true;
         if (req.wireHeaderB64) {
-          decoder = createActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
+          decoder = createLegionActivationWireDecoder(base64ToBytes(req.wireHeaderB64));
           awaitingHeader = false;
+        }
+        // TEXT-RELAY: tokenize `promptText` server-side NOW, at accept time —
+        // only meaningful on the isFirst stage (the only one that embeds from
+        // token ids at all). A driver with no local tokenizer can't populate
+        // the first `sf` frame's `tokens` sideband itself; this session's
+        // very first prefill frame will use these ids instead (see
+        // onStageFrame below), discarding whatever placeholder that frame
+        // carries. A tokenize failure here fails the whole open (caught by
+        // this function's outer try/catch, same as any other open failure) —
+        // there is no way to serve a session whose prompt can't be tokenized.
+        let pendingPromptTokens: number[] | undefined;
+        if (req.promptText !== undefined && client.isFirst) {
+          pendingPromptTokens = await client.tokenize(req.promptText, true);
         }
         const state: HostSessionState = {
           sessionId: req.sessionId,
@@ -736,10 +1155,23 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           createdAt: Date.now(),
           lastFrameAt: Date.now(),
           isFirst: client.isFirst,
-          isFinal: client.isFinal,
+          // RELAY: the driver decides finality. It knows the whole plan; the
+          // host only knows its own artifacts. Absent (pre-relay / legacy) ⇒
+          // fall back to the artifact-derived answer, which is correct for the
+          // proven single-remote-stage shape.
+          isFinal: req.isFinalOverride ?? client.isFinal,
           layerStart: req.layerStart,
           layerEnd: req.layerEnd,
           totalLayers: req.totalLayers,
+          // Accept `sf` from the upstream hop (driver for stage 1, prior relay
+          // for ≥2); default to the opener so a legacy/2-stage open is unchanged.
+          prevPeerId: req.prevPeerId ?? req.peerId,
+          nextPeerId: req.nextPeerId,
+          modelId: req.modelId,
+          stageIndex: req.stageIndex ?? 1,
+          wireDtype: req.wireDtype,
+          pendingPromptTokens,
+          textOutput: req.textOutput ?? false,
         };
         hostSessions.set(req.sessionId, state);
         syncPublicState();
@@ -826,7 +1258,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       if (!state) return;
       hostSessions.delete(sessionId);
       syncPublicState();
-      await workerClient?.sessionFree(sessionId).catch(() => undefined);
+      await engine.workerClient?.sessionFree(sessionId).catch(() => undefined);
       log(`[stage-host] session FREED sessionId=${sessionId} reason=${reason} active=${hostSessions.size}/${driverMaxSessions}`);
       // M4 — the host directly witnessed this driver occupying a lane for
       // [createdAt, now), regardless of why the session ended (natural
@@ -847,7 +1279,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         );
       }
       if (notifyDriver) {
-        await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), state.driverPeerId).catch(() => undefined);
+        // Propagate the teardown BOTH ways: upstream to the driver (owns the
+        // token stream) AND, for a relay, downstream to the next hop (whose
+        // session is now orphaned). For a 2-stage session prevPeerId ===
+        // driverPeerId and nextPeerId is undefined, so this is one send.
+        const notify = new Set<string>([state.driverPeerId]);
+        if (state.nextPeerId) notify.add(state.nextPeerId);
+        for (const target of notify) {
+          await meshPeer.sendTool(encodeStageControl(makeStageStop(sessionId, reason)), target).catch(() => undefined);
+        }
       }
       await admitNextQueued();
     }
@@ -891,7 +1331,47 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     }
 
     async function handleSessionOpen(msg: StageControlMessageFor<'stage.session.open'>, peerId: string): Promise<void> {
+      // REUSE-STAGE0 — when this host operates under a CLAIM-DRIVEN regime
+      // (`preloadStage` set, i.e. `useCommunalHost.ts`'s assembly loop owns
+      // what this host loads), a request for a DIFFERENT range than the
+      // current claim is not meant for this hook at all — most likely a
+      // peer that ALSO runs `useLocalStageServe.ts` for a fixed different
+      // range on the SAME connection (see that module's cap-union doc
+      // comment). Silently ignoring it (rather than `ensureWorkerLoaded`,
+      // which would otherwise reconfigure — or outright fail — this host's
+      // OWN claim out from under it) is what keeps two independent servers
+      // on one peer from fighting over the same wire message. A legacy/
+      // Phase-C `useStagePipeline` driver (no `preloadStage`) is
+      // unaffected — this guard only engages once a claim exists, and in
+      // every pre-existing flow a driver only ever requests the EXACT
+      // range this host currently advertises, so this is a no-op there.
+      const claim = claimedRangeRef.current;
+      if (claim && (msg.payload.layerStart !== claim.layerStart || msg.payload.layerEnd !== claim.layerEnd)) {
+        log(
+          `[stage-host] stage.session.open for [${msg.payload.layerStart},${msg.payload.layerEnd}) IGNORED — this host's claim is [${claim.layerStart},${claim.layerEnd})`,
+        );
+        return;
+      }
       log(`[stage-host] stage.session.open from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
+      // The `stage.session.open` payload carries NO shard info by design — the
+      // host resolves shards for the requested range from its OWN manifest.
+      // Without this a served session loads zero shards and `legion_stage_open`
+      // fails ("paths, path_count, and out_model are required").
+      let shardUrls: readonly string[] = [];
+      if (resolveSessionShardsRef.current) {
+        try {
+          shardUrls = await resolveSessionShardsRef.current({
+            modelId: msg.payload.modelId,
+            layerStart: msg.payload.layerStart,
+            layerEnd: msg.payload.layerEnd,
+            totalLayers: msg.payload.totalLayers,
+          });
+        } catch (err) {
+          log(
+            `[stage-host] shard resolution failed for [${msg.payload.layerStart},${msg.payload.layerEnd}): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       await admitOrEnqueue({
         origin: 'session',
         sessionId: msg.sessionId,
@@ -903,8 +1383,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         totalLayers: msg.payload.totalLayers,
         ctxSize: msg.payload.ctxSize,
         wireDtype: msg.payload.wireDtype,
-        shardUrls: [],
+        shardUrls,
         wireHeaderB64: msg.payload.wireHeader,
+        // RELAY: driver-assigned position. Absent ⇒ pre-relay 2-stage
+        // assumption (final stage, driver upstream, no downstream).
+        isFinalOverride: msg.payload.isFinal,
+        nextPeerId: msg.payload.nextPeerId,
+        prevPeerId: msg.payload.prevPeerId,
+        stageIndex: msg.payload.stageIndex,
+        promptText: msg.payload.promptText,
+        textOutput: msg.payload.textOutput,
       });
     }
 
@@ -914,9 +1402,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
     async function handleStop(msg: StageControlMessageFor<'stage.stop'>, peerId: string): Promise<void> {
       const state = hostSessions.get(msg.sessionId);
-      if (!state || state.driverPeerId !== peerId) return; // unknown session or spoof attempt — ignore
+      // A stop is legitimate from any peer in THIS session's pipeline — the
+      // driver, our upstream, or our downstream (a relay tears down both ways).
+      // notifyDriver:true so the stop keeps propagating to the OTHER neighbour.
+      if (!state || (peerId !== state.driverPeerId && peerId !== state.prevPeerId && peerId !== state.nextPeerId)) return;
       log(`[stage-host] stage.stop from ${peerId} sessionId=${msg.sessionId}: ${msg.payload.reason}`);
-      await freeSession(msg.sessionId, msg.payload.reason, false);
+      await freeSession(msg.sessionId, msg.payload.reason, true);
     }
 
     const unsubTool = peer.onTool((frame, peerId) => {
@@ -941,25 +1432,36 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         log(`[stage-host] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${peerId}`);
         return;
       }
-      // Spoof guard: only the peer that opened this session may drive it.
-      if (peerId !== state.driverPeerId) {
-        log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} does not own sessionId=${sessionId} (owner=${state.driverPeerId})`);
+      // Spoof guard: only this session's UPSTREAM peer may drive it — the
+      // driver for stage 1, the previous relay for a hop ≥2. (For a 2-stage
+      // session prevPeerId === driverPeerId, so this is unchanged.)
+      if (peerId !== state.prevPeerId) {
+        // A peer that serves MULTIPLE stages for one driver receives every
+        // frame the driver (or its own internal forward) addresses to it and
+        // hands it to ALL local stage handlers; whichever stage the frame
+        // isn't for lands here and is dropped. That's expected co-located
+        // routing, not a spoof — only warn when the sender isn't a known
+        // participant of THIS session (driver / downstream / self).
+        const knownParticipant = peerId === state.driverPeerId || peerId === state.nextPeerId || peerId === meshPeer.selfId;
+        if (!knownParticipant) {
+          log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
+        }
         return;
       }
       state.lastFrameAt = Date.now();
       void (async () => {
         try {
-          const client = workerClient;
+          const client = engine.workerClient;
           if (!client) return;
           if (state.awaitingHeader) {
-            state.decoder = createActivationWireDecoder(bytes);
+            state.decoder = createLegionActivationWireDecoder(bytes);
             state.awaitingHeader = false;
             log(`[stage-host] wire header sessionId=${sessionId}: modelId=${state.decoder.modelId} nEmbd=${state.decoder.nEmbd} dtype=${state.decoder.dtype}`);
             return;
           }
           if (!state.decoder) return;
           const frame = state.decoder.decodeFrameBytes(bytes);
-          const wireFrame: WireActivationFrame = {
+          let wireFrame: WireActivationFrame = {
             dtype: 'f32',
             layout: 'token-major',
             tokenCount: frame.tokenCount,
@@ -968,24 +1470,108 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               frame.activations.byteOffset + frame.activations.byteLength,
             ) as ArrayBuffer,
           };
-          const tokens = frame.tokens ?? [];
-          const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
+          let tokens: readonly number[] = frame.tokens ?? [];
           const isPrefill = frame.seq === 0;
+          // TEXT-RELAY: this session's very first prefill frame — if it was
+          // opened with `promptText` (isFirst stage only), the REAL token ids
+          // came from tokenizing that text server-side at open time (see
+          // openNow above), not from this frame's own placeholder
+          // tokens/activation (a textRelay driver has no local tokenizer to
+          // populate them with). Override once, then clear so every later
+          // frame on this session (real decode-step token ids, always known
+          // to the driver via the previous stage.token reply) uses the
+          // ordinary path unchanged.
+          if (isPrefill && state.pendingPromptTokens) {
+            tokens = state.pendingPromptTokens;
+            state.pendingPromptTokens = undefined;
+            wireFrame = dummyActivationFrame(tokens.length, client.nEmbd);
+          }
+          const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
           const result = isPrefill
             ? await client.prefill(tokens as number[], positions, wireFrame, sessionId)
             : await client.decode((tokens[0] as number) ?? 0, wireFrame, sessionId);
+
+          if (!state.isFinal) {
+            // ── RELAY: this stage is NOT final. Its worker returned the
+            // boundary activation for the next slice; forward it to the
+            // downstream peer instead of sampling. seq/tokens/posStart/done
+            // are carried through verbatim so the downstream re-derives
+            // isPrefill (seq===0) and positions exactly as this host did.
+            if (!state.nextPeerId) throw new Error('relay stage has no nextPeerId — cannot forward');
+            if (!result.activation) throw new Error('relay stage produced no boundary activation to forward');
+            if (!state.forwardEncoder) {
+              state.forwardEncoder = createLegionActivationWireEncoder({
+                modelId: state.modelId,
+                stageIndex: state.stageIndex,
+                nEmbd: client.nEmbd,
+                dtype: state.wireDtype,
+              });
+            }
+            if (!state.forwardHeaderSent) {
+              // One header, before the first activation frame — the downstream
+              // host (opened with NO wireHeader) is awaitingHeader and takes
+              // this as its decoder header (the legacy first-frame path).
+              await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, state.forwardEncoder.headerBytes()), state.nextPeerId);
+              state.forwardHeaderSent = true;
+            }
+            const activationF32 = new Float32Array(result.activation.payload);
+            const outBytes = state.forwardEncoder.encodeFrame(activationF32, {
+              seq: frame.seq,
+              posStart: frame.posStart ?? 0,
+              tokens: frame.tokens,
+              done: frame.done,
+              ...(frame.finishReason !== undefined ? { finishReason: frame.finishReason } : {}),
+            });
+            await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, outBytes), state.nextPeerId);
+            state.decodedCount += 1;
+            syncPublicState();
+            return;
+          }
+
+          // ── FINAL stage: sample and return the token to the DRIVER.
           if (result.predictedToken === undefined) {
             throw new Error('final-stage host produced no predictedToken');
           }
           state.decodedCount += 1;
           syncPublicState();
           const isEog = await client.tokenIsEog(result.predictedToken);
+          // TEXT-RELAY: this session's driver has no local tokenizer — stream
+          // the incremental decoded TEXT alongside the numeric token id
+          // instead of leaving detokenization to the driver. Redecodes the
+          // WHOLE growing token sequence every step (never a single token in
+          // isolation — see `incrementalTextStream.ts`'s doc comment for why
+          // that would be unsound) and buffers any still-incomplete trailing
+          // multi-byte character until a later step completes it; `flush` on
+          // eos so nothing sampled is silently dropped if generation ends
+          // mid-sequence.
+          let textDelta: string | undefined;
+          if (state.textOutput) {
+            state.sampledTokens = state.sampledTokens ?? [];
+            // Never fold a stop token (e.g. ChatML <|im_end|>) into the
+            // streamed text — it's a control signal, not content, and the
+            // detokenizer renders it as the literal "<|im_end|>", which
+            // leaked into thin-client output. isEog is the stop; the text
+            // stops with it.
+            if (!isEog) state.sampledTokens.push(result.predictedToken);
+            const fullText = await client.detokenize(state.sampledTokens);
+            const { delta, cursor } = extractIncrementalTextDelta(fullText, state.textCursor ?? INITIAL_TEXT_CURSOR, {
+              flush: isEog,
+            });
+            state.textCursor = cursor;
+            if (delta.length > 0) textDelta = delta;
+          }
+          // Reply to the DRIVER, not the inbound sender — under relay the
+          // frame arrived from the previous hop, but the token stream belongs
+          // to the driver's session. (For a 2-stage session prevPeerId ===
+          // driverPeerId, so this is unchanged.)
           await meshPeer.sendTool(
-            encodeStageControl(makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined)),
-            peerId,
+            encodeStageControl(
+              makeStageToken(sessionId, result.predictedToken, frame.seq, isEog, isEog ? 'eos' : undefined, textDelta),
+            ),
+            state.driverPeerId,
           );
           if (state.decodedCount % progressEveryN === 0) {
-            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId, state.decodedCount, frame.seq)), peerId);
+            await meshPeer.sendTool(encodeStageControl(makeStageProgress(sessionId, state.decodedCount, frame.seq)), state.driverPeerId);
           }
           if (isEog) {
             // Generation finished — free the lane proactively instead of
@@ -1019,8 +1605,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const unsubRoster = meshPeer.roster.subscribe((snapshot) => {
       const present = new Set(snapshot.map((e) => e.peerId));
       for (const [sessionId, state] of hostSessions) {
-        if (!present.has(state.driverPeerId)) {
-          void freeSession(sessionId, 'driver left the mesh', false);
+        // A relay session dies if ANY of its pipeline neighbours vanish — the
+        // driver, our upstream (no more frames coming), or our downstream (no
+        // one to forward to). notifyDriver:true so the surviving neighbours
+        // learn to tear down too.
+        const goneDriver = !present.has(state.driverPeerId);
+        const gonePrev = !present.has(state.prevPeerId);
+        const goneNext = state.nextPeerId !== undefined && !present.has(state.nextPeerId);
+        if (goneDriver || gonePrev || goneNext) {
+          const who = goneDriver ? 'driver' : gonePrev ? 'upstream' : 'downstream';
+          void freeSession(sessionId, `${who} left the mesh`, true);
         }
       }
     });
@@ -1042,7 +1636,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       unsubFrame();
       preloadRequestRef.current = () => undefined;
       forceDisconnectRequestRef.current = () => undefined;
-      void disposeWorker();
+      // Deliberately NOT disposing the worker here. This effect re-subscribes
+      // on `enabled`/leadership churn, and disposing on every re-subscribe is
+      // exactly what silently threw away a stage already loaded into VRAM
+      // (see StageEngine's doc). The weights live on `engineRef` and are
+      // disposed only on true unmount (the []-effect near the top of the
+      // hook); a re-subscribe re-adopts the same resident engine and reuses it.
     };
     // `log` deliberately excluded — see logRef above; this effect must not
     // tear down (and silently terminate in-flight worker/session state)
@@ -1096,5 +1695,13 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     queueLength,
     lastError,
     preloadError,
+    // Was MISSING: every shard called setLoadProgress(...) and logged
+    // "[stage-host] load progress: shard 3/12 (251/1274 MB)" to the console,
+    // but the handle never handed it back — so `useCommunalHost`'s
+    // `downloadProgress` (and therefore the right drawer's progress bar) was
+    // permanently undefined and the user saw a bare "Downloading model…" with
+    // no numbers during a multi-minute download. `loadProgress?:` being
+    // OPTIONAL on the interface is why tsc never flagged the omission.
+    loadProgress,
   };
 }

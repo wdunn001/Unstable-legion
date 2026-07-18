@@ -69,7 +69,7 @@ const ROOM_ID =
 
 /**
  * Same-origin mirror of the @mlc-ai/web-llm prebuilt model repos.
- * The deploy mounts `/storage/mzfs/webllm-mirror` into the nginx
+ * The deploy bind-mounts the model mirror into the nginx
  * container at `/webllm/`. Includes both the default (fp16) and
  * mobile (fp32) catalogs — anything outside this union falls through
  * to the Hugging Face default.

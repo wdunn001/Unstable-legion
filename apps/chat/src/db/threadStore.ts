@@ -22,6 +22,18 @@ export interface ChatMessage {
    * (continue-from-history) — surfaced as a "reconnected" indicator,
    * not an error (see `useCommunalChat`'s `restartCount`). */
   reconnected?: boolean;
+  /** Tool activity behind this assistant message, one human-readable line
+   * per round (e.g. `current_time → ok · served by @nick`). Rendered as
+   * chips above the content; deliberately NOT folded back into prompts
+   * (the raw tool exchange re-enters context via chatPrompt's `rounds`
+   * during the exchange, and is summarized by the final text after). */
+  toolTrace?: string[];
+  /** Decode throughput of this assistant message's generation, in tokens
+   * per second (first generated token → last; see useCommunalChat's
+   * `ChatGenTiming`). Rendered as a small metric badge under the message.
+   * Undefined for user messages and for generations too short to measure
+   * (fewer than 2 tokens). */
+  tokPerSec?: number;
 }
 
 export interface ChatThread {

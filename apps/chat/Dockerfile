@@ -45,7 +45,7 @@ ARG VITE_TURN_URLS=
 ARG VITE_TURN_USERNAME=
 ARG VITE_TURN_CREDENTIAL=
 ARG VITE_TURN_USE_DEFAULT=
-# OpenPanel analytics (apps/chat only — telemetry.quasarke.net). Build-time
+# OpenPanel analytics (apps/chat only; self-hosted). Build-time
 # only (Vite inlines import.meta.env.VITE_*). Absent → tracking is a no-op
 # (the app never depends on analytics being reachable). CLIENT_ID comes from
 # the "Legion Chat" OpenPanel project (created in the dashboard behind

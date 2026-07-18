@@ -37,8 +37,31 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-webgpu',
+      testIgnore: /mobile\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
+        channel: 'chromium',
+        headless: false,
+        launchOptions: {
+          args: [
+            '--enable-unsafe-webgpu',
+            '--enable-features=Vulkan',
+            '--disable-dawn-features=disallow_unsafe_apis',
+            '--disable-features=WebRtcHideLocalIpsWithMdns',
+            '--enable-logging=stderr',
+            '--v=1',
+          ],
+        },
+      },
+    },
+    {
+      // Mobile layout smoke — a phone-sized viewport against the same app
+      // (test model). Same launch args as the desktop project (harmless
+      // when the spec never loads a real stage; keeps one flag story).
+      name: 'chromium-mobile',
+      testMatch: /mobile\.spec\.ts/,
+      use: {
+        ...devices['Pixel 7'],
         channel: 'chromium',
         headless: false,
         launchOptions: {

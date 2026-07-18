@@ -12,7 +12,7 @@
  * this package never constructs a Worker itself, keeping it bundler-agnostic.
  */
 import type { StageDescriptor } from '@unstable-legion/stage-runtime';
-import type { StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
+import type { StageWorkerLoadProgress, StageWorkerRequest, StageWorkerResponse, WireActivationFrame } from './stageWorkerProtocol.js';
 
 export type StageWorkerLog = (line: string) => void;
 
@@ -28,6 +28,10 @@ export class StageWorkerClient {
     number,
     { resolve: (v: StageWorkerResponse) => void; reject: (e: Error) => void }
   >();
+  /** Keyed by the `load` request's own `reqId` — a `progress` response
+   * shares that reqId (see stageWorkerProtocol.ts) but is NOT terminal,
+   * so it's routed here instead of resolving/removing the pending entry. */
+  private readonly progressHandlers = new Map<number, (progress: StageWorkerLoadProgress) => void>();
   isFirst = false;
   isFinal = false;
   nEmbd = 0;
@@ -49,6 +53,7 @@ export class StageWorkerClient {
       this.log(`[${label}] worker error: ${ev.message}`);
       for (const [, p] of this.pending) p.reject(new Error(`[${label}] worker error: ${ev.message}`));
       this.pending.clear();
+      this.progressHandlers.clear();
       try {
         this.onWorkerError?.(ev.message || 'worker crashed');
       } catch {
@@ -58,6 +63,17 @@ export class StageWorkerClient {
   }
 
   private onMessage(msg: StageWorkerResponse): void {
+    if (msg.type === 'progress') {
+      // Not terminal — the pending `load` entry stays open, waiting for
+      // the real `ready`/`error` that follows.
+      this.progressHandlers.get(msg.reqId)?.({
+        shardsFetched: msg.shardsFetched,
+        totalShards: msg.totalShards,
+        bytesFetched: msg.bytesFetched,
+        totalBytes: msg.totalBytes,
+      });
+      return;
+    }
     const pending = this.pending.get(msg.reqId);
     if (!pending) return;
     this.pending.delete(msg.reqId);
@@ -68,8 +84,11 @@ export class StageWorkerClient {
     pending.resolve(msg);
   }
 
-  private send(req: DistributiveOmit<StageWorkerRequest, 'reqId'>, transfer: Transferable[] = []): Promise<StageWorkerResponse> {
-    const reqId = this.nextReqId++;
+  private send(
+    req: DistributiveOmit<StageWorkerRequest, 'reqId'>,
+    transfer: Transferable[] = [],
+    reqId: number = this.nextReqId++,
+  ): Promise<StageWorkerResponse> {
     const full = { ...req, reqId } as StageWorkerRequest;
     return new Promise((resolve, reject) => {
       this.pending.set(reqId, { resolve, reject });
@@ -77,12 +96,27 @@ export class StageWorkerClient {
     });
   }
 
-  async load(descriptor: StageDescriptor, opts: { useMemoryShardStore?: boolean } = {}): Promise<void> {
-    const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore });
-    if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
-    this.isFirst = res.isFirst;
-    this.isFinal = res.isFinal;
-    this.nEmbd = res.nEmbd;
+  /** `onProgress`, when supplied, is called once per shard as the worker
+   * fetches it (see `StageWorkerLoadProgress` / stage-runtime's
+   * `StageLoadProgress`) — lets a caller drive a download-progress UI and/
+   * or a progress-based stall watchdog (see `useStageHost.ts`'s
+   * `runWithStallWatchdog` usage) instead of only a flat total timeout. */
+  async load(
+    descriptor: StageDescriptor,
+    opts: { useMemoryShardStore?: boolean } = {},
+    onProgress?: (progress: StageWorkerLoadProgress) => void,
+  ): Promise<void> {
+    const reqId = this.nextReqId++;
+    if (onProgress) this.progressHandlers.set(reqId, onProgress);
+    try {
+      const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore }, [], reqId);
+      if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
+      this.isFirst = res.isFirst;
+      this.isFinal = res.isFinal;
+      this.nEmbd = res.nEmbd;
+    } finally {
+      this.progressHandlers.delete(reqId);
+    }
   }
 
   /** `sessionId` absent = the legacy fused single-session path (unchanged
@@ -155,7 +189,20 @@ export class StageWorkerClient {
   }
 }
 
-function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivationFrame {
+/**
+ * A zero-filled placeholder activation frame of the given shape — used
+ * anywhere a caller must hand the wire codec/worker protocol AN activation
+ * even though the receiving stage is known to ignore its content (an isFirst
+ * stage's embedding step, or `warmUpStageWorker`'s throwaway dispatch below).
+ * Exported for `useStageHost.ts`'s TEXT-RELAY host-side prefill override
+ * (see `stageControl.ts`'s `StageSessionOpenPayload.promptText` doc
+ * comment): the host tokenizes `promptText` itself and must construct a
+ * correctly-shaped (tokenCount === its own real token count) placeholder to
+ * hand `client.prefill`, discarding the driver's own (differently-sized)
+ * placeholder — the wire codec would otherwise reject a `tokens` sideband
+ * whose length doesn't match the activation's derived tokenCount.
+ */
+export function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivationFrame {
   return { dtype: 'f32', layout: 'token-major', tokenCount, payload: new ArrayBuffer(tokenCount * nEmbd * 4) };
 }
 
@@ -172,9 +219,24 @@ function dummyActivationFrame(tokenCount: number, nEmbd: number): WireActivation
  * dispatch exceeded 90s under 3-tab contention). Exercises both shapes
  * a real session hits — a multi-token prefill dispatch and a
  * single-token decode dispatch — with throwaway dummy input, then
- * resets KV state. Failures here are logged but non-fatal (best-effort
- * warm-up; a real load-order or shape bug still surfaces on the real
- * request).
+ * resets KV state.
+ *
+ * A FAILURE HERE IS FATAL, and deliberately so. This dispatch is the only
+ * proof that the stage can actually run: it compiles every compute pipeline
+ * and executes both real dispatch shapes. If it fails, the stage CANNOT
+ * serve — full stop.
+ *
+ * This used to log "dispatch failed (non-fatal)" and return normally, on the
+ * theory that a real bug would "surface on the real request". It did — as a
+ * broken host advertised to the whole mesh. Observed live: a WGSL compile
+ * error (`@builtin(num_subgroups)` unsupported on the device) killed the
+ * pipeline, the failure was swallowed, `useStageHost` set `workerClient` and
+ * published `loadedStages`, drivers routed real chats to it, and every
+ * prefill trapped `unreachable` — a crash loop that reloaded the stage over
+ * and over. "Surfacing on the real request" means breaking a stranger's chat.
+ * A peer must never claim capacity it hasn't PROVEN it can serve; throwing
+ * here routes the failure into the caller's normal load-failed/backoff path
+ * and the stage is simply never advertised.
  */
 export async function warmUpStageWorker(client: StageWorkerClient, log: StageWorkerLog = () => undefined): Promise<void> {
   try {
@@ -183,8 +245,11 @@ export async function warmUpStageWorker(client: StageWorkerClient, log: StageWor
     const decodeInput = client.isFirst ? undefined : dummyActivationFrame(1, client.nEmbd);
     await client.decode(0, decodeInput);
   } catch (err) {
-    log(`[stage-warmup] dispatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    log(`[stage-warmup] FAILED — refusing to report this stage ready: ${message}`);
+    throw new Error(`stage warm-up dispatch failed (stage cannot serve): ${message}`);
   } finally {
-    await client.reset();
+    // A reset failure must never mask the real warm-up error above.
+    await client.reset().catch(() => undefined);
   }
 }

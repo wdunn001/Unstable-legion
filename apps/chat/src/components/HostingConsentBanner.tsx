@@ -14,8 +14,25 @@
  * the Accept action and explains why, in both the 'unset' and (in case a
  * capability probe resolves AFTER an earlier accept on a since-changed
  * device) 'accepted' states.
+ *
+ * The status row is driven by `../hostingLabels.js`'s lifecycle state
+ * machine (`deriveHostingLifecycleState` → `hostingStatusLabel`): the word
+ * "Hosting" appears ONLY once the stage is genuinely loaded into VRAM and
+ * advertising/serving — before that it reads "Downloading model…" then
+ * "Loading into GPU…", so a remote caller's would-be host never looks
+ * "ready" while its weights are still in flight.
  */
-import type { CommunalHostPhase } from '@unstable-legion/react';
+import type { CommunalHostPhase, StageWorkerLoadProgress } from '@unstable-legion/react';
+import {
+  claimLayerCount,
+  deriveHostingLifecycleState,
+  downloadProgressFraction,
+  downloadProgressLabel,
+  formatGigabytes,
+  hostingStatusLabel,
+  type HostingLifecycleState,
+} from '../hostingLabels.js';
+import { ContributionPanel, type ContributionPanelProps } from './ContributionPanel.js';
 
 export type HostingConsent = 'unset' | 'accepted' | 'declined';
 
@@ -39,6 +56,68 @@ export interface HostingConsentBannerProps {
   /** True while a bounded retry is scheduled (transient) — styles the card
    * as "retrying" rather than a hard "failing" state. */
   retrying?: boolean;
+  /** "Hosting up to N layers (~X GB)" — always visible in the 'accepted'
+   * state, computed by the caller from the CURRENT weight budget
+   * (default or the "Contribute more" override). */
+  capacitySummaryLabel: string;
+  /** The "Contribute more" expander — undefined hides it entirely (e.g.
+   * capacity math isn't ready yet). */
+  contribution?: ContributionPanelProps;
+  /** Live load progress for the stage this host is currently loading — the
+   * SAME numbers `[stage-host] load progress` logs to the console, rendered as
+   * a bar. Carries the loader's own `phase` and, while opening, the VRAM
+   * upload's `openFraction`. Undefined outside a load. */
+  downloadProgress?: StageWorkerLoadProgress;
+}
+
+/**
+ * The live "what is my browser actually doing right now" readout — the whole
+ * point of the hosting panel while a stage loads. Shows the SAME numbers the
+ * console logs ("shard 3/12 (251/1274 MB)"), expressed in LAYER units + real
+ * GB (see hostingLabels' module doc on why raw fragment counts mislead), plus
+ * a percentage and a bar. During 'opening' the download is done and the
+ * native load into VRAM is running — say so instead of a stuck "11 of 11".
+ */
+function DownloadProgressBar(props: {
+  progress: NonNullable<HostingConsentBannerProps['downloadProgress']>;
+  layerCount: number;
+  lifecycle: HostingLifecycleState;
+}) {
+  const opening = props.lifecycle === 'opening';
+  // While opening, the honest number is the VRAM upload's own progress — the
+  // download is already done, so its byte fraction would just sit at 100% for
+  // minutes. `openFraction` is undefined on a host whose wasm predates the
+  // progress reporter: show the phase without a false percentage rather than
+  // claiming 0%.
+  const openPct = props.progress.openFraction !== undefined ? Math.round(props.progress.openFraction * 100) : undefined;
+  const pct = opening ? openPct : Math.round(downloadProgressFraction(props.progress) * 100);
+  const layers = `${props.layerCount} layer${props.layerCount === 1 ? '' : 's'}`;
+  const label = opening
+    ? openPct !== undefined
+      ? `Loading ${layers} into GPU · ${openPct}%`
+      : `Loading ${layers} into GPU — ${formatGigabytes(props.progress.totalBytes ?? props.progress.bytesFetched)} fetched, opening stage…`
+    : `${downloadProgressLabel(props.progress, props.layerCount)} · ${pct}%`;
+  // Indeterminate (an opening stage with no reported fraction) => omit
+  // aria-valuenow, which is how a progressbar signals "unknown".
+  const indeterminate = opening && openPct === undefined;
+  return (
+    <div
+      className="host-download"
+      role="progressbar"
+      {...(indeterminate ? {} : { 'aria-valuenow': pct })}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label}
+    >
+      <div className="host-download-label">{label}</div>
+      <div className="capacity-bar-track">
+        <div
+          className="capacity-bar-fill capacity-bar-fill-ready"
+          style={{ width: `${indeterminate ? 100 : pct}%` }}
+        />
+      </div>
+    </div>
+  );
 }
 
 /** The host-failure card — rendered inside the hosting panel whenever the
@@ -48,8 +127,11 @@ export interface HostingConsentBannerProps {
 function HostErrorCard(props: { message: string; retrying?: boolean }) {
   return (
     <div className={`host-error-card ${props.retrying ? 'host-error-retrying' : 'host-error-failing'}`} role="alert" aria-live="polite">
+      {/* Status glyph only, not a button — see ChatPane.tsx's identical
+          note: a refresh-style glyph here reads as a clickable "retry"
+          affordance even though nothing is wired to it. */}
       <span className="host-error-icon" aria-hidden="true">
-        {props.retrying ? '↻' : '⚠'}
+        {props.retrying ? '⏳' : '⚠'}
       </span>
       <span className="host-error-message">{props.message}</span>
     </div>
@@ -82,6 +164,20 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
   }
 
   if (props.consent === 'accepted') {
+    // The right-drawer host lifecycle: off → Ready to host → Downloading
+    // model… → Loading into GPU… → Hosting N layers. Same signals the
+    // console logs, but a caller (local OR remote) now sees WHY a host isn't
+    // answering yet instead of a stage that claims "ready" mid-download.
+    const lifecycle = deriveHostingLifecycleState({
+      hostingEnabled: props.hostingEnabled,
+      phase: props.phase,
+      claim: props.claim,
+      downloadProgress: props.downloadProgress,
+    });
+    const statusLabel = hostingStatusLabel(lifecycle, {
+      claim: props.claim,
+      capacityPreviewLabel: props.capacitySummaryLabel.replace(/^Hosting\s+/i, ''),
+    });
     return (
       <div className="consent-status" role="region" aria-label="Hosting status">
         <label className="consent-toggle">
@@ -91,17 +187,23 @@ export function HostingConsentBanner(props: HostingConsentBannerProps) {
             disabled={!props.capable}
             onChange={(e) => props.onToggleHosting(e.target.checked)}
           />
-          <span>
-            Hosting{' '}
-            {props.claim
-              ? `layers ${props.claim.layerStart}–${props.claim.layerEnd}`
-              : props.hostingEnabled
-                ? `(${props.phase}…)`
-                : '(off)'}
-          </span>
+          <span className={`consent-status-label consent-status-${lifecycle}`}>{statusLabel}</span>
         </label>
         {!props.capable && <span className="consent-banner-unsupported">{props.unsupportedReason}</span>}
+        <span className="consent-capacity-summary">{props.capacitySummaryLabel}</span>
+        {/* The bar stays visible through 'opening' (every shard fetched, native
+            load into VRAM running) so "Loading into GPU…" isn't a bare spinner.
+            Layer count comes from the actual claim when we have one, so the
+            readout is in the same units the rest of the panel speaks. */}
+        {props.hostingEnabled && (lifecycle === 'downloading' || lifecycle === 'opening') && props.downloadProgress && (
+          <DownloadProgressBar
+            progress={props.downloadProgress}
+            layerCount={props.claim ? claimLayerCount(props.claim) : props.downloadProgress.totalShards}
+            lifecycle={lifecycle}
+          />
+        )}
         {props.hostingEnabled && props.errorMessage && <HostErrorCard message={props.errorMessage} retrying={props.retrying} />}
+        {props.capable && props.contribution && <ContributionPanel {...props.contribution} />}
       </div>
     );
   }

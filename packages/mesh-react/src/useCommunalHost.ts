@@ -51,6 +51,7 @@ import {
   communalHostClaim,
   hostStabilityScore,
   type CommunalClaimRange,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type MeshRosterEntry,
   type Peer,
@@ -59,9 +60,16 @@ import {
 import { fragmentsForRange, manifestTiesEmbeddings, parseLayerPackageManifest, type LayerPackageManifest } from '@unstable-legion/stage-runtime';
 import { useMeshRoster } from './useMeshRoster.js';
 import { useStageHost, type UseStageHostSession, type UseStageHostHandle } from './useStageHost.js';
-import { sanitizeWasmHeapBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
+import { sanitizeWasmHeapBudget, sanitizeWeightBudget, WASM_HEAP_CEILING_BYTES, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import {
+  createColocationCoordinator,
+  getOrCreateFailureDomainId,
+  type ColocationCoordinatorHandle,
+  type ColocationCoordinatorOptions,
+} from './colocation.js';
 import type { StageWorkerLog } from './stageWorkerClient.js';
+import type { StageWorkerLoadProgress } from './stageWorkerProtocol.js';
 import type { PriorityScoreFn } from './stageSessionAdmission.js';
 import {
   claimKey,
@@ -86,6 +94,15 @@ import {
  */
 export const OPFS_QUOTA_CEILING_BYTES = 3_300_000_000;
 
+/**
+ * Safety headroom subtracted from a GENUINE, generous quota estimate
+ * (persisted storage, or a UA reporting real available disk) — never
+ * claim the last byte of available storage (other origins/apps share the
+ * same disk budget; a hair-thin margin risks a mid-write
+ * QuotaExceededError on a slow/large final shard).
+ */
+export const OPFS_QUOTA_SAFETY_MARGIN_BYTES = 1_500_000_000;
+
 export interface UseCommunalHostOptions {
   /** Operator toggle — "participate in the communal pipeline". */
   enabled: boolean;
@@ -97,14 +114,23 @@ export interface UseCommunalHostOptions {
   /** Layers the driver always hosts locally — the communal claim space is
    * `[driverLayers, totalLayers)`. */
   driverLayers: number;
+  /**
+   * OPTIONAL-STAGE0 — when true, this host contributes to the THIN-driver
+   * regime: it claims over `[0, totalLayers)` instead of `[driverLayers,
+   * totalLayers)`, so its lowest claim owns the model's embeddings (an
+   * isFirst communal host) and gives no-GPU peers a remote first stage. The
+   * loaded stage's `layerStart === 0` makes `useStageHost` report
+   * `isFirst`/`includeEmbeddings` automatically. Off by default (the
+   * capable-driver body-host regime). See `docs/OPTIONAL-STAGE0.md`. */
+  supportThinDrivers?: boolean;
   ctxSize: number;
-  wireDtype: 'f32' | 'f16';
+  wireDtype: 'f32' | 'f16' | 'i8';
   /** Layer-package manifest URL (Phase C artifact slicing —
    * `fragmentsForRange`). Absent -> `fallbackShardUrls()` (Phase A/B
    * full.gguf-with-runtime-filter convention) is used instead, and the
    * OPFS-quota check is skipped (no per-fragment byte accounting exists
    * without a manifest). */
-  manifestUrl?: string;
+  manifestUrl?: string | readonly string[];
   fallbackShardUrls?: () => readonly string[];
   /** Uniform per-layer byte estimate, used to convert this peer's
    * WebGPU/wasm capacity into a layer COUNT for `communalHostClaim`. Real
@@ -141,6 +167,65 @@ export interface UseCommunalHostOptions {
    * surfaces an error. Omit to disable telemetry entirely. */
   telemetry?: MeshTelemetrySink;
   log?: StageWorkerLog;
+  /**
+   * Operator opt-in (apps/chat's "Contribute more" panel) — overrides the
+   * WEIGHT budget used for layer-claim sizing, separate from
+   * `wasmHeapBudget` (KV/session sizing, always governed by
+   * `WASM_HEAP_CEILING_BYTES` regardless of this field — see
+   * `stagePipelinePlanning.ts#sanitizeWeightBudget`'s doc comment).
+   * Absent = unchanged default behavior (~11 layers for Qwen3-8B q4).
+   * Clamped to `[avgLayerBytes, CONTRIBUTION_BUDGET_CEILING_BYTES]`.
+   */
+  contributionBudgetBytes?: number;
+  /**
+   * Operator opt-in (apps/chat's "Layers to host: N of 34" slider) — a
+   * DIRECT layer-count cap on the claim WIDTH the assembly loop's greedy
+   * lowest-uncovered-gap claim (`communalHostClaim`, `communalAssembly.ts`)
+   * is willing to take, applied to `selfCapacityLayers` — the SAME
+   * capacity input `contributionBudgetBytes`/VRAM detection ultimately
+   * feeds (see `hostCapacityBytes`'s doc comment: capacity is always
+   * "this host's usable budget for one stage", byte-derived-by-default).
+   * This is an ALTERNATE, more direct way to express that same budget for
+   * users who'd rather pick a layer count than reason about GB — it
+   * REPLACES the byte-derived count (not intersected with it) once set,
+   * mirroring `contributionBudgetBytes`'s own "operator self-report,
+   * clamped only for sanity" trust model (worst case of setting it too
+   * high is a slow/failed load — the hard safety ceiling is
+   * `wasmHeapBudget`/`WASM_HEAP_CEILING_BYTES`, untouched by this field,
+   * same as `contributionBudgetBytes`). `undefined` = unchanged
+   * byte-budget-derived behavior. Clamped to `>= 0`; `communalHostClaim`
+   * itself already clamps the resulting claim width to the actual gap
+   * size, so no upper clamp against `totalLayers - driverLayers` is
+   * needed here.
+   */
+  maxLayersOverride?: number;
+  /**
+   * Same-origin tab colocation (see `colocation.ts`'s module doc) —
+   * collapses hosting to exactly ONE tab per browser profile per machine.
+   * Default `true`. Set `false` to opt this consumer OUT and restore the
+   * pre-fix "every enabled tab hosts independently" behavior (e.g. a host
+   * embedding this hook in a context where each mount is deliberately its
+   * OWN origin/profile, or a test harness that wants the old shape).
+   */
+  colocationEnabled?: boolean;
+  /** Override the failure-domain id this peer advertises (mainly for
+   * tests). Default: `getOrCreateFailureDomainId()` (localStorage-backed,
+   * stable per browser profile). */
+  failureDomainId?: string;
+  /** Injectable coordinator factory (tests pin a fake BroadcastChannel/
+   * LockManager via `ColocationCoordinatorOptions`, or replace the whole
+   * coordinator). Default `createColocationCoordinator`. */
+  createColocationCoordinator?: (opts?: ColocationCoordinatorOptions) => ColocationCoordinatorHandle;
+  /**
+   * REUSE-STAGE0 — passed straight through to the internal `useStageHost`
+   * call's `extraLoadedStages` option, so a peer that ALSO serves its
+   * resident stage-0 (`useLocalStageServe.ts`) advertises both entries in
+   * ONE `cap.stageHost.loadedStages` array. See that option's doc comment
+   * for why this must flow through the SAME `peer.setCap` call site
+   * regardless of whether THIS hook's own hosting is enabled. `undefined`
+   * = unchanged pre-existing behavior.
+   */
+  extraLoadedStages?: readonly MeshLoadedStage[];
 }
 
 export type CommunalHostPhase = 'idle' | 'loading' | 'active' | 'draining' | 'retrying' | 'error';
@@ -171,13 +256,84 @@ export interface UseCommunalHostHandle {
   nextRetryAtMs?: number;
   /** How many load attempts have failed for the current claim. 0 = healthy. */
   retryAttempt: number;
+  /** Per-shard download progress for the stage currently loading — see
+   * `UseStageHostHandle.loadProgress`'s doc comment. Undefined outside an
+   * in-flight load (nothing claimed yet, or already fully loaded/active).
+   * On a follower tab (colocation), this mirrors the leader's relayed
+   * snapshot instead of running its own load. */
+  downloadProgress?: StageWorkerLoadProgress;
 }
 
 const DEFAULT_REASSEMBLY_MS = 5000;
 const DEFAULT_GRACE_MS = 30_000;
 const DEFAULT_GIVE_UP_LABEL_AFTER = 4;
 
-async function probeOpfsQuotaBytes(override?: number): Promise<number> {
+/** Cheap, synchronous, side-effect-free mirror of
+ * `colocation.ts#createColocationCoordinator`'s own `supported` check —
+ * used ONLY to seed `isLeader`'s initial state so a tab that WILL end up
+ * a follower never renders even one frame as "leader" (which could
+ * otherwise kick off a spurious preload before the real coordinator's
+ * async lock resolution corrects it). When this guesses `true` (locks/
+ * BroadcastChannel look present), the real coordinator settles the
+ * authoritative answer moments later via `onLeaderChange`. */
+function colocationLikelySupported(): boolean {
+  return (
+    typeof BroadcastChannel !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    typeof navigator.locks?.request === 'function'
+  );
+}
+
+/**
+ * Best-effort: ask the UA not to evict this origin's OPFS storage under
+ * storage pressure — called once hosting is actually opted into (not on
+ * cold mount, before the user has agreed to anything). On Chromium this
+ * both makes OPFS non-evictable AND typically unlocks a far larger real
+ * quota (a substantial fraction of disk instead of the small default
+ * per-origin slice) — see `probeOpfsQuotaBytes`'s `persisted` param,
+ * which is what actually stops over-3.3GB claims being forced onto the
+ * (never-persisted, wiped-on-retry) in-memory shard store. Never throws;
+ * returns whether persistence is granted (false on any failure or an
+ * unsupported browser) and logs the grant result when `log` is supplied.
+ */
+export async function requestPersistentStorage(log: StageWorkerLog = () => undefined): Promise<boolean> {
+  try {
+    if (typeof navigator === 'undefined' || typeof navigator.storage?.persist !== 'function') return false;
+    const already = (await navigator.storage.persisted?.()) ?? false;
+    if (already) return true;
+    const granted = await navigator.storage.persist();
+    log(`[communal-host] navigator.storage.persist() ${granted ? 'GRANTED' : 'denied'}`);
+    return granted;
+  } catch (err) {
+    log(`[communal-host] navigator.storage.persist() failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Resolves the OPFS byte budget `resolveCommunalShardPlan` weighs a
+ * claim's total fragment bytes against to decide OPFS-cached vs
+ * in-memory (see that function's `useMemoryShardStore` derivation).
+ *
+ * Used to unconditionally cap this at `OPFS_QUOTA_CEILING_BYTES`
+ * (~3.3GB) regardless of what the UA actually reported — which meant
+ * ANY claim bigger than that (a full 34-layer Qwen3-8B range is ~4.7GB)
+ * got the in-memory store, which doesn't survive a worker restart: a
+ * stall-watchdog retry (or a page reload) re-downloaded every shard from
+ * scratch every time, even shards already fetched moments earlier.
+ *
+ * Now: a GENUINE generous estimate — `persisted` storage (see
+ * `requestPersistentStorage`), or a UA reporting more real available
+ * space than the conservative ceiling on its own — is trusted directly
+ * (minus `OPFS_QUOTA_SAFETY_MARGIN_BYTES`), so a host with disk to spare
+ * gets its whole claim OPFS-cached and persisted. The in-memory store
+ * stays the fallback ONLY when the real available quota genuinely can't
+ * fit the range (a small/default-looking estimate, or `estimate()`
+ * itself unavailable/erroring) — `OPFS_QUOTA_CEILING_BYTES` is the
+ * conservative floor for exactly that case, not the default ceiling for
+ * every host.
+ */
+async function probeOpfsQuotaBytes(override?: number, persisted = false): Promise<number> {
   if (override !== undefined) return override;
   try {
     if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
@@ -186,6 +342,10 @@ async function probeOpfsQuotaBytes(override?: number): Promise<number> {
       const usage = est.usage ?? 0;
       const available = quota - usage;
       if (Number.isFinite(available) && available > 0) {
+        const genuinelyGenerous = persisted || available > OPFS_QUOTA_CEILING_BYTES;
+        if (genuinelyGenerous) {
+          return Math.max(0, available - OPFS_QUOTA_SAFETY_MARGIN_BYTES);
+        }
         return Math.min(available, OPFS_QUOTA_CEILING_BYTES);
       }
     }
@@ -214,29 +374,61 @@ interface ShardPlan {
 export async function resolveCommunalShardPlan(
   claim: CommunalClaimRange,
   opts: {
-    manifestUrl?: string;
+    /** One manifest URL, or an ORDERED failover list (first reachable +
+     * parseable source wins; its URL becomes the base every relative
+     * fragment path resolves against, so a manifest and its weights
+     * share an origin unless the manifest carries absolute paths).
+     * apps/chat passes [Hugging Face, jsDelivr/GitHub, cdn.codecai.net]. */
+    manifestUrl?: string | readonly string[];
     fallbackShardUrls?: () => readonly string[];
     opfsQuotaBytes: number;
     fetchImpl?: typeof fetch;
     manifestCache?: { url: string; manifest: LayerPackageManifest } | null;
+    /** Pull the shared embeddings fragment in ADDITION to the layer range.
+     * The driver's local stage-0 (`[0, driverLayers)`) is the FIRST stage and
+     * needs embeddings; communal hosts (which start at `driverLayers`, never
+     * layer 0) do not. Defaults to false so every existing communal-host
+     * caller is unchanged. Model-agnostic: the embeddings fragment and its
+     * size come entirely from the manifest — no hardcoded dimensions. */
+    includeEmbeddings?: boolean;
   },
 ): Promise<{ plan: ShardPlan; manifestCache: { url: string; manifest: LayerPackageManifest } | null }> {
-  if (!opts.manifestUrl) {
+  const manifestUrls = (typeof opts.manifestUrl === 'string' ? [opts.manifestUrl] : [...(opts.manifestUrl ?? [])]).filter(Boolean);
+  if (manifestUrls.length === 0) {
     return {
       plan: { shardUrls: opts.fallbackShardUrls?.() ?? [], useMemoryShardStore: false },
       manifestCache: opts.manifestCache ?? null,
     };
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
-  let cache = opts.manifestCache ?? null;
-  if (!cache || cache.url !== opts.manifestUrl) {
-    const res = await fetchImpl(opts.manifestUrl);
-    if (!res.ok) throw new Error(`failed to fetch communal manifest ${opts.manifestUrl}: ${res.status} ${res.statusText}`);
-    const manifest = parseLayerPackageManifest(await res.json());
-    cache = { url: opts.manifestUrl, manifest };
+  // A cached manifest stays valid as long as its source is still IN the
+  // list — reordering/removing a source invalidates, a lower-priority
+  // cache hit is kept rather than re-probing the primary every tick.
+  let cache = opts.manifestCache && manifestUrls.includes(opts.manifestCache.url) ? opts.manifestCache : null;
+  if (!cache) {
+    let lastError: unknown;
+    for (const url of manifestUrls) {
+      try {
+        const res = await fetchImpl(url);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        cache = { url, manifest: parseLayerPackageManifest(await res.json()) };
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!cache) {
+      throw new Error(
+        `failed to fetch communal manifest from every source (${manifestUrls.join(' → ')}): ` +
+          (lastError instanceof Error ? lastError.message : String(lastError)),
+      );
+    }
   }
   const manifest = cache.manifest;
-  const fragments = fragmentsForRange(manifest, opts.manifestUrl, claim.layerStart, claim.layerEnd, false, claim.includeOutput);
+  // Base URL for relative fragment paths = the WINNING source, not the
+  // primary — a manifest served by the fallback origin must pull its
+  // weights from that same origin (absolute paths are unaffected).
+  const fragments = fragmentsForRange(manifest, cache.url, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {
@@ -262,6 +454,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     modelId,
     totalLayers,
     driverLayers,
+    supportThinDrivers = false,
     ctxSize,
     wireDtype,
     manifestUrl,
@@ -270,12 +463,61 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     reassemblyIntervalMs = DEFAULT_REASSEMBLY_MS,
     priorityScore,
     opfsQuotaBytesOverride,
+    colocationEnabled = true,
     log = () => undefined,
   } = opts;
 
   const roster = useMeshRoster();
   const rosterRef = useRef<readonly MeshRosterEntry[]>(roster);
   rosterRef.current = roster;
+
+  // ── Same-origin tab colocation — one shared host per browser profile ──
+  // (see colocation.ts's module doc). `isLeader` seeds "true" whenever
+  // colocation is off/unsupported (every enabled tab hosts independently,
+  // today's pre-fix behavior) and otherwise seeds via a synchronous guess
+  // that matches the coordinator's own settled answer (see
+  // `colocationLikelySupported`'s doc comment) so a tab that will end up
+  // a follower never renders even one frame as leader.
+  const [failureDomainId] = useState<string | undefined>(() => opts.failureDomainId ?? getOrCreateFailureDomainId());
+  const [isLeader, setIsLeader] = useState<boolean>(() => !colocationEnabled || !colocationLikelySupported());
+  const coordinatorRef = useRef<ColocationCoordinatorHandle | null>(null);
+  const [, bumpSharedStatusTick] = useState(0);
+
+  useEffect(() => {
+    if (!colocationEnabled || !enabled) {
+      // Colocation off, or hosting itself not consented-to: never compete
+      // for the leader lock (a declined tab holding it would starve any
+      // sibling tab that DOES consent — see this hook's PR doc), and no
+      // coordinator exists to follow either. `isLeader: true` here just
+      // means "not a follower of anyone" — the actual GPU/mesh work stays
+      // gated on `hostingActive` (`enabled && isLeader`) regardless, so a
+      // declined tab still does nothing; it just reports its own
+      // (idle) local state instead of mirroring a sibling's.
+      setIsLeader(true);
+      return;
+    }
+    const factory = opts.createColocationCoordinator ?? createColocationCoordinator;
+    const coordinator = factory();
+    coordinatorRef.current = coordinator;
+    setIsLeader(coordinator.isLeader());
+    const unsubLeader = coordinator.onLeaderChange(setIsLeader);
+    const unsubStatus = coordinator.onStatusChange(() => bumpSharedStatusTick((n) => n + 1));
+    return () => {
+      unsubLeader();
+      unsubStatus();
+      coordinator.close();
+      coordinatorRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colocationEnabled, enabled]);
+
+  // The actual GPU-worker/OPFS/mesh-advertise loop runs ONLY on the
+  // elected leader tab (or on every tab when colocation is off/
+  // unsupported, in which case `isLeader` is unconditionally true) —
+  // this is the structural fix for "N same-origin tabs = N independent
+  // hosting attempts": non-leader tabs simply never enable `useStageHost`
+  // or the assembly-loop effect below.
+  const hostingActive = enabled && isLeader;
 
   const [supportState, setSupportState] = useState<{ ok: boolean; reason?: string }>({ ok: true });
   const [limits, setLimits] = useState<StageHostLimits | null>(null);
@@ -306,6 +548,18 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const manifestCacheRef = useRef<{ url: string; manifest: LayerPackageManifest } | null>(null);
   const opfsQuotaBytesRef = useRef<number>(OPFS_QUOTA_CEILING_BYTES);
   const tickInFlightRef = useRef(false);
+  // Anti-thundering-herd stagger, made remount-proof. A fresh claim must
+  // wait out `jitterMs` before committing (so N hosts don't stampede the
+  // same gap). The OLD implementation did that with `await sleep(jitterMs)`
+  // INSIDE the tick — but a background-tab timer throttle stretches that
+  // sleep for many seconds, and any effect remount during it flips the
+  // tick's local `cancelled` and discards the whole commit, so the host
+  // livelocks at 0% (claim decided, never loaded, no fetch, no error). This
+  // ref instead records the claim + a WALL-CLOCK deadline and SURVIVES
+  // remounts: any later tick (interval, scheduled re-tick, or the immediate
+  // tick a remount itself fires) commits it once `Date.now()` passes the
+  // deadline — throttle-proof, since the deadline is real time, not a timer.
+  const pendingClaimRef = useRef<{ claim: CommunalClaimRange; notBeforeMs: number } | null>(null);
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
 
@@ -408,11 +662,36 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   }, []);
 
   // ── The host object this hook drives (owns admission/serving/decode) ──
+  // `enabled: hostingActive` (not the raw `enabled` prop) is the actual
+  // fix for colocated tabs: a follower tab still mounts this hook (so its
+  // own WebGPU feature-detect / support probe still runs, harmlessly),
+  // but never gets its GPU worker started or its `cap.stageHost`
+  // advertised — `useStageHost` already treats `enabled: false` as "stop
+  // advertising, tear nothing new down" (see that hook's "Publish cap"
+  // effect).
   const host: UseStageHostHandle = useStageHost({
-    enabled,
+    enabled: hostingActive,
     peer,
     baseCap: opts.baseCap,
     createStageWorker,
+    // Resolve shards for a SERVED session from THIS host's own manifest — the
+    // driver's `stage.session.open` carries no shardUrls, so without this a
+    // served stage loads zero shards and `legion_stage_open` fails. Same
+    // resolver + manifest the proactive-preload path uses.
+    resolveSessionShards: async ({ layerStart, layerEnd, totalLayers: total }) => {
+      const { plan, manifestCache } = await resolveCommunalShardPlan(
+        { layerStart, layerEnd, includeOutput: layerEnd === total },
+        {
+          manifestUrl,
+          fallbackShardUrls,
+          opfsQuotaBytes: opfsQuotaBytesRef.current,
+          manifestCache: manifestCacheRef.current,
+          includeEmbeddings: layerStart === 0,
+        },
+      );
+      manifestCacheRef.current = manifestCache;
+      return plan.shardUrls;
+    },
     keepaliveEnabled: opts.keepaliveEnabled,
     desiredMaxSessions: opts.desiredMaxSessions,
     priorityScore,
@@ -421,22 +700,79 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     suppressAdvertise,
     forceDisconnect,
     onLifecycle: handleLifecycle,
+    failureDomainId,
+    contributionBudgetBytes: opts.contributionBudgetBytes,
+    extraLoadedStages: opts.extraLoadedStages,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;
   const hostSessionCountRef = useRef(hostSessionCount);
   hostSessionCountRef.current = hostSessionCount;
 
-  // ── Assembly loop ─────────────────────────────────────────────────────
+  // ── Progress clears a stale retry/error ───────────────────────────────
+  // A slow-but-ADVANCING download is not a failure. A single fetch reject on
+  // a throttled network fails the whole load attempt → `scheduleRetry` sets
+  // the "Failed to fetch — retrying" error, and until now that error only
+  // cleared on `load-succeeded` (the WHOLE stage completing) — so it
+  // persisted, and its attempt counter escalated toward the give-up 'error'
+  // label, even as shards kept landing on the next attempt. Whenever the
+  // loaded stage reports FRESH forward progress (bytes/shards increased),
+  // clear that stale error and reset the backoff escalation, so the UI shows
+  // real progress and never gives up while it's genuinely making headway. A
+  // true stall (no progress for `stallMs`) is still caught by the load
+  // watchdog — this reacts only to actual progress.
+  const lastLoadProgressRef = useRef<{ bytes: number; shards: number }>({ bytes: 0, shards: 0 });
   useEffect(() => {
-    if (!enabled || !peer || !supportState.ok || !limits) return;
+    const p = host.loadProgress;
+    if (!p) {
+      // Between attempts the progress clears — reset the baseline so the
+      // next attempt's first shard counts as progress even if it re-fetches
+      // from a lower byte count than a prior aborted attempt reached.
+      lastLoadProgressRef.current = { bytes: 0, shards: 0 };
+      return;
+    }
+    const prev = lastLoadProgressRef.current;
+    const advanced = p.bytesFetched > prev.bytes || p.shardsFetched > prev.shards;
+    lastLoadProgressRef.current = { bytes: p.bytesFetched, shards: p.shardsFetched };
+    if (!advanced) return;
+    // Keep the claim's retry bookkeeping (key/inFlight) but zero its attempt
+    // count: a failure AFTER progress restarts backoff from 0 instead of
+    // escalating, and the give-up label never trips while headway is made.
+    if (retryRef.current) retryRef.current = { ...retryRef.current, attempt: 0 };
+    setErrorState((e) => (e === undefined ? e : undefined));
+    setPhase((ph) => (ph === 'retrying' || ph === 'error' ? 'loading' : ph));
+  }, [host.loadProgress]);
+
+  // ── Assembly loop ─────────────────────────────────────────────────────
+  // Runs ONLY on the elected leader tab (`hostingActive`) — a follower
+  // never computes a claim, never preloads, never advertises. See
+  // colocation.ts's module doc for why: N same-origin tabs must collapse
+  // to exactly one hosting attempt, not one per tab.
+  useEffect(() => {
+    if (!hostingActive || !peer || !supportState.ok || !limits) return;
     // Captured into a local `const` so the nested `tick` closure retains
     // the non-null narrowing (TS doesn't extend narrowing of an outer
     // `useState` value across a nested function declaration boundary).
     const safeLimits = limits;
     const safePeer = peer;
 
-    const selfCapacityLayers = Math.max(0, Math.floor(sanitizeWasmHeapBudget(safeLimits.maxStorageBufferBindingSize) / avgLayerBytes));
+    // WEIGHT budget (layer-claim sizing) — decoupled from wasmHeapBudget
+    // (KV/session sizing, computed separately below via
+    // `hostStabilityScore`'s own `sanitizeWasmHeapBudget` call, untouched
+    // by `contributionBudgetBytes`). See `sanitizeWeightBudget`'s doc
+    // comment for the full root-cause writeup.
+    const weightBudgetBytes = sanitizeWeightBudget(
+      { ...safeLimits, contributionBudgetBytes: opts.contributionBudgetBytes },
+      { minBytes: avgLayerBytes },
+    );
+    const byteDerivedCapacityLayers = Math.max(0, Math.floor(weightBudgetBytes / avgLayerBytes));
+    // "Layers to host: N of 34" REPLACES the byte-derived count once set —
+    // see `maxLayersOverride`'s doc comment for why this isn't intersected
+    // with `byteDerivedCapacityLayers` instead.
+    const selfCapacityLayers =
+      opts.maxLayersOverride !== undefined
+        ? Math.max(0, Math.floor(opts.maxLayersOverride))
+        : byteDerivedCapacityLayers;
     let cancelled = false;
     let jitterTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -450,6 +786,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           modelId,
           totalLayers,
           driverLayers,
+          firstLayer: supportThinDrivers ? 0 : driverLayers,
           selfCapacityLayers,
           selfCurrentClaim: claimRef.current ?? null,
           selfStabilityScore: hostStabilityScore({
@@ -457,6 +794,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
             wasmHeapBudget: sanitizeWasmHeapBudget(safeLimits.maxStorageBufferBindingSize),
             stability: { keepalive: !!opts.keepaliveEnabled, visible: typeof document === 'undefined' || document.visibilityState === 'visible', uptimeMs: 0 },
           }),
+          selfFailureDomainId: failureDomainId,
           priorityScore: priorityScoreRef.current,
         });
         // Log the decision ONLY when it actually changed — the assembly
@@ -516,6 +854,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         }
 
         if (!decision.claim) {
+          pendingClaimRef.current = null; // nothing to claim — drop any armed jitter
           if (phaseRef.current !== 'idle') setPhase('idle');
           return;
         }
@@ -525,11 +864,13 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         const changed = !claimsEqual(claimRef.current, decision.claim);
 
         if (!changed) {
-          // Same claim we already hold. If a load for it FAILED, honor the
-          // backoff window: re-issue the preload ONLY once the scheduled
-          // retry time arrives (never every tick), and never while a retry
-          // load is already in flight. Otherwise stay quiet — this is the
-          // idempotent no-op that replaces the old tight retry loop.
+          // Same claim we already hold — the jitter window is behind us.
+          pendingClaimRef.current = null;
+          // If a load for it FAILED, honor the backoff window: re-issue the
+          // preload ONLY once the scheduled retry time arrives (never every
+          // tick), and never while a retry load is already in flight.
+          // Otherwise stay quiet — the idempotent no-op that replaces the
+          // old tight retry loop.
           const retry = retryRef.current;
           if (retry && retry.key === rangeKey && !retry.inFlight && Date.now() >= retry.nextAttemptAt) {
             retry.inFlight = true;
@@ -539,24 +880,44 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           return;
         }
 
-        // A genuinely NEW claim — clear any prior failure/backoff, jitter,
-        // re-check the roster, then issue the load fresh (attempt 0).
+        // A genuinely NEW claim — clear any prior failure/backoff, then stage
+        // it behind the anti-thundering-herd jitter using a REMOUNT-PROOF
+        // wall-clock deadline (see `pendingClaimRef`) instead of a
+        // `setCancellable(await sleep)` that a background-tab throttle +
+        // remount would silently discard, livelocking the host at 0%.
         retryRef.current = null;
         setErrorState(undefined);
 
-        await new Promise((resolve) => setTimeout(resolve, decision.jitterMs));
-        if (cancelled) return;
-        // Re-check after the jitter delay — the roster may have moved and
-        // this claim may no longer be the right one (another peer beat us
-        // to it, or the gap closed already).
+        let armed = pendingClaimRef.current;
+        if (!armed || !claimsEqual(armed.claim, decision.claim)) {
+          // First sighting of this claim: arm the deadline. A quiet (no
+          // re-render) tab won't re-tick before the ~5s interval, so nudge a
+          // commit-tick just past the deadline; a busy tab's remounts
+          // re-drive the check for free. `jitterMs === 0` makes the deadline
+          // `now`, so it falls straight through to commit on this tick.
+          armed = { claim: decision.claim, notBeforeMs: Date.now() + decision.jitterMs };
+          pendingClaimRef.current = armed;
+          if (decision.jitterMs > 0) {
+            if (jitterTimer) clearTimeout(jitterTimer);
+            jitterTimer = setTimeout(() => void tick(), decision.jitterMs + 20);
+            return;
+          }
+        }
+        if (Date.now() < armed.notBeforeMs) return; // deadline not reached yet
+
+        // Deadline reached — re-check the roster (it may have moved: another
+        // peer beat us to this gap, or the gap closed) and commit fresh.
+        pendingClaimRef.current = null;
         const recheck = communalHostClaim({
           roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
           selfPeerId: safePeer.selfId,
           modelId,
           totalLayers,
           driverLayers,
+          firstLayer: supportThinDrivers ? 0 : driverLayers,
           selfCapacityLayers,
           selfCurrentClaim: claimRef.current ?? null,
+          selfFailureDomainId: failureDomainId,
           priorityScore: priorityScoreRef.current,
         });
         if (!recheck.claim || cancelled) return;
@@ -624,11 +985,16 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // within `issuePreload` would tear the effect down mid-`await`,
     // cancelling the retry it was issuing. The interval alone drives the
     // cadence; the loop only decides intent (useStageHost owns resources).
+    // `hostingActive` (not `isLeader` alone) is the dep — a demotion
+    // (leadership lost) must tear this loop down exactly like `enabled`
+    // going false always has, so a freshly-demoted tab stops ticking
+    // immediately rather than continuing to compute claims it'll never
+    // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, supportThinDrivers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!hostingActive) {
       setClaim(undefined);
       setPreloadStage(null);
       setSuppressAdvertise(false);
@@ -638,7 +1004,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       retryRef.current = null;
       lastDecisionKeyRef.current = '';
     }
-  }, [enabled]);
+  }, [hostingActive]);
 
   useEffect(() => {
     if (phase === 'loading' && host.active && host.stageHostCap?.loadedStages?.length) setPhase('active');
@@ -658,6 +1024,66 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       })
     : undefined;
 
+  // ── Leader -> followers status relay ──────────────────────────────────
+  // Publishes on every render where something a follower cares about
+  // changed. `coordinatorRef.current?.publishStatus` itself no-ops when
+  // called by a non-leader (see colocation.ts), so this stays correct
+  // even for the render(s) right after a demotion.
+  useEffect(() => {
+    if (!hostingActive) return;
+    coordinatorRef.current?.publishStatus({
+      phase,
+      claim,
+      active: host.active && phase === 'active',
+      sessionCount: host.sessions.length,
+      tokensDecoded: host.tokensDecoded,
+      maxSessions: host.maxSessions,
+      queueLength: host.queueLength,
+      errorMessage,
+      retrying: !!errorState?.retrying,
+      retryAttempt: errorState?.attempt ?? 0,
+      downloadProgress: host.loadProgress,
+      ts: Date.now(),
+    });
+  }, [
+    hostingActive,
+    phase,
+    claim,
+    host.active,
+    host.sessions.length,
+    host.tokensDecoded,
+    host.maxSessions,
+    host.queueLength,
+    errorMessage,
+    errorState,
+    host.loadProgress,
+  ]);
+
+  // ── Follower view — mirror the leader's relayed status instead of this
+  // tab's own (intentionally idle) local state. `bumpSharedStatusTick`
+  // (subscribed above) forces this to re-render whenever a fresh status
+  // arrives even though `coordinatorRef.current` itself isn't state. ────
+  if (!isLeader && colocationEnabled) {
+    const shared = coordinatorRef.current?.latestStatus();
+    return {
+      supported: supportState.ok,
+      unsupportedReason: supportState.reason,
+      phase: (shared?.phase as CommunalHostPhase | undefined) ?? 'idle',
+      claim: shared?.claim,
+      active: shared?.active ?? false,
+      sessions: [], // per-session driver detail isn't relayed — see SharedHostStatus's doc comment
+      tokensDecoded: shared?.tokensDecoded ?? 0,
+      maxSessions: shared?.maxSessions ?? 0,
+      queueLength: shared?.queueLength ?? 0,
+      lastError: shared?.errorMessage,
+      errorMessage: shared?.errorMessage,
+      retrying: shared?.retrying ?? false,
+      nextRetryAtMs: undefined,
+      retryAttempt: shared?.retryAttempt ?? 0,
+      downloadProgress: shared?.downloadProgress,
+    };
+  }
+
   return {
     supported: supportState.ok,
     unsupportedReason: supportState.reason,
@@ -673,5 +1099,6 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     retrying: !!errorState?.retrying,
     nextRetryAtMs: errorState?.nextAttemptAtMs,
     retryAttempt: errorState?.attempt ?? 0,
+    downloadProgress: host.loadProgress,
   };
 }

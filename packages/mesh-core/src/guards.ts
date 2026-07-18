@@ -97,7 +97,11 @@ export function isMeshLoadedStage(x: unknown): x is MeshLoadedStage {
   if (typeof x.includeEmbeddings !== 'boolean') return false;
   if (typeof x.includeOutput !== 'boolean') return false;
   if (!Number.isInteger(x.ctxSize) || (x.ctxSize as number) <= 0) return false;
-  if (x.wireDtype !== 'f32' && x.wireDtype !== 'f16') return false;
+  // wireDtype is OPTIONAL (additive-idiom): a peer on a bundle predating the
+  // f16-wire field omits it, and rejecting the whole cap over a missing
+  // descriptor would silently drop a capable stage host on any version skew.
+  // Absent => f16 default at ingestion (collectCommunalAds).
+  if (x.wireDtype !== undefined && x.wireDtype !== 'f32' && x.wireDtype !== 'f16' && x.wireDtype !== 'i8') return false;
   if (!Number.isInteger(x.maxSessions) || (x.maxSessions as number) <= 0) return false;
   if (!Number.isInteger(x.activeSessions) || (x.activeSessions as number) < 0) return false;
   if (!Number.isInteger(x.epoch) || (x.epoch as number) < 0) return false;

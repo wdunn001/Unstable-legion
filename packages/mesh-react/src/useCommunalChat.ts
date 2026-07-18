@@ -54,6 +54,7 @@ import {
   buildCommunalTopology,
   communalAttachOrder,
   planCommunalRoute,
+  planThinDriverRoute,
   runCommunalDriverSession,
   type CommunalRoute,
   type CommunalRouteFn,
@@ -67,6 +68,7 @@ import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './sta
 import { emitTelemetry, type MeshTelemetrySink } from './meshResilience.js';
 import { acquireLeaderLock } from './useStagePipeline.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
+import { resolveCommunalShardPlan, OPFS_QUOTA_CEILING_BYTES } from './useCommunalHost.js';
 import {
   STAGE_CTX_SIZE,
   STAGE_DRIVER_LAYERS,
@@ -88,9 +90,20 @@ export interface UseCommunalChatOptions {
   /** Must match every communal host's own `driverLayers` assumption — see
    * this module's doc comment. Default `STAGE_DRIVER_LAYERS`. */
   driverLayers?: number;
+  /** Per-layer package manifest URL (the SAME one communal hosts use). When
+   * set, the driver's local stage-0 resolves its shards from the manifest
+   * (embeddings + layers `[0, driverLayers)`) via `fragmentsForRange` —
+   * model-agnostic, no monolithic `full.gguf` fetch and no hardcoded
+   * dimensions. Without it, stage-0 falls back to `stageShardUrls()` (the
+   * test-model path). CRITICAL: a driver whose stage-0 loads a DIFFERENT
+   * model file than the communal hosts' sharded package produces
+   * wrong-width activations → the remote stage rejects the frame
+   * ("activation input payload is N bytes, expected M"). The manifest is the
+   * single source of truth that keeps every stage on the same model. */
+  manifestUrl?: string | readonly string[];
   nEmbd?: number;
   ctxSize?: number;
-  wireDtype?: 'f32' | 'f16';
+  wireDtype?: 'f32' | 'f16' | 'i8';
   defaultMaxDecodeTokens?: number;
   leaderLockName?: string;
   /** Forwarded to `planCommunalRoute`/`communalAttachOrder` — see that
@@ -105,6 +118,87 @@ export interface UseCommunalChatOptions {
    * doc comment's "M4" section. Omit to skip telemetry entirely (pure
    * FCFS/no-standing behavior, same as before M4 wiring). */
   standingLedger?: StandingLedger;
+  /**
+   * OPTIONAL-STAGE0 — run as a THIN driver: host NO local stage-0 worker
+   * (this device has no usable WebGPU — see `webgpuLimits.ts`'s `isThinDriver`),
+   * route the FIRST stage to a remote isFirst communal host, and ship
+   * token-ids over the wire. Requires `thinTokenizer` for the CPU-only
+   * tokenize/detokenize a thin device still does locally. When false (the
+   * default), the ordinary capable-driver path runs: local stage 0 +
+   * `planCommunalRoute`. See `docs/OPTIONAL-STAGE0.md`.
+   *
+   * TRUST: in thin mode your RAW TOKEN IDS (trivially your prompt text)
+   * leave the device to the remote first stage — strictly weaker privacy
+   * than the capable path, where embeddings are computed locally first. The
+   * app MUST surface this (see `docs/TRUST.md` + the apps/chat trust UI).
+   */
+  thinDriver?: boolean;
+  /**
+   * CPU-only tokenizer for thin mode (wasm, no WebGPU). Required when
+   * `thinDriver` is true. `nEmbd` must match the mesh's model so the
+   * zero-activation wire frames the orchestrator ships are the right shape.
+   * The demo supplies a tokenizer-only stage worker (no GPU stage loaded);
+   * omitting it in thin mode is an error surfaced at `start()`. */
+  thinTokenizer?: {
+    nEmbd: number;
+    tokenize: (text: string, addSpecial?: boolean) => Promise<number[]>;
+    detokenize: (tokens: readonly number[]) => Promise<string>;
+    dispose?: () => Promise<void> | void;
+  };
+  /**
+   * OPTIONAL-STAGE0 Phase 2 — run as a TEXT-RELAY driver: like `thinDriver`
+   * (no local stage-0), but this device holds NO TOKENIZER AT ALL — not even
+   * the CPU-only wasm one `thinTokenizer` needs (memory-constrained phones
+   * that can't spare its footprint). Implies thin routing internally (no
+   * `thinDriver: true` needed alongside it) and `thinTokenizer` is neither
+   * required nor used. The prompt is sent as raw TEXT to the remote isFirst
+   * host, which tokenizes it server-side; the remote isFinal host detokenizes
+   * its own output and streams incremental TEXT DELTAS back (see
+   * `UseCommunalChatHandle.text`) instead of this hook detokenizing
+   * `tokens` locally. `tokens` state still fills with the real numeric ids
+   * the mesh echoes back (driving the decode loop), but is not otherwise
+   * meaningful client-side in this mode. See
+   * `stageOrchestrator.ts`'s `CommunalDriverSessionOptions.textRelay` for
+   * the full protocol description.
+   *
+   * TRUST: same posture as `thinDriver`'s token-id path, made more literal —
+   * the PROMPT TEXT itself (not just token ids) leaves the device to the
+   * remote first host. The app MUST surface this. Default `false`.
+   */
+  textRelay?: boolean;
+  /**
+   * REUSE-STAGE0 — when true, this driver's own local stage-0 worker
+   * (`[0, driverLayers)`, loaded WITH embeddings — see `thinDriver`'s doc
+   * comment on why that matters: the reused worker already has embeddings,
+   * so the `token_embd` bug a separate isFirst communal claim hit cannot
+   * recur here) is kept RESIDENT at hook lifetime instead of being loaded
+   * fresh and disposed every turn, and loaded with room for
+   * `serveFirstStageMaxSessions` extra lanes so a serving layer can later
+   * open served sessions against the SAME worker — no second `load`, no
+   * second download. See `residentStageZeroRef`.
+   *
+   * OFF (the default) is BYTE-FOR-BYTE today's behavior: `start()` loads a
+   * fresh worker every turn and disposes it in `finally`, exactly as
+   * before this option existed. This hook never inspects `serveFirstStage`
+   * unless it's `true`.
+   *
+   * The driver's OWN chat keeps using the fused (no-`sessionId`)
+   * prefill/decode/reset path regardless — a resident worker's fused lane
+   * is a SEPARATE session from anything a future serving layer opens via
+   * `sessionCreate`, so this driver's own generation and its own
+   * `reset()` never disturb a served lane. Default `false`.
+   */
+  serveFirstStage?: boolean;
+  /**
+   * REUSE-STAGE0 — how many SERVED (non-fused) lanes the resident stage-0
+   * worker reserves room for at load time, on top of the driver's own
+   * fused lane (native `maxSessions` passed to `legion_stage_open` is
+   * `1 + serveFirstStageMaxSessions` — this file OWNS the load, so IT does
+   * that "+1 fused" accounting, mirroring `useStageHost.ts`'s identical
+   * off-by-one; a future serving layer's own ceiling is
+   * `serveFirstStageMaxSessions` with NO further +1). Only meaningful when
+   * `serveFirstStage` is true. Default 1. */
+  serveFirstStageMaxSessions?: number;
   /** Forwarded to `runCommunalDriverSession`. See `useStagePipeline`'s
    * identical option for why the defaults below are generous (cold WebGPU
    * shader compilation on a communal host's first real dispatch). */
@@ -117,8 +211,81 @@ export interface UseCommunalChatOptions {
   log?: StageWorkerLog;
 }
 
+/**
+ * REUSE-STAGE0 — the resident local stage-0 worker exposed for a future
+ * serving layer to ADOPT (open served sessions against the SAME loaded
+ * worker — no second `load`, no second fragment fetch). Mirrors the
+ * subset of `useStageHost.ts`'s internal `LoadedConfig` a serving layer
+ * needs to (a) verify a `stage.session.open` request actually matches what
+ * this worker has loaded (the adopted-mode "assert sameConfig" guard) and
+ * (b) build its own `cap.stageHost.loadedStages` entry.
+ */
+export interface ResidentStageZero {
+  client: StageWorkerClient;
+  modelId: string;
+  /** Always 0 — stage-0 is always the embeddings-inclusive first stage. */
+  layerStart: 0;
+  /** `driverLayers` — the fixed protocol boundary every communal host on
+   * the mesh assumes (see this file's module doc comment, point 1). */
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16' | 'i8';
+  nEmbd: number;
+  /** N — the served (non-fused) lane ceiling this worker was loaded with
+   * room for (native `maxSessions` was `1 + serveMaxSessions`). A serving
+   * layer's OWN admission ceiling is this number, unmodified — it must NOT
+   * add another +1 (that fused lane is this hook's own, not servable). */
+  serveMaxSessions: number;
+  /** Monotonic counter, bumped on every FRESH (re)load of this resident
+   * worker (never on a reuse) — same "fresh load vs stale cap data" signal
+   * `MeshLoadedStage.epoch` documents, threaded straight through so a
+   * serving layer's `cap.stageHost.loadedStages` entry for this stage can
+   * carry a meaningful epoch without inventing its own counter. */
+  epoch: number;
+}
+
+interface ResidentStageZeroLoadedConfig {
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16' | 'i8';
+}
+
+function sameResidentConfig(a: ResidentStageZeroLoadedConfig, b: ResidentStageZeroLoadedConfig): boolean {
+  return (
+    a.modelId === b.modelId &&
+    a.layerStart === b.layerStart &&
+    a.layerEnd === b.layerEnd &&
+    a.totalLayers === b.totalLayers &&
+    a.ctxSize === b.ctxSize &&
+    a.wireDtype === b.wireDtype
+  );
+}
+
 const DEFAULT_BOOTSTRAP_STEP_MS = 120_000;
 const DEFAULT_LOAD_MS = 300_000;
+const DEFAULT_SERVE_FIRST_STAGE_MAX_SESSIONS = 1;
+/**
+ * How long the resident stage-0 worker (see `serveFirstStage`) stays
+ * loaded after the toggle goes OFF before its weights are freed — same
+ * "a blip shouldn't pay a multi-minute reload" rationale, and the same
+ * constant, as `useStageHost.ts`'s `RESIDENT_GRACE_MS`. A true unmount
+ * frees immediately and does not wait this out.
+ */
+const RESIDENT_GRACE_MS = 10 * 60_000;
+/**
+ * Cap on total pipeline stages a route may use. `Infinity` = the host-side
+ * relay is trusted to forward across arbitrarily many hops. Set to `2` as a
+ * runtime kill-switch to pin the mesh to the proven driver→one-remote shape
+ * if a relay regression ever ships — no code change beyond this line. A
+ * topology that needs more hops than this becomes unroutable (the greedy
+ * cover still prefers a single host that spans the whole range, so this only
+ * bites a genuinely fragmented mesh).
+ */
+const MAX_ROUTE_STAGES = Infinity;
 const DEFAULT_PING_MS = 30_000;
 const DEFAULT_LOCK_NAME = 'unstable-legion-communal-chat-driver-leader-v1';
 const DEFAULT_MAX_DECODE_TOKENS = 64;
@@ -133,18 +300,100 @@ export type CommunalChatStatus =
   | { phase: 'aborted'; reason: string }
   | { phase: 'error'; error: string };
 
+/**
+ * Live view of a stage host loading its slice (shard download → native open
+ * → warm-up), surfaced from the orchestrator's `loadProgress` events so the
+ * chat waiting-state can show "Loading Qwen3-8B — shard 24/36 · 2.6/4.4 GB"
+ * instead of a silent multi-minute spinner. Undefined once the pipeline is
+ * assembled (or before any load starts).
+ */
+export interface StageLoadProgressView {
+  stageIndex: number;
+  peerId: string;
+  shardsFetched: number;
+  totalShards: number;
+  bytesFetched: number;
+  totalBytes?: number;
+  phase?: 'downloading' | 'opening' | 'warming';
+}
+
+/** Decode-speed metric for the most recent (or in-flight) generation —
+ * powers the per-response tok/s badge. `tokPerSec` is the DECODE rate
+ * (first generated token → last), which is what a user perceives as
+ * "speed" and excludes the one-time load/prefill/TTFT wait; `ttftMs` is
+ * that wait (session start → first token) surfaced separately. Undefined
+ * until the first token of a generation arrives. */
+export interface ChatGenTiming {
+  /** Generated tokens counted for this metric. */
+  tokenCount: number;
+  /** Wall-clock from first generated token to last (ms). 0 for a 1-token
+   * generation (no interval to measure). */
+  decodeMs: number;
+  /** Decode throughput: `(tokenCount - 1) / (decodeMs/1000)` — the
+   * inter-token rate. Undefined when fewer than 2 tokens (no interval). */
+  tokPerSec?: number;
+  /** Time-to-first-token: session start → first generated token (ms). */
+  ttftMs: number;
+}
+
 export interface UseCommunalChatHandle {
   status: CommunalChatStatus;
   plan?: CommunalRoute['plan'];
   tokens: readonly number[];
   text: string;
   restartCount: number;
+  /** Decode-speed of the latest generation (see `ChatGenTiming`). Reset to
+   * undefined when a new generation starts; set on the first token and
+   * finalized at `finished`. */
+  lastTiming?: ChatGenTiming;
+  /** Live stage-load progress while the pipeline assembles — drives the
+   * chat waiting-state's "shard 24/36 · 2.6/4.4 GB" line. Undefined once
+   * assembled (cleared on the first token) or before any load begins. */
+  loadProgress?: StageLoadProgressView;
   /** stageIndex values that have completed attach (`stage.session.accept`)
    * for the CURRENT route — UI topology display can render a per-stage
    * readiness badge, mirroring `useStagePipeline`'s `readyStageIndexes`. */
   readyStageIndexes: readonly number[];
-  start: (prompt: string, opts?: { maxDecodeTokens?: number }) => Promise<void>;
+  /**
+   * Latest `sendStageFrame` byte size per DESTINATION peerId, captured from
+   * the same `loggedPeer.sendStageFrame` wrapper that already logs
+   * "sendStageFrame -> ... (N bytes)" — observability for the chat app's
+   * per-hop pipeline-handoff display (byte size shown directly, and the
+   * DERIVED wire dtype via mesh-core's `wireDtypeFromFrameBytes`, never a
+   * separately-plumbed dtype field). Reset to `{}` at the start of every
+   * `start()` call so a hop from a replaced/replanned-away route doesn't
+   * linger; a peerId with no entry means no frame has been sent to it yet
+   * this session (the UI should show "—", not guess).
+   */
+  hopBytes?: Readonly<Record<string, number>>;
+  /**
+   * Run one full session. Resolves `true` when the session ran to its end
+   * (any outcome — finished/aborted/error) and every resource is released;
+   * resolves `false` when it REFUSED to start (a previous session is still
+   * running or tearing down, no peer, or lost the cross-tab leader lock).
+   * TOOL-NODES relies on the distinction: the multi-round loop restarts
+   * generation on `finished`, which fires BEFORE the previous run's
+   * teardown clears the running guard — a caller seeing `false` should
+   * retry briefly, not conclude the mesh is broken.
+   */
+  start: (prompt: string, opts?: { maxDecodeTokens?: number }) => Promise<boolean>;
   abort: (reason?: string) => void;
+  /** True while a session holds the run guard — INCLUDING the teardown
+   * window after `status` already reads `finished` (worker dispose + lock
+   * release are awaited before the guard clears). A caller that wants to
+   * chain a new `start()` off a finished session must wait for this to go
+   * false first, or its `start()` returns `false` untried. */
+  isRunning: () => boolean;
+  /**
+   * REUSE-STAGE0 — a hook-lifetime-stable ref exposing the resident stage-0
+   * worker when `serveFirstStage` is on (see that option's doc comment).
+   * `.current` is `null` until the first turn after toggling it on actually
+   * loads the worker, and `null` again after the idle-grace/unmount
+   * dispose. MUTATED IN PLACE — a consumer (a future serving layer) must
+   * read `.current` fresh on every use, never destructure once and cache.
+   * Always `null` when `serveFirstStage` is off.
+   */
+  residentStageZeroRef: { readonly current: ResidentStageZero | null };
 }
 
 export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHandle {
@@ -154,14 +403,20 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     modelId = STAGE_MODEL_ID,
     totalLayers = STAGE_TOTAL_LAYERS,
     driverLayers = STAGE_DRIVER_LAYERS,
+    manifestUrl,
     nEmbd = STAGE_N_EMBD,
     ctxSize = STAGE_CTX_SIZE,
-    wireDtype = 'f32',
+    wireDtype = 'i8',
     defaultMaxDecodeTokens = DEFAULT_MAX_DECODE_TOKENS,
     leaderLockName = DEFAULT_LOCK_NAME,
     spreadWidth = 3,
     priorityScore = () => 0,
     standingLedger,
+    thinDriver = false,
+    thinTokenizer,
+    textRelay = false,
+    serveFirstStage = false,
+    serveFirstStageMaxSessions = DEFAULT_SERVE_FIRST_STAGE_MAX_SESSIONS,
     timeouts,
     queueWaitMs,
     replanJitterMs,
@@ -175,16 +430,232 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   const [text, setText] = useState('');
   const [restartCount, setRestartCount] = useState(0);
   const [readyStageIndexes, setReadyStageIndexes] = useState<readonly number[]>([]);
+  const [loadProgress, setLoadProgress] = useState<StageLoadProgressView | undefined>(undefined);
+  const [lastTiming, setLastTiming] = useState<ChatGenTiming | undefined>(undefined);
 
   const lockRef = useRef<{ release: () => void } | null>(null);
   const localWorkerRef = useRef<StageWorkerClient | null>(null);
   const sessionRef = useRef<StageSessionHandle | null>(null);
   const runningRef = useRef(false);
+  // Latest sendStageFrame byte size per destination peerId — see
+  // UseCommunalChatHandle.hopBytes's doc comment. A ref (not state):
+  // updated once per outbound stage frame (same frequency as the 'token'
+  // event, which already triggers a re-render via setTokens), so there's
+  // no need for its own render-triggering state churn — by the time a
+  // consumer's render reads it, the correlated token-driven re-render has
+  // already happened.
+  const hopBytesRef = useRef<Record<string, number>>({});
+
+  // ── REUSE-STAGE0 (serveFirstStage) — the resident stage-0 worker's
+  // engine state, hook-lifetime (survives every `start()`/`finally`
+  // teardown, unlike `localWorkerRef` above which is scoped to the
+  // CURRENT turn) — mirrors `useStageHost.ts`'s `engineRef`/`StageEngine`
+  // doc comment: holding this in a ref (not component state) is what lets
+  // a re-render never accidentally tear down a worker that took real
+  // shard-download time to load. `residentStageZeroRef` is the PUBLIC
+  // (readonly-typed) view of the same underlying object a future serving
+  // layer adopts — see `UseCommunalChatHandle.residentStageZeroRef`'s doc
+  // comment. Both refs are created once and mutated in place, never
+  // reassigned, so their identity is stable for the life of the hook. ────
+  const residentEngineRef = useRef<{
+    client: StageWorkerClient | null;
+    config: ResidentStageZeroLoadedConfig | null;
+    loadInFlight: Promise<StageWorkerClient> | null;
+    serveMaxSessions: number;
+    loadEpoch: number;
+  }>({ client: null, config: null, loadInFlight: null, serveMaxSessions: 0, loadEpoch: 0 });
+  const residentStageZeroRef = useRef<ResidentStageZero | null>(null);
+  const disposeResidentTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Same `logRef` discipline `useStageHost.ts` documents at length (see
+  // that file's `logRef`/DEBUG-CASEFILE.md note): the grace-timer/unmount
+  // effects below must NOT depend on the caller's `log` callback identity
+  // (which churns every render whenever `log` is an inline arrow) — doing
+  // so would tear down and re-arm the grace timer on every unrelated
+  // re-render, and a timer that's perpetually cancelled-and-restarted
+  // never actually fires, silently pinning the resident worker's weights
+  // in VRAM forever after the toggle goes off.
+  const logRef = useRef(log);
+  logRef.current = log;
+
+  /** Free the resident stage-0 worker (if any) and clear its public ref.
+   * Stable identity (empty deps — reads `log`/engine state via refs) so
+   * the grace-timer/unmount effects below never restart because of it. */
+  const disposeResidentStageZero = useCallback((reason: string): void => {
+    const eng = residentEngineRef.current;
+    const client = eng.client;
+    eng.client = null;
+    eng.config = null;
+    eng.loadInFlight = null;
+    eng.serveMaxSessions = 0;
+    residentStageZeroRef.current = null;
+    if (client) {
+      logRef.current(`[communal-chat] freeing resident stage-0 (${reason})`);
+      void client.dispose().catch(() => undefined);
+    }
+  }, []);
+
+  // True unmount (tab/route gone) — free the resident worker immediately,
+  // regardless of the idle grace window below. Mirrors
+  // `useStageHost.ts`'s identical true-unmount-always-frees effect.
+  useEffect(() => {
+    return () => disposeResidentStageZero('component unmounted');
+  }, [disposeResidentStageZero]);
+
+  // A SUSTAINED `serveFirstStage: false` frees the resident worker's VRAM;
+  // a transient toggle-off (or a re-render) must not — same rationale as
+  // `useStageHost.ts`'s identical `RESIDENT_GRACE_MS` effect (a cold
+  // reload is a multi-minute multi-GB round trip). Re-enabling inside the
+  // window cancels the pending free entirely and the worker is reused
+  // as-is (see `ensureResidentStageZero` below).
+  useEffect(() => {
+    if (serveFirstStage) {
+      if (disposeResidentTimerRef.current !== undefined) {
+        clearTimeout(disposeResidentTimerRef.current);
+        disposeResidentTimerRef.current = undefined;
+      }
+      return;
+    }
+    disposeResidentTimerRef.current = setTimeout(() => {
+      disposeResidentTimerRef.current = undefined;
+      disposeResidentStageZero(`serveFirstStage off for ${Math.round(RESIDENT_GRACE_MS / 60_000)}min`);
+    }, RESIDENT_GRACE_MS);
+    return () => {
+      if (disposeResidentTimerRef.current !== undefined) {
+        clearTimeout(disposeResidentTimerRef.current);
+        disposeResidentTimerRef.current = undefined;
+      }
+    };
+  }, [serveFirstStage, disposeResidentStageZero]);
+
+  /**
+   * Ensure the resident stage-0 worker is loaded and matches the CURRENT
+   * `serveFirstStage` config (model/layers/ctx/dtype AND the served-lane
+   * ceiling) — reuses it as-is when it already matches (the common case:
+   * every turn after the first while `serveFirstStage` stays on), awaits
+   * an in-flight load from a near-simultaneous call instead of starting a
+   * second one, and otherwise (re)loads it exactly the way the non-
+   * resident per-turn path always has (same manifest resolution, same
+   * `warmUpStageWorker` dispatch) — the only difference is `maxSessions:
+   * 1 + serveFirstStageMaxSessions` at load time (see
+   * `ResidentStageZero.serveMaxSessions`'s doc comment for the off-by-one)
+   * and that the loaded worker is stashed on `residentEngineRef` instead
+   * of being torn down in `start()`'s `finally`.
+   */
+  const ensureResidentStageZero = useCallback(async (): Promise<StageWorkerClient> => {
+    const eng = residentEngineRef.current;
+    const want: ResidentStageZeroLoadedConfig = { modelId, layerStart: 0, layerEnd: driverLayers, totalLayers, ctxSize, wireDtype };
+    if (eng.client && eng.config && sameResidentConfig(eng.config, want) && eng.serveMaxSessions === serveFirstStageMaxSessions) {
+      return eng.client;
+    }
+    if (eng.loadInFlight) {
+      const client = await eng.loadInFlight.catch(() => null);
+      if (client && eng.client && eng.config && sameResidentConfig(eng.config, want) && eng.serveMaxSessions === serveFirstStageMaxSessions) {
+        return client;
+      }
+    }
+    const doLoad = (async (): Promise<StageWorkerClient> => {
+      // A stale resident (different config/ceiling than what's wanted NOW)
+      // must be freed before loading fresh — same "never leave two
+      // worker instances alive" discipline as `useStageHost.ts`'s
+      // `ensureWorkerLoaded` -> `disposeWorker` call.
+      if (eng.client) {
+        const stale = eng.client;
+        eng.client = null;
+        eng.config = null;
+        residentStageZeroRef.current = null;
+        await stale.dispose().catch(() => undefined);
+      }
+      const { plan: stage0Plan } = await resolveCommunalShardPlan(
+        { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+        {
+          manifestUrl,
+          fallbackShardUrls: stageShardUrls,
+          includeEmbeddings: true,
+          opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+        },
+      );
+      const client = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0-resident', logRef.current);
+      await client.load(
+        {
+          modelId,
+          layerStart: 0,
+          layerEnd: driverLayers,
+          totalLayers,
+          shardUrls: stage0Plan.shardUrls,
+          shardHashes: stage0Plan.shardHashes,
+          shardBytes: stage0Plan.shardBytes,
+          ctxSize,
+          // RESIDENT SERVE — reserve N extra lanes beyond this hook's own
+          // fused (no-sessionId) lane, so a future serving layer can adopt
+          // this SAME worker for served sessions with no second load. See
+          // `ResidentStageZero.serveMaxSessions`'s doc comment.
+          maxSessions: 1 + serveFirstStageMaxSessions,
+        },
+        { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+      );
+      logRef.current(`[communal-chat] resident stage-0 loaded (nEmbd=${client.nEmbd}); warming up…`);
+      await warmUpStageWorker(client, logRef.current);
+      logRef.current('[communal-chat] resident stage-0 warm-up done');
+      eng.client = client;
+      eng.config = want;
+      eng.serveMaxSessions = serveFirstStageMaxSessions;
+      eng.loadEpoch += 1;
+      residentStageZeroRef.current = {
+        client,
+        modelId,
+        layerStart: 0,
+        layerEnd: driverLayers,
+        totalLayers,
+        ctxSize,
+        wireDtype,
+        nEmbd: client.nEmbd,
+        serveMaxSessions: serveFirstStageMaxSessions,
+        epoch: eng.loadEpoch,
+      };
+      return client;
+    })();
+    eng.loadInFlight = doLoad;
+    try {
+      return await doLoad;
+    } finally {
+      if (eng.loadInFlight === doLoad) eng.loadInFlight = null;
+    }
+  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
+
+  // EAGER SERVE — the instant "Serve the first stage" is on, load the
+  // resident stage-0 (don't wait for this peer to send its own first chat).
+  // Two problems this fixes: (1) a thin client that routes here would
+  // otherwise wait out the full [0, driverLayers) shard download on demand,
+  // and (2) `residentStageZeroRef` (hence the served-stage advertisement in
+  // useLocalStageServe) only becomes non-null AFTER load+warm-up, so eager
+  // loading is also what keeps this peer from being advertised as a stage-0
+  // host BEFORE the weights are actually in VRAM. A transient toggle-off is
+  // still absorbed by the RESIDENT_GRACE_MS effect above (no cold re-load).
+  useEffect(() => {
+    if (!serveFirstStage) return;
+    let cancelled = false;
+    void ensureResidentStageZero().catch((err) => {
+      if (!cancelled) {
+        logRef.current(`[communal-chat] eager resident stage-0 load failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [serveFirstStage, ensureResidentStageZero]);
 
   const teardownLocalWorker = useCallback(async () => {
     const w = localWorkerRef.current;
     localWorkerRef.current = null;
-    if (w) await w.dispose().catch(() => undefined);
+    // A RESIDENT stage-0 worker (serveFirstStage on) must survive this
+    // turn's teardown — it's freed only by the idle-grace/unmount effects
+    // above, never here. Identity comparison (not a separate boolean flag)
+    // is the simplest correct test: `w` is the SAME client instance as
+    // `residentEngineRef.current.client` iff `start()` adopted the
+    // resident worker this turn instead of creating a transient one.
+    if (w && w !== residentEngineRef.current.client) {
+      await w.dispose().catch(() => undefined);
+    }
   }, []);
 
   const abort = useCallback((reason?: string) => {
@@ -192,11 +663,11 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   }, []);
 
   const start = useCallback(
-    async (prompt: string, startOpts?: { maxDecodeTokens?: number }) => {
-      if (runningRef.current) return;
+    async (prompt: string, startOpts?: { maxDecodeTokens?: number }): Promise<boolean> => {
+      if (runningRef.current) return false;
       if (!peer) {
         setStatus({ phase: 'error', error: 'mesh not connected' });
-        return;
+        return false;
       }
       runningRef.current = true;
       setPlan(undefined);
@@ -204,13 +675,14 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       setText('');
       setRestartCount(0);
       setReadyStageIndexes([]);
+      hopBytesRef.current = {};
       setStatus({ phase: 'planning' });
 
       const lock = await acquireLeaderLock(leaderLockName);
       if (!lock) {
         setStatus({ phase: 'follower' });
         runningRef.current = false;
-        return;
+        return false;
       }
       lockRef.current = lock;
       emitTelemetry(telemetry, { name: 'chat_started', props: { modelId } });
@@ -218,48 +690,157 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       const t0 = Date.now();
       const elapsed = () => `+${Date.now() - t0}ms`;
 
+      // Decode-speed metric (see ChatGenTiming / the tok/s badge). Spans the
+      // WHOLE generation (across any replan) — first generated token to last
+      // — so a replan's re-prefill pause honestly shows up as lower tok/s
+      // rather than being hidden. `t0` is the session-start anchor for TTFT.
+      let genFirstTokenAt = 0;
+      let genLastTokenAt = 0;
+      let genTokenCount = 0;
+      setLastTiming(undefined);
+
+      // textRelay implies thin routing (no local stage 0) — see
+      // `textRelay`'s doc comment. A caller sets `textRelay: true` alone;
+      // `thinDriver: true` is not required alongside it.
+      const effectiveThin = thinDriver || textRelay;
+
       /** Build (or rebuild, for a replan) a `CommunalRoute` from the LIVE
        * roster — pure read, no I/O, cheap enough to call fresh every time
        * rather than caching (`buildCommunalTopology`'s own doc comment:
        * "cheap to call on every roster change"). */
       function buildRoute(excludePeerIds: readonly string[]): CommunalRoute | null {
         const roster = peer!.roster.snapshot();
-        const topology = buildCommunalTopology(roster, { modelId, totalLayers, driverLayers }, { excludePeerIds });
-        const routePlan = planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype });
+        // Thin/textRelay drivers cover [0, totalLayers) and need a remote
+        // isFirst host; capable drivers cover [driverLayers, totalLayers)
+        // and host [0, driverLayers) locally. The `communalStart` + planner
+        // differ; the attach-order/candidate shape is identical.
+        const topology = buildCommunalTopology(
+          roster,
+          { modelId, totalLayers, driverLayers, ...(effectiveThin ? { communalStart: 0 } : {}) },
+          { excludePeerIds },
+        );
+        const routePlan = effectiveThin
+          ? planThinDriverRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES })
+          : planCommunalRoute(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth, nEmbd, wireDtype, maxStages: MAX_ROUTE_STAGES });
         if (!routePlan) return null;
         const attachOrder = communalAttachOrder(topology, { driverPeerId: peer!.selfId, priorityScore, spreadWidth });
         return { plan: routePlan, attachOrder };
       }
 
       try {
-        const gpu = await detectWebGpuLimits();
-        if (!gpu.ok) throw new Error(gpu.reason ?? 'WebGPU unavailable for local stage-0');
+        // Capable drivers need usable WebGPU for the local stage 0. A
+        // THIN/TEXT-RELAY driver deliberately has none — it hosts no stage
+        // and relies on a remote isFirst host (see `docs/OPTIONAL-STAGE0.md`),
+        // so the WebGPU gate is skipped. The token-id thin path still needs a
+        // CPU-only tokenizer of its own; textRelay needs none at all (the
+        // isFirst host tokenizes server-side).
+        if (!effectiveThin) {
+          const gpu = await detectWebGpuLimits();
+          if (!gpu.ok) throw new Error(gpu.reason ?? 'WebGPU unavailable for local stage-0');
+        } else if (!textRelay && !thinTokenizer) {
+          throw new Error('thinDriver mode requires a `thinTokenizer` (CPU-only tokenize/detokenize)');
+        }
 
         const initialRoute = buildRoute([]);
         if (!initialRoute) {
           throw new Error(
-            'no feasible communal route — mesh coverage has a gap, or no communal hosts have advertised loadedStages yet',
+            effectiveThin
+              ? 'no feasible THIN communal route — no remote isFirst host covers [0, X) with embeddings yet (a thin/textRelay driver needs one to host its first stage)'
+              : 'no feasible communal route — mesh coverage has a gap, or no communal hosts have advertised loadedStages yet',
           );
         }
         setPlan(initialRoute.plan);
         setStatus({ phase: 'starting' });
         log(
-          `[communal-chat] route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
+          `[communal-chat] ${effectiveThin ? 'THIN ' : ''}route: ${initialRoute.plan.stages.map((s) => `${s.peerId}[${s.layerStart},${s.layerEnd})`).join(' -> ')}`,
         );
 
-        const localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
-        await localWorker.load({
-          modelId,
-          layerStart: 0,
-          layerEnd: driverLayers,
-          totalLayers,
-          shardUrls: stageShardUrls(),
-          ctxSize,
-        });
-        log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
-        await warmUpStageWorker(localWorker, log);
-        log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
-        localWorkerRef.current = localWorker;
+        // The local CPU work a driver always does — tokenize/detokenize. In
+        // capable mode this is the loaded stage-0 worker; in thin mode it's
+        // the injected CPU tokenizer (no GPU stage loaded at all); in
+        // textRelay mode there is no local tokenize/detokenize at all.
+        let localWorker: StageWorkerClient | null = null;
+        if (!effectiveThin) {
+          if (serveFirstStage) {
+            // REUSE-STAGE0 — adopt the RESIDENT worker (loaded once, kept
+            // warm across turns, loaded with room for served lanes) instead
+            // of loading + disposing a fresh one this turn. See
+            // `ensureResidentStageZero`'s doc comment; `teardownLocalWorker`
+            // below already knows not to dispose this worker in `finally`
+            // (identity check against `residentEngineRef.current.client`).
+            log(`[communal-chat] ${elapsed()} serveFirstStage on — adopting resident stage-0 (N=${serveFirstStageMaxSessions} served lane(s))`);
+            localWorker = await ensureResidentStageZero();
+            log(`[communal-chat] ${elapsed()} resident stage-0 adopted (nEmbd=${localWorker.nEmbd})`);
+          } else {
+            // Resolve stage-0's shards from the SAME per-layer manifest the
+            // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
+            // the monolithic `full.gguf` fallback. This keeps every stage on one
+            // model: a stage-0 loaded from a different artifact than the sharded
+            // package emits wrong-width activations the remote stage rejects
+            // ("activation input payload is N bytes, expected M"). Model-agnostic
+            // — widths/fragments come from the manifest. Falls back to
+            // `stageShardUrls()` only when no manifest is set (the test model).
+            const { plan: stage0Plan } = await resolveCommunalShardPlan(
+              { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+              {
+                manifestUrl,
+                fallbackShardUrls: stageShardUrls,
+                includeEmbeddings: true,
+                opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+              },
+            );
+            localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
+            await localWorker.load(
+              {
+                modelId,
+                layerStart: 0,
+                layerEnd: driverLayers,
+                totalLayers,
+                shardUrls: stage0Plan.shardUrls,
+                shardHashes: stage0Plan.shardHashes,
+                shardBytes: stage0Plan.shardBytes,
+                ctxSize,
+              },
+              { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+            );
+            log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
+            await warmUpStageWorker(localWorker, log);
+            log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
+          }
+          localWorkerRef.current = localWorker;
+        } else if (textRelay) {
+          log(`[communal-chat] ${elapsed()} text-relay driver — no local stage, no local tokenizer (nEmbd=${nEmbd})`);
+        } else {
+          log(`[communal-chat] ${elapsed()} thin driver — no local stage, CPU tokenizer only (nEmbd=${thinTokenizer!.nEmbd})`);
+        }
+
+        // TEXT-RELAY: no tokenizer exists on this device at all — the isFirst
+        // host tokenizes the prompt server-side and the isFinal host streams
+        // decoded text back (see the 'token' event's `text` handling below).
+        // These stubs exist only to satisfy the shape every mode shares; the
+        // orchestrator never calls tokenize/detokenize in textRelay mode
+        // (see `CommunalDriverSessionOptions.textRelay`'s doc comment).
+        const tokenizer = textRelay
+          ? {
+              nEmbd,
+              tokenize: async (): Promise<number[]> => {
+                throw new Error('textRelay driver must not tokenize locally');
+              },
+              detokenize: async (): Promise<string> => {
+                throw new Error('textRelay driver must not detokenize locally');
+              },
+            }
+          : thinDriver
+            ? {
+                nEmbd: thinTokenizer!.nEmbd,
+                tokenize: (t: string) => thinTokenizer!.tokenize(t, true),
+                detokenize: (toks: readonly number[]) => thinTokenizer!.detokenize(toks),
+              }
+            : {
+                nEmbd: localWorker!.nEmbd,
+                tokenize: (t: string) => localWorker!.tokenize(t, true),
+                detokenize: (toks: readonly number[]) => localWorker!.detokenize([...toks]),
+              };
 
         // ── M4 telemetry bookkeeping — per ATTACHED segment (reset on
         // every planCreated/replan), not per whole chat: a replan means a
@@ -292,6 +873,14 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           ...peer,
           sendStageFrame: async (bytes, peers) => {
             log(`[communal-chat] ${elapsed()} sendStageFrame -> ${JSON.stringify(peers)} (${bytes.byteLength} bytes)`);
+            // Pipeline-handoff UI observability: last frame size per
+            // destination peerId (see UseCommunalChatHandle.hopBytes).
+            // `peers` may be a bare peerId or a list (a route can fan a
+            // single frame out to more than one destination).
+            const targets = peers === undefined ? [] : Array.isArray(peers) ? peers : [peers];
+            for (const targetId of targets) {
+              hopBytesRef.current = { ...hopBytesRef.current, [targetId]: bytes.byteLength };
+            }
             try {
               await peer!.sendStageFrame(bytes, peers);
             } catch (err) {
@@ -311,12 +900,19 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           modelId,
           prompt,
           maxDecodeTokens: startOpts?.maxDecodeTokens ?? defaultMaxDecodeTokens,
+          thinDriver: effectiveThin,
+          textRelay,
           localHooks: {
-            nEmbd: localWorker.nEmbd,
-            tokenize: (t) => localWorker.tokenize(t, true),
-            detokenize: (toks) => localWorker.detokenize([...toks]),
-            reset: () => localWorker.reset(),
+            nEmbd: tokenizer.nEmbd,
+            tokenize: (t) => tokenizer.tokenize(t),
+            detokenize: (toks) => tokenizer.detokenize(toks),
+            // In thin mode the orchestrator never calls reset/prefill/decode
+            // (it synthesizes zero-activation frames and the remote isFirst
+            // host embeds from the token sideband) — these stubs exist only
+            // to satisfy the `DriverStageHooks` shape and must never run.
+            reset: () => (localWorker ? localWorker.reset() : Promise.resolve()),
             prefill: async (toks, positions) => {
+              if (!localWorker) throw new Error('thin driver: local prefill must not be called');
               log(`[communal-chat] ${elapsed()} local prefill start (tokens=${toks.length})`);
               const res = await localWorker.prefill([...toks], [...positions]);
               log(`[communal-chat] ${elapsed()} local prefill done`);
@@ -324,6 +920,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               return { activation: new Float32Array(res.activation.payload) };
             },
             decode: async (token) => {
+              if (!localWorker) throw new Error('thin driver: local decode must not be called');
               const res = await localWorker.decode(token);
               if (!res.activation) throw new Error('local stage-0 decode produced no activation');
               return { activation: new Float32Array(res.activation.payload) };
@@ -365,6 +962,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
               setPlan(ev.plan);
               setRestartCount(ev.restartCount);
               setReadyStageIndexes([]);
+              setLoadProgress(undefined);
               segmentStartAt = Date.now();
               segmentTokenCount = 0;
               segmentHostLayers = ev.plan.stages
@@ -374,16 +972,46 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'stageReady': {
               setReadyStageIndexes((prev) => (prev.includes(ev.stageIndex) ? prev : [...prev, ev.stageIndex]));
+              // This stage finished loading — drop its in-flight progress so
+              // the UI doesn't keep showing a load line for an assembled stage.
+              setLoadProgress((prev) => (prev && prev.stageIndex === ev.stageIndex ? undefined : prev));
+              break;
+            }
+            case 'loadProgress': {
+              setLoadProgress({
+                stageIndex: ev.stageIndex,
+                peerId: ev.peerId,
+                shardsFetched: ev.shardsFetched,
+                totalShards: ev.totalShards,
+                bytesFetched: ev.bytesFetched,
+                totalBytes: ev.totalBytes,
+                phase: ev.phase,
+              });
               break;
             }
             case 'token': {
               segmentTokenCount += 1;
+              const tokAt = Date.now();
+              if (genFirstTokenAt === 0) genFirstTokenAt = tokAt;
+              genLastTokenAt = tokAt;
+              genTokenCount += 1;
+              setLoadProgress(undefined); // assembled + generating — no more load line
               const { generatedTokens } = handle.tokenHistory();
               setTokens(generatedTokens);
-              void localWorker
-                .detokenize([...generatedTokens])
-                .then(setText)
-                .catch(() => undefined);
+              if (textRelay) {
+                // No local tokenizer to detokenize with — accumulate the
+                // incremental TEXT DELTA the isFinal host already streamed
+                // back (see stage.token's `text` field / the orchestrator's
+                // `textRelay` doc comment). `ev.text` can be absent/empty on
+                // a step whose token didn't complete a safely-emittable
+                // UTF-8 chunk (host-side buffering, see
+                // `incrementalTextStream.ts`).
+                if (ev.text) setText((prev) => prev + ev.text);
+              } else {
+                void Promise.resolve(tokenizer.detokenize(generatedTokens))
+                  .then(setText)
+                  .catch(() => undefined);
+              }
               break;
             }
             case 'aborted': {
@@ -398,6 +1026,15 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
             }
             case 'finished': {
               recordSegmentTelemetry(true);
+              if (genFirstTokenAt > 0) {
+                const decodeMs = Math.max(0, genLastTokenAt - genFirstTokenAt);
+                setLastTiming({
+                  tokenCount: genTokenCount,
+                  decodeMs,
+                  tokPerSec: genTokenCount > 1 && decodeMs > 0 ? (genTokenCount - 1) / (decodeMs / 1000) : undefined,
+                  ttftMs: Math.max(0, genFirstTokenAt - t0),
+                });
+              }
               setStatus((prev) => (prev.phase === 'aborted' ? prev : { phase: 'finished' }));
               break;
             }
@@ -417,7 +1054,9 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
         lockRef.current?.release();
         lockRef.current = null;
         runningRef.current = false;
+        setLoadProgress(undefined);
       }
+      return true;
     },
     [
       peer,
@@ -433,6 +1072,12 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       spreadWidth,
       priorityScore,
       standingLedger,
+      thinDriver,
+      thinTokenizer,
+      textRelay,
+      serveFirstStage,
+      serveFirstStageMaxSessions,
+      ensureResidentStageZero,
       timeouts,
       queueWaitMs,
       replanJitterMs,
@@ -451,5 +1096,21 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     };
   }, [teardownLocalWorker]);
 
-  return { status, plan, tokens, text, restartCount, readyStageIndexes, start, abort };
+  const isRunning = useCallback(() => runningRef.current, []);
+
+  return {
+    status,
+    plan,
+    tokens,
+    text,
+    restartCount,
+    readyStageIndexes,
+    loadProgress,
+    lastTiming,
+    hopBytes: hopBytesRef.current,
+    start,
+    abort,
+    isRunning,
+    residentStageZeroRef,
+  };
 }
