@@ -1077,7 +1077,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               },
             ),
           { stallMs: LOAD_STALL_MS, ceilingMs: LOAD_CEILING_MS },
-        ).catch((err) => {
+        ).catch(async (err) => {
+          // Dispose the worker whose load FAILED before the caller retries with
+          // a fresh one. A failed load never reaches `engine.workerClient =
+          // client` below, so `disposeWorker()` (which only frees the ASSIGNED
+          // worker) would never touch it — its partial in-heap MEMFS staging
+          // (up to ~the model's byte size) would linger and STACK across
+          // retries, making each attempt OOM sooner (observed on 14B: fail at
+          // shard 38 → shard 1 → before any shard). Terminating the worker
+          // frees that heap so every retry starts from a clean slate.
+          await client.dispose().catch(() => undefined);
           if (err instanceof StallTimeoutError) {
             throw new Error(`stage worker load ${err.message}`);
           }
@@ -1092,7 +1101,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           'warming',
         );
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
-        await warmUpStageWorker(client, log);
+        // Same disposal discipline as the load catch above — a warm-up failure
+        // (it allocates too) must free the worker rather than orphan its heap.
+        try {
+          await warmUpStageWorker(client, log);
+        } catch (err) {
+          await client.dispose().catch(() => undefined);
+          throw err;
+        }
         engine.workerClient = client;
         engine.loadedConfig = want;
         engine.loadEpoch += 1;
