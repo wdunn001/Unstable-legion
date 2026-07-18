@@ -117,36 +117,52 @@ function ensureWindowOp(): OpCommand {
 }
 
 /**
- * Install a one-time global `error` listener that swallows uncaught errors
- * originating from the tracker script file itself, so a bug inside OpenPanel's
- * `op1.js` (e.g. its self-init reading `document.currentScript`, which is null
- * for a dynamically-inserted async script — the observed
- * `Cannot read properties of undefined (reading '1')`) can never surface as an
- * app-level "Uncaught" error or trip any framework error boundary/overlay. This
- * closes the one hole in this module's "analytics can never break the app"
- * guarantee: `safeCall` already contains errors from OUR calls into `op`, but
- * an error thrown while the browser EVALUATES the async script runs off our
- * stack, so it needs a separate net. Matched narrowly by the script URL — no
- * unrelated error is ever suppressed. Idempotent.
+ * Install one-time global listeners that swallow uncaught errors originating
+ * from the tracker, so a bug inside OpenPanel's script (e.g. its self-init
+ * reading `document.currentScript`, null for a dynamically-inserted async
+ * script — the observed `Cannot read properties of undefined (reading '1')`)
+ * can never surface as an app-level "Uncaught" error or trip a framework error
+ * overlay. Closes the one hole in "analytics can never break the app":
+ * `safeCall` contains errors from OUR calls into `op`, but an error thrown
+ * while the browser EVALUATES the async script runs off our stack.
+ *
+ * Matched by tracker ORIGIN, not the exact URL: the script we inject
+ * (`.../site.js`) itself loads a SECOND file (`op1.js`) from the same host, and
+ * the real throw comes from THAT filename — an exact-URL match misses it (the
+ * bug this widening fixes). Origin scoping stays narrow: the telemetry host
+ * serves only the tracker, so no unrelated app error is ever suppressed. Also
+ * nets the same error arriving as an unhandled promise rejection. Idempotent.
  */
 function installTrackerErrorGuard(url: string): void {
-  const w = window as unknown as { __opTrackerGuardUrls?: Set<string> };
-  if (!w.__opTrackerGuardUrls) {
-    w.__opTrackerGuardUrls = new Set<string>();
+  const w = window as unknown as { __opTrackerGuardOrigins?: Set<string> };
+  const matches = (s: string | undefined): boolean =>
+    !!s && !!w.__opTrackerGuardOrigins && [...w.__opTrackerGuardOrigins].some((o) => s.startsWith(o) || s.includes(o));
+  if (!w.__opTrackerGuardOrigins) {
+    w.__opTrackerGuardOrigins = new Set<string>();
     window.addEventListener(
       'error',
       (event) => {
-        // `filename` is the script URL the error was thrown from; only
-        // suppress errors whose source is a registered tracker script.
-        if (event.filename && w.__opTrackerGuardUrls?.has(event.filename)) {
+        // `filename` is the script URL the error was thrown from — suppress any
+        // error whose source is on a registered tracker origin (site.js OR the
+        // op1.js it loads).
+        if (matches(event.filename)) {
           event.preventDefault();
           event.stopImmediatePropagation();
         }
       },
       true,
     );
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason as { stack?: string } | undefined;
+      if (matches(reason?.stack)) event.preventDefault();
+    });
   }
-  w.__opTrackerGuardUrls.add(url);
+  try {
+    w.__opTrackerGuardOrigins.add(new URL(url, typeof location !== 'undefined' ? location.href : undefined).origin);
+  } catch {
+    // Non-absolute/opaque URL — fall back to guarding by the raw string.
+    w.__opTrackerGuardOrigins.add(url);
+  }
 }
 
 function defaultLoadScript(url: string): void {
