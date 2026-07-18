@@ -59,7 +59,7 @@ import {
   type StageSessionOpenPayload,
   type StandingLedger,
 } from '@unstable-legion/core';
-import { dummyActivationFrame, type StageWorkerLog } from './stageWorkerClient.js';
+import { type StageWorkerLog } from './stageWorkerClient.js';
 import type { WireActivationFrame } from './stageWorkerProtocol.js';
 import type { UseStageHostSession } from './useStageHost.js';
 import {
@@ -435,12 +435,19 @@ export function createLocalStageServeEngine(opts: LocalStageServeEngineOptions):
         if (isPrefill && state.pendingPromptTokens) {
           tokens = state.pendingPromptTokens;
           state.pendingPromptTokens = undefined;
-          wireFrame = dummyActivationFrame(tokens.length, client.nEmbd);
         }
+        // An isFirst stage EMBEDS tokens. Its SESSION prefill/decode
+        // (`legion_prefill_s`) rejects ANY activation input ("this stage
+        // expects token input, not activation input") — unlike the driver's
+        // own FUSED `stage.prefill`, which merely ignores a dummy. So for an
+        // isFirst served stage, pass NO activation and let it embed `tokens`
+        // (matching useCommunalChat's own stage-0 prefill). A non-first
+        // (relay-middle) served stage still consumes the incoming activation.
+        const stageInput = client.isFirst ? undefined : wireFrame;
         const positions = tokens.map((_, i) => (frame.posStart ?? 0) + i);
         const result = isPrefill
-          ? await client.prefill(tokens as number[], positions, wireFrame, sessionId)
-          : await client.decode((tokens[0] as number) ?? 0, wireFrame, sessionId);
+          ? await client.prefill(tokens as number[], positions, stageInput, sessionId)
+          : await client.decode((tokens[0] as number) ?? 0, stageInput, sessionId);
 
         if (!state.isFinal) {
           if (!state.nextPeerId) throw new Error('relay stage has no nextPeerId — cannot forward');
