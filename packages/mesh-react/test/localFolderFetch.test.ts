@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalFolderFetch, fragmentRelativePath } from '../src/localFolderFetch.ts';
+import { createLocalFolderFetch, createNullShardStore, fragmentRelativePath } from '../src/localFolderFetch.ts';
 import { fetchAndCacheFragment, createMemoryShardStore, sha256Hex } from '@unstable-legion/stage-runtime';
 
 /**
@@ -157,6 +157,28 @@ test('SECURITY: correct local bytes pass fetchAndCacheFragment verification agai
     { fetchImpl: localFetch, store: createMemoryShardStore() },
   );
 
+  assert.deepEqual(result.bytes, goodBytes);
+});
+
+test('createNullShardStore: never retains (get always misses, put discards) — so a folder load adds nothing to OPFS', async () => {
+  const store = createNullShardStore();
+  await store.put('some-hash.gguf', new Uint8Array([1, 2, 3]));
+  assert.equal(await store.get('some-hash.gguf'), undefined, 'put must not retain — folder is the source of truth, no OPFS duplicate');
+});
+
+test('createNullShardStore: still verifies via fetchAndCacheFragment (put is skipped, hash check is NOT)', async () => {
+  // Good bytes from the folder + the null store: verify passes, nothing cached.
+  const goodBytes = new Uint8Array([5, 6, 7, 8]);
+  const dir = mockDirHandle({ layers: { 'layer-003.gguf': goodBytes } });
+  const result = await fetchAndCacheFragment(
+    {
+      url: 'https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/layers/layer-003.gguf',
+      sha256: sha256Hex(goodBytes),
+      bytes: goodBytes.byteLength,
+      role: 'layer',
+    },
+    { fetchImpl: createLocalFolderFetch(dir), store: createNullShardStore() },
+  );
   assert.deepEqual(result.bytes, goodBytes);
 });
 

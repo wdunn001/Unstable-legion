@@ -32,6 +32,30 @@
  * about the verify path, the manifest resolution, or the caching layer
  * needs to change (or even know this exists).
  */
+import type { ShardStore } from '@unstable-legion/stage-runtime';
+
+/**
+ * A `ShardStore` that VERIFIES but never RETAINS: `get()` always misses (so
+ * every fragment is re-read from its `fetchImpl` — the local folder), `put()`
+ * discards. Pair it with `createLocalFolderFetch` for a local-folder load: the
+ * folder is ALREADY the durable on-disk copy, so caching the same bytes into
+ * OPFS would only DUPLICATE them and burn the origin's storage quota — the
+ * exact `QuotaExceededError` a folder load exists to avoid (an 8B + 14B pair
+ * stacked in OPFS overruns the quota mid-download). The SHA-256 verify in
+ * `fetchAndCacheFragment` still runs on every fragment (it hashes whatever the
+ * `fetchImpl` returns regardless of the store); this only skips the cache
+ * WRITE, so a tampered local layer is still rejected exactly as before.
+ */
+export function createNullShardStore(): ShardStore {
+  return {
+    async get() {
+      return undefined; // never a cache hit — always re-read from the folder
+    },
+    async put() {
+      // discard: the local folder is the source of truth, no second copy in OPFS
+    },
+  };
+}
 
 /** Manifest-relative directory segments a layer-package fragment's
  * resolved URL always contains (see legion-stage-runtime's `manifest.ts`:

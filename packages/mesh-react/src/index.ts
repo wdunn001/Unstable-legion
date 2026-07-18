@@ -251,7 +251,7 @@ export type { StageWorkerRequest, StageWorkerResponse, StageWorkerLoadProgress, 
 // the REMOTE manifest's hashes by the existing fetchAndCacheFragment path,
 // never a "trust the folder" bypass — see localFolderFetch.ts's module
 // doc comment for the full trust model). ────────────────────────────────
-export { createLocalFolderFetch, fragmentRelativePath } from './localFolderFetch.js';
+export { createLocalFolderFetch, createNullShardStore, fragmentRelativePath } from './localFolderFetch.js';
 
 // ── WebGPU device buffer-limit patch (FIX for 8B+ models — see
 // webgpuDevicePatch.ts's module doc) — installed by a stage-hosting

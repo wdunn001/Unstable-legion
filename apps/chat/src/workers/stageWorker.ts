@@ -27,6 +27,7 @@ import {
 } from '@unstable-legion/stage-runtime';
 import {
   createLocalFolderFetch,
+  createNullShardStore,
   patchWebGpuDeviceLimits,
   type StageWorkerRequest,
   type StageWorkerResponse,
@@ -135,7 +136,18 @@ async function handle(req: StageWorkerRequest): Promise<void> {
               totalBytes: progress.totalBytes,
             });
           },
-          ...(req.useMemoryShardStore ? { shardStore: createMemoryShardStore() } : {}),
+          // Shard store selection:
+          //  - local folder  -> NULL store: the folder is already the durable
+          //    on-disk copy, so caching to OPFS would only duplicate it and
+          //    overrun the storage quota (the QuotaExceededError a folder load
+          //    exists to avoid). Verify still runs; nothing is persisted.
+          //  - useMemoryShardStore -> in-RAM (range exceeds the OPFS quota).
+          //  - else -> loadStage's default OPFS cache.
+          ...(req.localFolderHandle
+            ? { shardStore: createNullShardStore() }
+            : req.useMemoryShardStore
+              ? { shardStore: createMemoryShardStore() }
+              : {}),
         } as Parameters<typeof loadStage>[1]);
         console.log(`[stage-worker] stage loaded ${mem()}`);
         post({
