@@ -445,7 +445,23 @@ export async function resolveCommunalShardPlan(
   // Base URL for relative fragment paths = the WINNING source, not the
   // primary — a manifest served by the fallback origin must pull its
   // weights from that same origin (absolute paths are unaffected).
-  const fragments = fragmentsForRange(manifest, cache.url, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
+  // INCREMENTAL LOAD (#47): under ?incrementalLoad=1, request the header-only
+  // TYPE-index metadata fragment (metadata-index.gguf) that loadStageIncremental's
+  // begin() needs. fragmentsForRange falls back to the KV-only metadata.gguf if
+  // the manifest has no metadata_index, so this is safe on older packages. Read
+  // on the main thread (no per-hook flag plumbing); useStageHost reads the same
+  // param to actually pick loadStageIncremental.
+  const useMetadataIndex =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).get('incrementalLoad') === '1';
+  const fragments = fragmentsForRange(
+    manifest,
+    cache.url,
+    claim.layerStart,
+    claim.layerEnd,
+    opts.includeEmbeddings ?? false,
+    claim.includeOutput,
+    useMetadataIndex,
+  );
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {
