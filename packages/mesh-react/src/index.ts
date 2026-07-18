@@ -133,6 +133,7 @@ export {
 export {
   buildStageHostCap,
   buildLocalCapacityCap,
+  unionLoadedStages,
   planPipelineForDriver,
   sanitizeWasmHeapBudget,
   sanitizeWeightBudget,
@@ -214,7 +215,23 @@ export {
   type UseCommunalChatHandle,
   type CommunalChatStatus,
   type StageLoadProgressView,
+  type ResidentStageZero,
 } from './useCommunalChat.js';
+// ── REUSE-STAGE0 Phase 1: serve the resident stage-0 worker to thin/
+// text-relay clients as an isFirst communal stage ────────────────────
+export {
+  useLocalStageServe,
+  type UseLocalStageServeOptions,
+  type UseLocalStageServeHandle,
+} from './useLocalStageServe.js';
+export {
+  createLocalStageServeEngine,
+  sameServedConfig,
+  type LocalStageServeEngine,
+  type LocalStageServeEngineOptions,
+  type ServedStageClient,
+  type ServedStageConfig,
+} from './localStageServeEngine.js';
 export {
   STAGE_MODEL_ID,
   STAGE_TOTAL_LAYERS,
@@ -263,6 +280,7 @@ export { PersonaForm, type PersonaFormProps } from './components/PersonaForm.js'
 // ── Core re-exports for convenience ─────────────────────────────────
 export type {
   MeshChatMessage,
+  MeshLoadedStage,
   MeshPeerCap,
   MeshRosterEntry,
   MeshToolCall,

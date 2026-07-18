@@ -4,6 +4,7 @@ import type { HostingConsent } from '../components/HostingConsentBanner.js';
 const STORAGE_KEY = 'unstable-legion-chat:hosting-consent-v1';
 const CONTRIBUTION_BUDGET_STORAGE_KEY = 'unstable-legion-chat:contribution-budget-bytes-v1';
 const MAX_LAYERS_OVERRIDE_STORAGE_KEY = 'unstable-legion-chat:max-layers-override-v1';
+export const SERVE_FIRST_STAGE_STORAGE_KEY = 'unstable-legion-chat:serve-first-stage-v1';
 
 function load(): HostingConsent {
   if (typeof localStorage === 'undefined') return 'unset';
@@ -78,6 +79,37 @@ function saveMaxLayersOverride(layers: number | undefined): void {
   }
 }
 
+/** Sticky "Serve the first stage" opt-in (REUSE-STAGE0) — reuses this
+ * device's own already-loaded, already-embeddings-including local stage-0
+ * worker (`useCommunalChat`'s `serveFirstStage`) to serve low-power/thin
+ * clients' entry stage, instead of spinning up a second isFirst communal
+ * claim (the dead-end `supportThinDrivers` path — see App.tsx). Off by
+ * default: this changes the driver's OWN worker lifecycle (resident
+ * instead of load-per-turn) and hosts strangers' first-stage requests, so
+ * it's an explicit opt-in, not inferred from the general hosting consent
+ * above. Same sticky-localStorage discipline as the other overrides in
+ * this file. Exported (unlike this file's other load/save pairs) purely so
+ * the persistence contract is unit-testable without rendering the hook —
+ * see `test/useHostingConsent.test.ts`. */
+export function loadServeFirstStage(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(SERVE_FIRST_STAGE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function saveServeFirstStage(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(SERVE_FIRST_STAGE_STORAGE_KEY, '1');
+    else localStorage.removeItem(SERVE_FIRST_STAGE_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 export interface UseHostingConsentHandle {
   consent: HostingConsent;
   accept: () => void;
@@ -98,6 +130,11 @@ export interface UseHostingConsentHandle {
   maxLayersOverride: number | undefined;
   /** Set (or clear, with `undefined`) the override — persists immediately. */
   setMaxLayersOverride: (layers: number | undefined) => void;
+  /** Persisted "Serve the first stage" opt-in (REUSE-STAGE0) — threaded
+   * into `useCommunalChat`'s `serveFirstStage` option. Off by default. */
+  serveFirstStage: boolean;
+  /** Set the opt-in — persists immediately. */
+  setServeFirstStage: (enabled: boolean) => void;
 }
 
 /** Persisted one-time "contribute your GPU?" decision (M5 brief §4).
@@ -112,6 +149,7 @@ export function useHostingConsent(): UseHostingConsentHandle {
   const [consent, setConsent] = useState<HostingConsent>(() => load());
   const [contributionBudgetBytes, setContributionBudgetBytesState] = useState<number | undefined>(() => loadContributionBudgetBytes());
   const [maxLayersOverride, setMaxLayersOverrideState] = useState<number | undefined>(() => loadMaxLayersOverride());
+  const [serveFirstStage, setServeFirstStageState] = useState<boolean>(() => loadServeFirstStage());
 
   const accept = useCallback(() => {
     setConsent('accepted');
@@ -133,6 +171,10 @@ export function useHostingConsent(): UseHostingConsentHandle {
     setMaxLayersOverrideState(layers);
     saveMaxLayersOverride(layers);
   }, []);
+  const setServeFirstStage = useCallback((enabled: boolean) => {
+    setServeFirstStageState(enabled);
+    saveServeFirstStage(enabled);
+  }, []);
 
   return {
     consent,
@@ -143,5 +185,7 @@ export function useHostingConsent(): UseHostingConsentHandle {
     setContributionBudgetBytes,
     maxLayersOverride,
     setMaxLayersOverride,
+    serveFirstStage,
+    setServeFirstStage,
   };
 }

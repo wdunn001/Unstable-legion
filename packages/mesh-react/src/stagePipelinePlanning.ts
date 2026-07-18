@@ -207,6 +207,27 @@ export function buildStageHostCap(
   };
 }
 
+/**
+ * REUSE-STAGE0 — the unified `cap.stageHost.loadedStages` publisher's core
+ * operation: concatenate a host's OWN loaded-stage entries with entries a
+ * SIBLING server on the same peer advertises (e.g. `useLocalStageServe.ts`
+ * serving `[0, driverLayers)` alongside `useStageHost.ts` serving
+ * `[driverLayers, totalLayers)`). Named/exported (rather than an inline
+ * spread at the call site) so this is a directly unit-testable contract:
+ * NEITHER list clobbers the other — `Peer.setCap` fully replaces the
+ * previous cap on every call (see `peer.ts`), so every entry that should
+ * appear on the wire must flow through the SAME `buildStageHostCap` call,
+ * which is exactly what `useStageHost.ts`'s "Publish cap" effect does with
+ * this function's result. Never de-duplicates or validates for range
+ * overlap — callers are responsible for not passing overlapping claims;
+ * either input may be empty/undefined. */
+export function unionLoadedStages(
+  base: readonly MeshLoadedStage[] | undefined,
+  extra: readonly MeshLoadedStage[] | undefined,
+): readonly MeshLoadedStage[] {
+  return [...(base ?? []), ...(extra ?? [])];
+}
+
 // ── M2: max concurrent sessions, chosen once at load time ──────────────
 //
 // A host commits its session capacity when it LOADS the stage, not

@@ -86,6 +86,7 @@ import {
   makeStageStop,
   makeStageToken,
   type IncrementalTextCursor,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type Peer,
   type StageControlMessageFor,
@@ -97,7 +98,7 @@ import {
 } from '@unstable-legion/core';
 import { StageWorkerClient, dummyActivationFrame, warmUpStageWorker, type StageWorkerLog } from './stageWorkerClient.js';
 import type { StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
-import { buildStageHostCap, chooseMaxSessions, type StageHostLimits } from './stagePipelinePlanning.js';
+import { buildStageHostCap, chooseMaxSessions, unionLoadedStages, type StageHostLimits } from './stagePipelinePlanning.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
 import { extractHttpStatus, type StageHostLifecycleEvent } from './meshResilience.js';
 import { runWithStallWatchdog, StallTimeoutError } from './loadWatchdog.js';
@@ -211,6 +212,28 @@ export interface UseStageHostOptions {
    * existing sessions already in flight keep running undisturbed.
    */
   suppressAdvertise?: boolean;
+  /**
+   * REUSE-STAGE0 — additional `cap.stageHost.loadedStages` entries to
+   * UNION into this hook's own publish, so a peer that ALSO serves its
+   * resident `[0, driverLayers)` stage-0 via `useLocalStageServe.ts` (see
+   * that module's doc comment) advertises BOTH entries in ONE
+   * `peer.setCap` call instead of two independent callers racing to
+   * clobber each other's cap (`Peer.setCap` fully REPLACES the previous
+   * cap — see `peer.ts`). Passed straight through to `buildStageHostCap`,
+   * unioned with THIS hook's own `loadedStages` (never de-duplicated
+   * against it — the caller is responsible for not passing an entry that
+   * overlaps this host's own claimed range). Published even while
+   * `enabled` is false (hosting toggled off, or this tab isn't the
+   * hosting-colocation leader) — a peer can serve stage-0 without
+   * participating in `[driverLayers, totalLayers)` hosting at all, so this
+   * hook's own `enabled` gate must not also silence someone else's ad.
+   * Read fresh on every publish tick; pass a NEW array identity only when
+   * it actually changes (a stable/memoized identity avoids unnecessarily
+   * restarting the publish effect's interval every render). `undefined`/
+   * empty = unchanged pre-existing behavior (including the `!enabled`
+   * branch's unconditional cap-wipe).
+   */
+  extraLoadedStages?: readonly MeshLoadedStage[];
   /**
    * M4 — this host's own contribution-economy ledger. When supplied,
    * every session free (`freeSession`, regardless of WHY — natural
@@ -577,6 +600,20 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // effect to restart (same ref-read idiom as `baseCapRef`).
   const suppressAdvertiseRef = useRef(opts.suppressAdvertise ?? false);
   suppressAdvertiseRef.current = opts.suppressAdvertise ?? false;
+  // REUSE-STAGE0 — read fresh by BOTH the "publish cap" effect (unions
+  // into the published `loadedStages`, see `extraLoadedStages`'s doc
+  // comment) and the "answer" effect's `handleSessionOpen` guard below
+  // (ignores a request for a range this host isn't claiming rather than
+  // fighting another server on the same peer for it).
+  const extraLoadedStagesRef = useRef<readonly MeshLoadedStage[]>(opts.extraLoadedStages ?? []);
+  extraLoadedStagesRef.current = opts.extraLoadedStages ?? [];
+  // REUSE-STAGE0 — the CURRENT claim (`preloadStage`, when set) read fresh
+  // inside the "answer" effect's `handleSessionOpen` without that effect
+  // depending on `opts.preloadStage`'s identity (same ref-read idiom as
+  // every other option this hook reads without restarting the answer
+  // effect on every render).
+  const claimedRangeRef = useRef<UseStageHostOptions['preloadStage']>(opts.preloadStage ?? null);
+  claimedRangeRef.current = opts.preloadStage ?? null;
   // M3 — bridge from the "preload watcher" effect (below) into the
   // "answer" effect's `applyPreload`, same ref-bridge pattern as
   // `republishNowRef` (two independent effects, one triggers the other
@@ -708,8 +745,32 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     if (!peer) return;
     if (!enabled || !limits || !supportState.ok) {
       if (!enabled) {
-        setStageHostCap(undefined);
-        peer.setCap({ ...baseCapRef.current, ts: Date.now() });
+        const extra = extraLoadedStagesRef.current;
+        if (extra.length > 0 && limits) {
+          // REUSE-STAGE0: THIS host's own [driverLayers,totalLayers)
+          // hosting is off (or this tab isn't the hosting-colocation
+          // leader), but a sibling server on this SAME peer
+          // (`useLocalStageServe.ts`) still has something to advertise —
+          // publish JUST that instead of unconditionally wiping
+          // `cap.stageHost` to nothing (the pre-existing behavior below,
+          // preserved byte-for-byte when there is nothing extra to carry).
+          const cap = buildStageHostCap(
+            { ...limits, contributionBudgetBytes: opts.contributionBudgetBytes },
+            { keepalive: !!keepaliveEnabled, visible, onBattery, uptimeMs: Date.now() - mountedAtRef.current },
+            cachedFragments,
+            undefined,
+            extra,
+            opts.failureDomainId,
+          );
+          setStageHostCap(cap);
+          peer.setCap({ ...baseCapRef.current, ts: Date.now(), stageHost: cap });
+        } else if (extra.length === 0) {
+          setStageHostCap(undefined);
+          peer.setCap({ ...baseCapRef.current, ts: Date.now() });
+        }
+        // else: extra stages exist but `limits` hasn't resolved yet —
+        // wait for a later tick (this effect re-runs once `limits`
+        // settles) instead of publishing a wrong/incomplete cap.
       }
       return;
     }
@@ -724,7 +785,13 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         },
         cachedFragments,
         sessionCapacityRef.current,
-        suppressAdvertiseRef.current ? [] : loadedStagesRef.current,
+        // REUSE-STAGE0: union a sibling server's own advertised stage(s)
+        // (e.g. `useLocalStageServe.ts`'s [0,driverLayers) entry) onto
+        // THIS host's own — see `extraLoadedStages`'s doc comment for why
+        // this must be the ONE place `peer.setCap` is called for
+        // `stageHost`, not two independent callers racing to clobber each
+        // other (`Peer.setCap` fully replaces the previous cap).
+        unionLoadedStages(suppressAdvertiseRef.current ? [] : loadedStagesRef.current, extraLoadedStagesRef.current),
         opts.failureDomainId,
       );
       setStageHostCap(cap);
@@ -738,7 +805,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       republishNowRef.current = () => undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes]);
+  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes, opts.extraLoadedStages]);
 
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
@@ -1254,6 +1321,27 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     }
 
     async function handleSessionOpen(msg: StageControlMessageFor<'stage.session.open'>, peerId: string): Promise<void> {
+      // REUSE-STAGE0 — when this host operates under a CLAIM-DRIVEN regime
+      // (`preloadStage` set, i.e. `useCommunalHost.ts`'s assembly loop owns
+      // what this host loads), a request for a DIFFERENT range than the
+      // current claim is not meant for this hook at all — most likely a
+      // peer that ALSO runs `useLocalStageServe.ts` for a fixed different
+      // range on the SAME connection (see that module's cap-union doc
+      // comment). Silently ignoring it (rather than `ensureWorkerLoaded`,
+      // which would otherwise reconfigure — or outright fail — this host's
+      // OWN claim out from under it) is what keeps two independent servers
+      // on one peer from fighting over the same wire message. A legacy/
+      // Phase-C `useStagePipeline` driver (no `preloadStage`) is
+      // unaffected — this guard only engages once a claim exists, and in
+      // every pre-existing flow a driver only ever requests the EXACT
+      // range this host currently advertises, so this is a no-op there.
+      const claim = claimedRangeRef.current;
+      if (claim && (msg.payload.layerStart !== claim.layerStart || msg.payload.layerEnd !== claim.layerEnd)) {
+        log(
+          `[stage-host] stage.session.open for [${msg.payload.layerStart},${msg.payload.layerEnd}) IGNORED — this host's claim is [${claim.layerStart},${claim.layerEnd})`,
+        );
+        return;
+      }
       log(`[stage-host] stage.session.open from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
       // The `stage.session.open` payload carries NO shard info by design — the
       // host resolves shards for the requested range from its OWN manifest.

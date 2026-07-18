@@ -51,6 +51,7 @@ import {
   communalHostClaim,
   hostStabilityScore,
   type CommunalClaimRange,
+  type MeshLoadedStage,
   type MeshPeerCap,
   type MeshRosterEntry,
   type Peer,
@@ -215,6 +216,16 @@ export interface UseCommunalHostOptions {
    * LockManager via `ColocationCoordinatorOptions`, or replace the whole
    * coordinator). Default `createColocationCoordinator`. */
   createColocationCoordinator?: (opts?: ColocationCoordinatorOptions) => ColocationCoordinatorHandle;
+  /**
+   * REUSE-STAGE0 — passed straight through to the internal `useStageHost`
+   * call's `extraLoadedStages` option, so a peer that ALSO serves its
+   * resident stage-0 (`useLocalStageServe.ts`) advertises both entries in
+   * ONE `cap.stageHost.loadedStages` array. See that option's doc comment
+   * for why this must flow through the SAME `peer.setCap` call site
+   * regardless of whether THIS hook's own hosting is enabled. `undefined`
+   * = unchanged pre-existing behavior.
+   */
+  extraLoadedStages?: readonly MeshLoadedStage[];
 }
 
 export type CommunalHostPhase = 'idle' | 'loading' | 'active' | 'draining' | 'retrying' | 'error';
@@ -691,6 +702,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     onLifecycle: handleLifecycle,
     failureDomainId,
     contributionBudgetBytes: opts.contributionBudgetBytes,
+    extraLoadedStages: opts.extraLoadedStages,
     log: opts.log,
   });
   const hostSessionCount = host.sessions.length;

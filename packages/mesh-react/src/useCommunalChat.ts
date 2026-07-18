@@ -166,6 +166,39 @@ export interface UseCommunalChatOptions {
    * remote first host. The app MUST surface this. Default `false`.
    */
   textRelay?: boolean;
+  /**
+   * REUSE-STAGE0 — when true, this driver's own local stage-0 worker
+   * (`[0, driverLayers)`, loaded WITH embeddings — see `thinDriver`'s doc
+   * comment on why that matters: the reused worker already has embeddings,
+   * so the `token_embd` bug a separate isFirst communal claim hit cannot
+   * recur here) is kept RESIDENT at hook lifetime instead of being loaded
+   * fresh and disposed every turn, and loaded with room for
+   * `serveFirstStageMaxSessions` extra lanes so a serving layer can later
+   * open served sessions against the SAME worker — no second `load`, no
+   * second download. See `residentStageZeroRef`.
+   *
+   * OFF (the default) is BYTE-FOR-BYTE today's behavior: `start()` loads a
+   * fresh worker every turn and disposes it in `finally`, exactly as
+   * before this option existed. This hook never inspects `serveFirstStage`
+   * unless it's `true`.
+   *
+   * The driver's OWN chat keeps using the fused (no-`sessionId`)
+   * prefill/decode/reset path regardless — a resident worker's fused lane
+   * is a SEPARATE session from anything a future serving layer opens via
+   * `sessionCreate`, so this driver's own generation and its own
+   * `reset()` never disturb a served lane. Default `false`.
+   */
+  serveFirstStage?: boolean;
+  /**
+   * REUSE-STAGE0 — how many SERVED (non-fused) lanes the resident stage-0
+   * worker reserves room for at load time, on top of the driver's own
+   * fused lane (native `maxSessions` passed to `legion_stage_open` is
+   * `1 + serveFirstStageMaxSessions` — this file OWNS the load, so IT does
+   * that "+1 fused" accounting, mirroring `useStageHost.ts`'s identical
+   * off-by-one; a future serving layer's own ceiling is
+   * `serveFirstStageMaxSessions` with NO further +1). Only meaningful when
+   * `serveFirstStage` is true. Default 1. */
+  serveFirstStageMaxSessions?: number;
   /** Forwarded to `runCommunalDriverSession`. See `useStagePipeline`'s
    * identical option for why the defaults below are generous (cold WebGPU
    * shader compilation on a communal host's first real dispatch). */
@@ -178,8 +211,71 @@ export interface UseCommunalChatOptions {
   log?: StageWorkerLog;
 }
 
+/**
+ * REUSE-STAGE0 — the resident local stage-0 worker exposed for a future
+ * serving layer to ADOPT (open served sessions against the SAME loaded
+ * worker — no second `load`, no second fragment fetch). Mirrors the
+ * subset of `useStageHost.ts`'s internal `LoadedConfig` a serving layer
+ * needs to (a) verify a `stage.session.open` request actually matches what
+ * this worker has loaded (the adopted-mode "assert sameConfig" guard) and
+ * (b) build its own `cap.stageHost.loadedStages` entry.
+ */
+export interface ResidentStageZero {
+  client: StageWorkerClient;
+  modelId: string;
+  /** Always 0 — stage-0 is always the embeddings-inclusive first stage. */
+  layerStart: 0;
+  /** `driverLayers` — the fixed protocol boundary every communal host on
+   * the mesh assumes (see this file's module doc comment, point 1). */
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16' | 'i8';
+  nEmbd: number;
+  /** N — the served (non-fused) lane ceiling this worker was loaded with
+   * room for (native `maxSessions` was `1 + serveMaxSessions`). A serving
+   * layer's OWN admission ceiling is this number, unmodified — it must NOT
+   * add another +1 (that fused lane is this hook's own, not servable). */
+  serveMaxSessions: number;
+  /** Monotonic counter, bumped on every FRESH (re)load of this resident
+   * worker (never on a reuse) — same "fresh load vs stale cap data" signal
+   * `MeshLoadedStage.epoch` documents, threaded straight through so a
+   * serving layer's `cap.stageHost.loadedStages` entry for this stage can
+   * carry a meaningful epoch without inventing its own counter. */
+  epoch: number;
+}
+
+interface ResidentStageZeroLoadedConfig {
+  modelId: string;
+  layerStart: number;
+  layerEnd: number;
+  totalLayers: number;
+  ctxSize: number;
+  wireDtype: 'f32' | 'f16' | 'i8';
+}
+
+function sameResidentConfig(a: ResidentStageZeroLoadedConfig, b: ResidentStageZeroLoadedConfig): boolean {
+  return (
+    a.modelId === b.modelId &&
+    a.layerStart === b.layerStart &&
+    a.layerEnd === b.layerEnd &&
+    a.totalLayers === b.totalLayers &&
+    a.ctxSize === b.ctxSize &&
+    a.wireDtype === b.wireDtype
+  );
+}
+
 const DEFAULT_BOOTSTRAP_STEP_MS = 120_000;
 const DEFAULT_LOAD_MS = 300_000;
+const DEFAULT_SERVE_FIRST_STAGE_MAX_SESSIONS = 1;
+/**
+ * How long the resident stage-0 worker (see `serveFirstStage`) stays
+ * loaded after the toggle goes OFF before its weights are freed — same
+ * "a blip shouldn't pay a multi-minute reload" rationale, and the same
+ * constant, as `useStageHost.ts`'s `RESIDENT_GRACE_MS`. A true unmount
+ * frees immediately and does not wait this out.
+ */
+const RESIDENT_GRACE_MS = 10 * 60_000;
 /**
  * Cap on total pipeline stages a route may use. `Infinity` = the host-side
  * relay is trusted to forward across arbitrarily many hops. Set to `2` as a
@@ -288,6 +384,16 @@ export interface UseCommunalChatHandle {
    * chain a new `start()` off a finished session must wait for this to go
    * false first, or its `start()` returns `false` untried. */
   isRunning: () => boolean;
+  /**
+   * REUSE-STAGE0 — a hook-lifetime-stable ref exposing the resident stage-0
+   * worker when `serveFirstStage` is on (see that option's doc comment).
+   * `.current` is `null` until the first turn after toggling it on actually
+   * loads the worker, and `null` again after the idle-grace/unmount
+   * dispose. MUTATED IN PLACE — a consumer (a future serving layer) must
+   * read `.current` fresh on every use, never destructure once and cache.
+   * Always `null` when `serveFirstStage` is off.
+   */
+  residentStageZeroRef: { readonly current: ResidentStageZero | null };
 }
 
 export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHandle {
@@ -309,6 +415,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     thinDriver = false,
     thinTokenizer,
     textRelay = false,
+    serveFirstStage = false,
+    serveFirstStageMaxSessions = DEFAULT_SERVE_FIRST_STAGE_MAX_SESSIONS,
     timeouts,
     queueWaitMs,
     replanJitterMs,
@@ -338,10 +446,194 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
   // already happened.
   const hopBytesRef = useRef<Record<string, number>>({});
 
+  // ── REUSE-STAGE0 (serveFirstStage) — the resident stage-0 worker's
+  // engine state, hook-lifetime (survives every `start()`/`finally`
+  // teardown, unlike `localWorkerRef` above which is scoped to the
+  // CURRENT turn) — mirrors `useStageHost.ts`'s `engineRef`/`StageEngine`
+  // doc comment: holding this in a ref (not component state) is what lets
+  // a re-render never accidentally tear down a worker that took real
+  // shard-download time to load. `residentStageZeroRef` is the PUBLIC
+  // (readonly-typed) view of the same underlying object a future serving
+  // layer adopts — see `UseCommunalChatHandle.residentStageZeroRef`'s doc
+  // comment. Both refs are created once and mutated in place, never
+  // reassigned, so their identity is stable for the life of the hook. ────
+  const residentEngineRef = useRef<{
+    client: StageWorkerClient | null;
+    config: ResidentStageZeroLoadedConfig | null;
+    loadInFlight: Promise<StageWorkerClient> | null;
+    serveMaxSessions: number;
+    loadEpoch: number;
+  }>({ client: null, config: null, loadInFlight: null, serveMaxSessions: 0, loadEpoch: 0 });
+  const residentStageZeroRef = useRef<ResidentStageZero | null>(null);
+  const disposeResidentTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Same `logRef` discipline `useStageHost.ts` documents at length (see
+  // that file's `logRef`/DEBUG-CASEFILE.md note): the grace-timer/unmount
+  // effects below must NOT depend on the caller's `log` callback identity
+  // (which churns every render whenever `log` is an inline arrow) — doing
+  // so would tear down and re-arm the grace timer on every unrelated
+  // re-render, and a timer that's perpetually cancelled-and-restarted
+  // never actually fires, silently pinning the resident worker's weights
+  // in VRAM forever after the toggle goes off.
+  const logRef = useRef(log);
+  logRef.current = log;
+
+  /** Free the resident stage-0 worker (if any) and clear its public ref.
+   * Stable identity (empty deps — reads `log`/engine state via refs) so
+   * the grace-timer/unmount effects below never restart because of it. */
+  const disposeResidentStageZero = useCallback((reason: string): void => {
+    const eng = residentEngineRef.current;
+    const client = eng.client;
+    eng.client = null;
+    eng.config = null;
+    eng.loadInFlight = null;
+    eng.serveMaxSessions = 0;
+    residentStageZeroRef.current = null;
+    if (client) {
+      logRef.current(`[communal-chat] freeing resident stage-0 (${reason})`);
+      void client.dispose().catch(() => undefined);
+    }
+  }, []);
+
+  // True unmount (tab/route gone) — free the resident worker immediately,
+  // regardless of the idle grace window below. Mirrors
+  // `useStageHost.ts`'s identical true-unmount-always-frees effect.
+  useEffect(() => {
+    return () => disposeResidentStageZero('component unmounted');
+  }, [disposeResidentStageZero]);
+
+  // A SUSTAINED `serveFirstStage: false` frees the resident worker's VRAM;
+  // a transient toggle-off (or a re-render) must not — same rationale as
+  // `useStageHost.ts`'s identical `RESIDENT_GRACE_MS` effect (a cold
+  // reload is a multi-minute multi-GB round trip). Re-enabling inside the
+  // window cancels the pending free entirely and the worker is reused
+  // as-is (see `ensureResidentStageZero` below).
+  useEffect(() => {
+    if (serveFirstStage) {
+      if (disposeResidentTimerRef.current !== undefined) {
+        clearTimeout(disposeResidentTimerRef.current);
+        disposeResidentTimerRef.current = undefined;
+      }
+      return;
+    }
+    disposeResidentTimerRef.current = setTimeout(() => {
+      disposeResidentTimerRef.current = undefined;
+      disposeResidentStageZero(`serveFirstStage off for ${Math.round(RESIDENT_GRACE_MS / 60_000)}min`);
+    }, RESIDENT_GRACE_MS);
+    return () => {
+      if (disposeResidentTimerRef.current !== undefined) {
+        clearTimeout(disposeResidentTimerRef.current);
+        disposeResidentTimerRef.current = undefined;
+      }
+    };
+  }, [serveFirstStage, disposeResidentStageZero]);
+
+  /**
+   * Ensure the resident stage-0 worker is loaded and matches the CURRENT
+   * `serveFirstStage` config (model/layers/ctx/dtype AND the served-lane
+   * ceiling) — reuses it as-is when it already matches (the common case:
+   * every turn after the first while `serveFirstStage` stays on), awaits
+   * an in-flight load from a near-simultaneous call instead of starting a
+   * second one, and otherwise (re)loads it exactly the way the non-
+   * resident per-turn path always has (same manifest resolution, same
+   * `warmUpStageWorker` dispatch) — the only difference is `maxSessions:
+   * 1 + serveFirstStageMaxSessions` at load time (see
+   * `ResidentStageZero.serveMaxSessions`'s doc comment for the off-by-one)
+   * and that the loaded worker is stashed on `residentEngineRef` instead
+   * of being torn down in `start()`'s `finally`.
+   */
+  const ensureResidentStageZero = useCallback(async (): Promise<StageWorkerClient> => {
+    const eng = residentEngineRef.current;
+    const want: ResidentStageZeroLoadedConfig = { modelId, layerStart: 0, layerEnd: driverLayers, totalLayers, ctxSize, wireDtype };
+    if (eng.client && eng.config && sameResidentConfig(eng.config, want) && eng.serveMaxSessions === serveFirstStageMaxSessions) {
+      return eng.client;
+    }
+    if (eng.loadInFlight) {
+      const client = await eng.loadInFlight.catch(() => null);
+      if (client && eng.client && eng.config && sameResidentConfig(eng.config, want) && eng.serveMaxSessions === serveFirstStageMaxSessions) {
+        return client;
+      }
+    }
+    const doLoad = (async (): Promise<StageWorkerClient> => {
+      // A stale resident (different config/ceiling than what's wanted NOW)
+      // must be freed before loading fresh — same "never leave two
+      // worker instances alive" discipline as `useStageHost.ts`'s
+      // `ensureWorkerLoaded` -> `disposeWorker` call.
+      if (eng.client) {
+        const stale = eng.client;
+        eng.client = null;
+        eng.config = null;
+        residentStageZeroRef.current = null;
+        await stale.dispose().catch(() => undefined);
+      }
+      const { plan: stage0Plan } = await resolveCommunalShardPlan(
+        { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+        {
+          manifestUrl,
+          fallbackShardUrls: stageShardUrls,
+          includeEmbeddings: true,
+          opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+        },
+      );
+      const client = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0-resident', logRef.current);
+      await client.load(
+        {
+          modelId,
+          layerStart: 0,
+          layerEnd: driverLayers,
+          totalLayers,
+          shardUrls: stage0Plan.shardUrls,
+          shardHashes: stage0Plan.shardHashes,
+          shardBytes: stage0Plan.shardBytes,
+          ctxSize,
+          // RESIDENT SERVE — reserve N extra lanes beyond this hook's own
+          // fused (no-sessionId) lane, so a future serving layer can adopt
+          // this SAME worker for served sessions with no second load. See
+          // `ResidentStageZero.serveMaxSessions`'s doc comment.
+          maxSessions: 1 + serveFirstStageMaxSessions,
+        },
+        { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+      );
+      logRef.current(`[communal-chat] resident stage-0 loaded (nEmbd=${client.nEmbd}); warming up…`);
+      await warmUpStageWorker(client, logRef.current);
+      logRef.current('[communal-chat] resident stage-0 warm-up done');
+      eng.client = client;
+      eng.config = want;
+      eng.serveMaxSessions = serveFirstStageMaxSessions;
+      eng.loadEpoch += 1;
+      residentStageZeroRef.current = {
+        client,
+        modelId,
+        layerStart: 0,
+        layerEnd: driverLayers,
+        totalLayers,
+        ctxSize,
+        wireDtype,
+        nEmbd: client.nEmbd,
+        serveMaxSessions: serveFirstStageMaxSessions,
+        epoch: eng.loadEpoch,
+      };
+      return client;
+    })();
+    eng.loadInFlight = doLoad;
+    try {
+      return await doLoad;
+    } finally {
+      if (eng.loadInFlight === doLoad) eng.loadInFlight = null;
+    }
+  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
+
   const teardownLocalWorker = useCallback(async () => {
     const w = localWorkerRef.current;
     localWorkerRef.current = null;
-    if (w) await w.dispose().catch(() => undefined);
+    // A RESIDENT stage-0 worker (serveFirstStage on) must survive this
+    // turn's teardown — it's freed only by the idle-grace/unmount effects
+    // above, never here. Identity comparison (not a separate boolean flag)
+    // is the simplest correct test: `w` is the SAME client instance as
+    // `residentEngineRef.current.client` iff `start()` adopted the
+    // resident worker this turn instead of creating a transient one.
+    if (w && w !== residentEngineRef.current.client) {
+      await w.dispose().catch(() => undefined);
+    }
   }, []);
 
   const abort = useCallback((reason?: string) => {
@@ -447,40 +739,52 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
         // textRelay mode there is no local tokenize/detokenize at all.
         let localWorker: StageWorkerClient | null = null;
         if (!effectiveThin) {
-          // Resolve stage-0's shards from the SAME per-layer manifest the
-          // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
-          // the monolithic `full.gguf` fallback. This keeps every stage on one
-          // model: a stage-0 loaded from a different artifact than the sharded
-          // package emits wrong-width activations the remote stage rejects
-          // ("activation input payload is N bytes, expected M"). Model-agnostic
-          // — widths/fragments come from the manifest. Falls back to
-          // `stageShardUrls()` only when no manifest is set (the test model).
-          const { plan: stage0Plan } = await resolveCommunalShardPlan(
-            { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
-            {
-              manifestUrl,
-              fallbackShardUrls: stageShardUrls,
-              includeEmbeddings: true,
-              opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
-            },
-          );
-          localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
-          await localWorker.load(
-            {
-              modelId,
-              layerStart: 0,
-              layerEnd: driverLayers,
-              totalLayers,
-              shardUrls: stage0Plan.shardUrls,
-              shardHashes: stage0Plan.shardHashes,
-              shardBytes: stage0Plan.shardBytes,
-              ctxSize,
-            },
-            { useMemoryShardStore: stage0Plan.useMemoryShardStore },
-          );
-          log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
-          await warmUpStageWorker(localWorker, log);
-          log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
+          if (serveFirstStage) {
+            // REUSE-STAGE0 — adopt the RESIDENT worker (loaded once, kept
+            // warm across turns, loaded with room for served lanes) instead
+            // of loading + disposing a fresh one this turn. See
+            // `ensureResidentStageZero`'s doc comment; `teardownLocalWorker`
+            // below already knows not to dispose this worker in `finally`
+            // (identity check against `residentEngineRef.current.client`).
+            log(`[communal-chat] ${elapsed()} serveFirstStage on — adopting resident stage-0 (N=${serveFirstStageMaxSessions} served lane(s))`);
+            localWorker = await ensureResidentStageZero();
+            log(`[communal-chat] ${elapsed()} resident stage-0 adopted (nEmbd=${localWorker.nEmbd})`);
+          } else {
+            // Resolve stage-0's shards from the SAME per-layer manifest the
+            // communal hosts use (embeddings + layers [0, driverLayers)) — NOT
+            // the monolithic `full.gguf` fallback. This keeps every stage on one
+            // model: a stage-0 loaded from a different artifact than the sharded
+            // package emits wrong-width activations the remote stage rejects
+            // ("activation input payload is N bytes, expected M"). Model-agnostic
+            // — widths/fragments come from the manifest. Falls back to
+            // `stageShardUrls()` only when no manifest is set (the test model).
+            const { plan: stage0Plan } = await resolveCommunalShardPlan(
+              { layerStart: 0, layerEnd: driverLayers, includeOutput: false },
+              {
+                manifestUrl,
+                fallbackShardUrls: stageShardUrls,
+                includeEmbeddings: true,
+                opfsQuotaBytes: OPFS_QUOTA_CEILING_BYTES,
+              },
+            );
+            localWorker = new StageWorkerClient(createStageWorker(), 'communal-chat-stage-0', log);
+            await localWorker.load(
+              {
+                modelId,
+                layerStart: 0,
+                layerEnd: driverLayers,
+                totalLayers,
+                shardUrls: stage0Plan.shardUrls,
+                shardHashes: stage0Plan.shardHashes,
+                shardBytes: stage0Plan.shardBytes,
+                ctxSize,
+              },
+              { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+            );
+            log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
+            await warmUpStageWorker(localWorker, log);
+            log(`[communal-chat] ${elapsed()} local stage-0 warm-up done`);
+          }
           localWorkerRef.current = localWorker;
         } else if (textRelay) {
           log(`[communal-chat] ${elapsed()} text-relay driver — no local stage, no local tokenizer (nEmbd=${nEmbd})`);
@@ -749,6 +1053,9 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       thinDriver,
       thinTokenizer,
       textRelay,
+      serveFirstStage,
+      serveFirstStageMaxSessions,
+      ensureResidentStageZero,
       timeouts,
       queueWaitMs,
       replanJitterMs,
@@ -782,5 +1089,6 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     start,
     abort,
     isRunning,
+    residentStageZeroRef,
   };
 }

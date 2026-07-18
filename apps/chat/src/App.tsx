@@ -24,6 +24,7 @@ import {
   useAudioKeepalive,
   useCommunalChat,
   useCommunalHost,
+  useLocalStageServe,
   useMeshContext,
   useMeshRoster,
   useMeshTools,
@@ -270,21 +271,63 @@ function Dashboard(props: {
     modelCapability.requiredStorageBufferBytes !== undefined &&
     isThinDriverForModel(gpuDetection, modelCapability.requiredStorageBufferBytes);
 
+  // OPTIONAL-STAGE0 Phase 2 — a device that fails the per-model capability
+  // check (`isThinDevice`) routes text-relay: no local stage-0 worker AND no
+  // local tokenizer worker (none is constructed anywhere in this component —
+  // `thinTokenizer` is deliberately never wired here). A capable device
+  // (the common case, `isThinDevice: false`) gets `thinDriver: false,
+  // textRelay: false` — byte-for-byte today's behavior, since those are
+  // `useCommunalChat`'s own defaults.
+  const chat = useCommunalChat({
+    peer,
+    createStageWorker,
+    modelId: modelConfig.modelId,
+    totalLayers: modelConfig.totalLayers,
+    driverLayers: modelConfig.driverLayers,
+    manifestUrl: modelConfig.manifestUrl,
+    nEmbd: modelConfig.nEmbd,
+    ctxSize: modelConfig.ctxSize,
+    wireDtype: modelConfig.wireDtype,
+    thinDriver: isThinDevice,
+    textRelay: isThinDevice,
+    // REUSE-STAGE0 — opt-in (see ContributionPanel's "Serve the first
+    // stage" toggle / useHostingConsent's serveFirstStage). Only meaningful
+    // for a CAPABLE device (isThinDevice: false already implies no local
+    // stage-0 worker exists to serve from); off by default, byte-identical
+    // to today's per-turn load+dispose when unset.
+    serveFirstStage: hostingConsent.serveFirstStage,
+    priorityScore,
+    standingLedger,
+    telemetry: trackEvent,
+    log,
+  });
+
+  // REUSE-STAGE0 — serve `chat`'s resident stage-0 worker (when
+  // `serveFirstStage` loaded one) to thin/text-relay clients as an isFirst
+  // communal stage. Gated the same way (`hostingConsent.serveFirstStage`);
+  // this hook itself no-ops (no engine, no wire subscriptions) whenever the
+  // resident worker hasn't loaded yet or the toggle is off.
+  const localServe = useLocalStageServe({
+    enabled: hostingConsent.serveFirstStage,
+    peer,
+    residentStageZeroRef: chat.residentStageZeroRef,
+    priorityScore,
+    standingLedger,
+    log,
+  });
+
   const communal = useCommunalHost({
     enabled: hostingEnabled,
     peer,
     baseCap: props.baseCap,
     createStageWorker,
-    // OPTIONAL-STAGE0: when true, capable hosts claim over [0, totalLayers)
-    // so the lowest claim owns the embeddings (an isFirst communal host) that
-    // a thin/text-relay client needs. DISABLED for now: enabling it regressed
-    // the working body host — a host claiming a range that ends at the final
-    // layer failed to load with `missing token_embd.weight` (this model ties
-    // input/output embeddings, so the output stage needs the embeddings
-    // artifact, which the fragment resolver doesn't include unless the stage
-    // is also isFirst). Needs that fragment fix — and likely a better design
-    // that reuses a driver's already-loaded [0, driverLayers) stage rather
-    // than spinning up a second isFirst stage — before it's re-enabled.
+    // The dead-end `supportThinDrivers` path (a SEPARATE isFirst communal
+    // claim spun up by this hook's own assembly loop) stays off — it hit
+    // `missing token_embd.weight` (this model ties input/output embeddings;
+    // the fragment resolver doesn't include them unless the stage is also
+    // isFirst) and is superseded by REUSE-STAGE0 above: `localServe` reuses
+    // the driver's own ALREADY-loaded, ALREADY-embeddings-including
+    // `[0, driverLayers)` worker instead of loading a second one.
     supportThinDrivers: false,
     modelId: modelConfig.modelId,
     totalLayers: modelConfig.totalLayers,
@@ -300,6 +343,11 @@ function Dashboard(props: {
     telemetry: trackEvent,
     contributionBudgetBytes: hostingConsent.contributionBudgetBytes,
     maxLayersOverride: hostingConsent.maxLayersOverride,
+    // REUSE-STAGE0 — union `localServe`'s own [0,driverLayers) ad into
+    // THIS hook's cap.stageHost.loadedStages publish (see
+    // `extraLoadedStages`'s doc comment for why this must be the ONE
+    // `peer.setCap` call site rather than two independent callers).
+    extraLoadedStages: localServe.loadedStageEntry ? [localServe.loadedStageEntry] : undefined,
     log,
   });
 
@@ -340,31 +388,6 @@ function Dashboard(props: {
   const effectiveApproxBytes =
     hostingConsent.maxLayersOverride !== undefined ? layersHosted * modelConfig.avgLayerBytes : weightBudgetBytes;
   const capacitySummaryLabel = `Hosting up to ${layersHosted} of ${communalLayerCount} layers (~${formatVramLabel(effectiveApproxBytes)})`;
-
-  // OPTIONAL-STAGE0 Phase 2 — a device that fails the per-model capability
-  // check (`isThinDevice`) routes text-relay: no local stage-0 worker AND no
-  // local tokenizer worker (none is constructed anywhere in this component —
-  // `thinTokenizer` is deliberately never wired here). A capable device
-  // (the common case, `isThinDevice: false`) gets `thinDriver: false,
-  // textRelay: false` — byte-for-byte today's behavior, since those are
-  // `useCommunalChat`'s own defaults.
-  const chat = useCommunalChat({
-    peer,
-    createStageWorker,
-    modelId: modelConfig.modelId,
-    totalLayers: modelConfig.totalLayers,
-    driverLayers: modelConfig.driverLayers,
-    manifestUrl: modelConfig.manifestUrl,
-    nEmbd: modelConfig.nEmbd,
-    ctxSize: modelConfig.ctxSize,
-    wireDtype: modelConfig.wireDtype,
-    thinDriver: isThinDevice,
-    textRelay: isThinDevice,
-    priorityScore,
-    standingLedger,
-    telemetry: trackEvent,
-    log,
-  });
 
   // ── Pipeline-handoff connection-type polling ────────────────────────
   // `peer.peerConnectionType` is best-effort/optional (mesh-core's Peer
@@ -819,6 +842,8 @@ function Dashboard(props: {
               approxGbLabel: formatVramLabel(effectiveApproxBytes),
               maxLayersOverride: hostingConsent.maxLayersOverride,
               onChangeMaxLayers: hostingConsent.setMaxLayersOverride,
+              serveFirstStage: hostingConsent.serveFirstStage,
+              onChangeServeFirstStage: hostingConsent.setServeFirstStage,
             },
           }}
           audioKeepalive={audioKeepalive}

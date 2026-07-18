@@ -11,6 +11,7 @@ import {
   sanitizeWasmHeapBudget,
   sanitizeWeightBudget,
   chooseMaxSessions,
+  unionLoadedStages,
   WASM_HEAP_CEILING_BYTES,
   CONTRIBUTION_BUDGET_CEILING_BYTES,
 } from '../src/stagePipelinePlanning.ts';
@@ -165,6 +166,44 @@ test('buildStageHostCap: omits cachedFragments when empty, omits optional stabil
 test('buildStageHostCap: negative uptimeMs is clamped to 0', () => {
   const cap = buildStageHostCap({ maxStorageBufferBindingSize: 500_000_000 }, { keepalive: false, visible: true, uptimeMs: -50 });
   assert.equal(cap.stability?.uptimeMs, 0);
+});
+
+// ── REUSE-STAGE0: unionLoadedStages (the unified cap publisher's core) ──
+
+test('unionLoadedStages: concatenates base + extra without clobbering either', () => {
+  const base = [{ modelId: 'm', layerStart: 2, layerEnd: 36, includeEmbeddings: false, includeOutput: true, ctxSize: 4096, maxSessions: 4, activeSessions: 1, epoch: 1 }];
+  const extra = [{ modelId: 'm', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, maxSessions: 1, activeSessions: 0, epoch: 1 }];
+  const union = unionLoadedStages(base, extra);
+  assert.equal(union.length, 2);
+  assert.deepEqual(union[0], base[0]);
+  assert.deepEqual(union[1], extra[0]);
+});
+
+test('unionLoadedStages: either side absent/empty is a safe no-op, never throws', () => {
+  const one = [{ modelId: 'm', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, maxSessions: 1, activeSessions: 0, epoch: 1 }];
+  assert.deepEqual(unionLoadedStages(one, undefined), one);
+  assert.deepEqual(unionLoadedStages(undefined, one), one);
+  assert.deepEqual(unionLoadedStages(undefined, undefined), []);
+  assert.deepEqual(unionLoadedStages([], []), []);
+});
+
+test('buildStageHostCap fed a unionLoadedStages(...) result: BOTH the [0,2) includeEmbeddings:true entry and the [2,36) entry are present in the published cap — the exact unified-publisher scenario a REUSE-STAGE0 peer hits when it serves stage-0 AND hosts the body', () => {
+  const stageZero = { modelId: 'qwen3-8b', layerStart: 0, layerEnd: 2, includeEmbeddings: true, includeOutput: false, ctxSize: 4096, wireDtype: 'i8' as const, maxSessions: 1, activeSessions: 1, epoch: 1 };
+  const body = { modelId: 'qwen3-8b', layerStart: 2, layerEnd: 36, includeEmbeddings: false, includeOutput: true, ctxSize: 4096, wireDtype: 'i8' as const, maxSessions: 4, activeSessions: 2, epoch: 3 };
+  const cap = buildStageHostCap(
+    { maxStorageBufferBindingSize: 1_200_000_000 },
+    { keepalive: true, visible: true, uptimeMs: 1000 },
+    undefined,
+    { maxSessions: 4, activeSessions: 2 },
+    unionLoadedStages([body], [stageZero]),
+  );
+  assert.equal(cap.loadedStages?.length, 2);
+  const first = cap.loadedStages?.find((s) => s.layerStart === 0 && s.layerEnd === 2);
+  const second = cap.loadedStages?.find((s) => s.layerStart === 2 && s.layerEnd === 36);
+  assert.ok(first, 'the [0,2) stage-0 entry must survive the union onto the wire cap');
+  assert.equal(first?.includeEmbeddings, true);
+  assert.ok(second, 'the [2,36) body-host entry must survive the union onto the wire cap — neither producer clobbers the other');
+  assert.equal(second?.includeEmbeddings, false);
 });
 
 // ── planPipelineForDriver ──────────────────────────────────────────────

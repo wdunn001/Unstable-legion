@@ -46,6 +46,13 @@ export interface ContributionPanelProps {
    * `useCommunalHost.ts`'s `maxLayersOverride` doc comment. */
   maxLayersOverride?: number;
   onChangeMaxLayers: (layers: number | undefined) => void;
+  /** REUSE-STAGE0 — "Serve the first stage" opt-in. Reuses this device's
+   * own already-loaded local stage-0 worker (the one that drives ITS OWN
+   * chat) to also serve low-power/thin clients' entry stage, instead of a
+   * separate GPU load. Off by default; see
+   * `useCommunalChat`'s `serveFirstStage` doc comment. */
+  serveFirstStage: boolean;
+  onChangeServeFirstStage: (enabled: boolean) => void;
 }
 
 const FREE_TEXT_OPTION = '__free_text__';
@@ -177,6 +184,15 @@ export function ContributionPanel(props: ContributionPanelProps) {
           Reset to GB-budget-derived layer count
         </button>
       )}
+
+      <label className="contribution-field contribution-serve-first-stage-field">
+        <input
+          type="checkbox"
+          checked={props.serveFirstStage}
+          onChange={(e) => props.onChangeServeFirstStage(e.target.checked)}
+        />
+        <span>Serve the first stage — let low-power phones use your device as their entry point (may slow your own chat).</span>
+      </label>
     </div>
   );
 }
