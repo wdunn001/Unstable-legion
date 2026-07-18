@@ -991,6 +991,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         // for LOAD_STALL_MS) and keep a generous LOAD_CEILING_MS backstop
         // for the pathological "progress never actually finishes" case —
         // see loadWatchdog.ts's module doc.
+        // Rebuild download progress MONOTONICALLY from the SET of completed
+        // shards. The loader fetches shards in PARALLEL and reports each
+        // completion by its 1-based index with a prefix-by-index byte sum
+        // (it assumes every lower-indexed shard is also done), so out-of-order
+        // completion makes the raw numbers bounce — shard 6 → 990MB, then
+        // shard 1 → 6MB — rolling the UI bar BACKWARD. A set only grows, and
+        // req.shardBytes gives each shard's real size, so this only ever
+        // climbs and reflects what's actually downloaded.
+        const completedShardIdx = new Set<number>();
+        const shardSizes = req.shardBytes;
         await runWithStallWatchdog(
           (progressTick) =>
             client.load(
@@ -1011,8 +1021,24 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               { useMemoryShardStore: req.useMemoryShardStore },
               (progress) => {
                 progressTick();
-                setLoadProgress(progress);
-                lastProgress = progress;
+                // `progress.shardsFetched` is the just-completed shard's
+                // 1-based INDEX (not a count). Fold it into the completed set
+                // and recompute a monotonic count + real-byte sum; dupes
+                // (the loader re-reports some shards) are absorbed by the set.
+                if (progress.shardsFetched > 0) completedShardIdx.add(progress.shardsFetched);
+                const monotonicShards = completedShardIdx.size;
+                let monotonicBytes = progress.bytesFetched;
+                if (shardSizes && shardSizes.length > 0) {
+                  monotonicBytes = 0;
+                  for (const idx of completedShardIdx) monotonicBytes += shardSizes[idx - 1] ?? 0;
+                }
+                const monotonic: StageWorkerLoadProgress = {
+                  ...progress,
+                  shardsFetched: monotonicShards,
+                  bytesFetched: monotonicBytes,
+                };
+                setLoadProgress(monotonic);
+                lastProgress = monotonic;
                 // Prefer the loader's OWN phase — it knows whether it's still
                 // fetching or already inside legion_stage_open pushing weights
                 // to VRAM. The shard-count guess below is only a fallback for
@@ -1022,12 +1048,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 // minutes in the GPU upload.
                 const phase =
                   progress.phase ??
-                  (progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading');
-                notifyDriverLoadProgress(progress, phase);
+                  (monotonic.totalShards > 0 && monotonic.shardsFetched >= monotonic.totalShards ? 'opening' : 'downloading');
+                notifyDriverLoadProgress(monotonic, phase);
                 log(
-                  `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +
-                    (progress.totalBytes
-                      ? ` (${(progress.bytesFetched / 1048576).toFixed(0)}/${(progress.totalBytes / 1048576).toFixed(0)} MB)`
+                  `[stage-host] load progress: ${monotonic.shardsFetched}/${monotonic.totalShards} shards` +
+                    (monotonic.totalBytes
+                      ? ` (${(monotonic.bytesFetched / 1048576).toFixed(0)}/${(monotonic.totalBytes / 1048576).toFixed(0)} MB)`
                       : ''),
                 );
               },

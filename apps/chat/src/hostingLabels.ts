@@ -69,15 +69,21 @@ export function downloadProgressFraction(progress: ProgressLike): number {
   return Math.max(0, Math.min(1, fraction));
 }
 
-/** Scales the real progress fraction onto a LAYER count so the user only
- * ever sees "X of N layers", never a raw fragment count that includes
- * non-layer artifacts (metadata/output) or double-counts the driver's
- * own local layers — see module doc. `layerCount` should be the count
- * for WHATEVER is actually being fetched right now (a specific claim's
- * layer count, or the full communal-layer count as a fallback). */
+/** Scales progress onto a LAYER count so the user only ever sees "X of N
+ * layers", never a raw fragment count that includes non-layer artifacts
+ * (metadata/output). `layerCount` should be the count for WHATEVER is being
+ * fetched right now (a claim's layer count, or the communal-layer total).
+ *
+ * Scales by the SHARD fraction, NOT the byte fraction: each shard is roughly
+ * one layer, so this discrete counter tracks COMPLETED shards and lines up
+ * with the host's console shard log ("shard 5/38"). (The bar %/byte readout
+ * stay byte-based — bytes are the honest continuous download progress, but
+ * they LAG the shard count because the embeddings/output shards are far
+ * larger than any single layer, which made this counter read one behind.) */
 export function assembledLayerCount(progress: ProgressLike, layerCount: number): number {
-  if (layerCount <= 0) return 0;
-  return Math.max(0, Math.min(layerCount, Math.round(downloadProgressFraction(progress) * layerCount)));
+  if (layerCount <= 0 || progress.totalShards <= 0) return 0;
+  const shardFraction = Math.max(0, Math.min(1, progress.shardsFetched / progress.totalShards));
+  return Math.max(0, Math.min(layerCount, Math.round(shardFraction * layerCount)));
 }
 
 function formatGigabytes(bytes: number): string {

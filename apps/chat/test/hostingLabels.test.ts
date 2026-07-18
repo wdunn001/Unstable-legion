@@ -46,10 +46,12 @@ test('downloadProgressFraction: clamped to [0,1] and safe against totalShards=0'
   assert.equal(downloadProgressFraction({ shardsFetched: 0, totalShards: 0, bytesFetched: 0 }), 0);
 });
 
-test('assembledLayerCount: scales the byte fraction onto the LAYER domain, not the raw 36-fragment domain', () => {
-  // 18/34 layers worth of progress, expressed via a 36-fragment/4.7GB backing signal.
-  const progress = { shardsFetched: 19, totalShards: 36, bytesFetched: 2_350_000_000, totalBytes: 4_700_000_000 }; // 50% bytes
-  assert.equal(assembledLayerCount(progress, 34), 17); // round(0.5 * 34) = 17
+test('assembledLayerCount: scales the SHARD fraction onto the LAYER domain, not the raw 36-fragment domain', () => {
+  // Scales by completed shards (19/36), not bytes — so the discrete counter
+  // tracks shard completion and matches the host console, not the byte-lagged
+  // fraction (which read one behind because huge embeddings/output shards skew it).
+  const progress = { shardsFetched: 19, totalShards: 36, bytesFetched: 2_350_000_000, totalBytes: 4_700_000_000 };
+  assert.equal(assembledLayerCount(progress, 34), 18); // round(19/36 * 34) = 18
 });
 
 test('assembledLayerCount: never exceeds layerCount even at 100%+ fraction', () => {
@@ -60,7 +62,7 @@ test('assembledLayerCount: never exceeds layerCount even at 100%+ fraction', () 
 test('downloadProgressLabel: reports "X of N layers", NEVER the raw shard/fragment numerator or the 36-count', () => {
   const progress = { shardsFetched: 19, totalShards: 36, bytesFetched: 2_350_000_000, totalBytes: 4_700_000_000 };
   const label = downloadProgressLabel(progress, 34);
-  assert.equal(label, 'Downloading model: 17 of 34 layers (2.4GB of ~4.7GB)');
+  assert.equal(label, 'Downloading model: 18 of 34 layers (2.4GB of ~4.7GB)');
   assert.doesNotMatch(label, /36/, 'must never leak the raw fragment total (metadata+output+layers)');
   assert.doesNotMatch(label, /19/, 'must never leak the raw fragment numerator');
 });
