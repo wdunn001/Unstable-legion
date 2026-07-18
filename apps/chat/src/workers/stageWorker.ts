@@ -26,6 +26,7 @@ import {
   type ActivationFrame,
 } from '@unstable-legion/stage-runtime';
 import {
+  createLocalFolderFetch,
   patchWebGpuDeviceLimits,
   type StageWorkerRequest,
   type StageWorkerResponse,
@@ -98,12 +99,24 @@ async function handle(req: StageWorkerRequest): Promise<void> {
           /* @vite-ignore */ new URL('/wasm/legion-stage.js', self.location.origin).toString()
         );
         console.log(`[stage-worker] glue module imported ${mem()}`);
+        // LOCAL-MODEL-FOLDER: when the caller (useCommunalChat/
+        // useCommunalHost, via StageWorkerClient.load) supplied a picked
+        // FileSystemDirectoryHandle, fetch fragment bytes from IT instead
+        // of the network — createLocalFolderFetch falls back to the real
+        // fetch for anything missing from the folder, and every fragment
+        // (local or network) still gets hashed against the REMOTE
+        // manifest by the unchanged fetchAndCacheFragment verify path (see
+        // localFolderFetch.ts's module doc comment for the full trust
+        // model). Absent -> unchanged default `fetch`.
+        const fetchImpl = req.localFolderHandle ? createLocalFolderFetch(req.localFolderHandle) : undefined;
+        if (fetchImpl) console.log('[stage-worker] loading from local folder (falls back to network for missing fragments)');
         // M3: in-memory shard store when the caller says the claimed
         // range would exceed the OPFS-origin quota — see
         // stageWorkerProtocol.ts's `useMemoryShardStore` doc comment.
         stage = await loadStage(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
+          ...(fetchImpl ? { fetchImpl } : {}),
           // Per-shard structured progress -> relayed to the caller as a
           // `progress` response (same reqId as this `load`) so
           // `StageWorkerClient.load()`'s `onProgress` can drive a real

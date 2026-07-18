@@ -201,6 +201,17 @@ export interface UseStageHostOptions {
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
     useMemoryShardStore?: boolean;
+    /**
+     * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` this host should
+     * fetch fragment BYTES from instead of the network (see
+     * `localFolderFetch.ts`'s trust-model doc comment: the manifest/hashes
+     * this load verifies against are still `shardHashes` above, sourced
+     * from the REMOTE manifest exactly as always — the folder never
+     * supplies anything but bytes). `useCommunalHost.ts` wires this from
+     * its own `localFolderHandle` option. `undefined` = unchanged
+     * network-fetch behavior.
+     */
+    localFolderHandle?: FileSystemDirectoryHandle;
   } | null;
   /**
    * M3 — publish `stageHost` WITHOUT `loadedStages` while true, even
@@ -400,6 +411,13 @@ interface PendingOpen {
   shardBytes?: readonly number[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
+  /** M3 preload only (`opts.preloadStage.localFolderHandle`, see that
+   * option's doc comment) — a wire-triggered open (`origin: 'legacy' |
+   * 'session'` from a remote driver) never carries one; a remote peer has
+   * no way to hand THIS browser a `FileSystemDirectoryHandle` (it isn't
+   * network-serializable), so this only ever gets set for the
+   * self-directed preload path. */
+  localFolderHandle?: FileSystemDirectoryHandle;
   /** Present only for `origin === 'session'` — lets the host build the
    * decoder at accept time instead of via the legacy first-frame convention.
    * Absent for a relay hop ≥2, which takes its upstream's header inline. */
@@ -1018,7 +1036,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 // see this file's top doc comment and MULTI-SESSION.md.
                 maxSessions: driverMaxSessions + 1,
               },
-              { useMemoryShardStore: req.useMemoryShardStore },
+              { useMemoryShardStore: req.useMemoryShardStore, localFolderHandle: req.localFolderHandle },
               (progress) => {
                 progressTick();
                 // `progress.shardsFetched` is the just-completed shard's
@@ -1124,6 +1142,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
         useMemoryShardStore: req.useMemoryShardStore,
+        localFolderHandle: req.localFolderHandle,
       };
       try {
         await ensureWorkerLoaded(pending);

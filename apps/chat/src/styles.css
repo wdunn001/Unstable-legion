@@ -1009,6 +1009,24 @@ code {
   margin-top: -2px;
 }
 
+/* ── Load layers from a local folder ─────────────────────────────────── */
+.model-folder-panel {
+  margin-top: 6px;
+}
+.model-folder-status {
+  margin: 0;
+  font-size: 11px;
+}
+.model-folder-active {
+  color: var(--accent);
+}
+.model-folder-needs-permission {
+  color: var(--danger);
+}
+.model-folder-error {
+  color: var(--danger);
+}
+
 .audio-keepalive-row {
   display: flex;
   align-items: center;

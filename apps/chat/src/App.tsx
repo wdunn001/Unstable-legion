@@ -51,6 +51,7 @@ import { TrustInterstitial } from './components/TrustInterstitial.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { useThreads } from './hooks/useThreads.js';
 import { useHostingConsent } from './hooks/useHostingConsent.js';
+import { useModelFolder } from './hooks/useModelFolder.js';
 import { useToolContribution, type UseToolContributionHandle } from './hooks/useToolContribution.js';
 import { MAX_TOOL_ROUNDS, buildToolResponsePayload, collectMeshTools, stripToolMarkup } from './toolChat.js';
 import { useGpuDetection } from './hooks/useGpuDetection.js';
@@ -246,6 +247,12 @@ function Dashboard(props: {
 
   const audioKeepalive = useAudioKeepalive();
   const hostingConsent = useHostingConsent();
+  // LOCAL-MODEL-FOLDER — "Load layers from a local folder" (see
+  // ModelFolderPanel / useModelFolder.ts). `handle` feeds BOTH this
+  // driver's own stage-0 load (`chat` below) and this peer's communal
+  // hosting load (`communal` below) — a picked folder benefits either
+  // role, independent of the hosting-consent decision.
+  const modelFolder = useModelFolder();
   // Session-local live on/off — distinct from the persisted `consent`
   // decision (see useHostingConsent's doc comment: "leaving" for this
   // session shouldn't erase a standing "yes").
@@ -287,6 +294,7 @@ function Dashboard(props: {
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
     manifestUrl: modelConfig.manifestUrl,
+    localFolderHandle: modelFolder.handle,
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
     wireDtype: modelConfig.wireDtype,
@@ -337,6 +345,7 @@ function Dashboard(props: {
     ctxSize: modelConfig.ctxSize,
     wireDtype: modelConfig.wireDtype,
     manifestUrl: modelConfig.manifestUrl,
+    localFolderHandle: modelFolder.handle,
     fallbackShardUrls: modelConfig.shardUrls,
     avgLayerBytes: modelConfig.avgLayerBytes,
     keepaliveEnabled: audioKeepalive.enabled,
@@ -863,6 +872,7 @@ function Dashboard(props: {
           audioKeepalive={audioKeepalive}
           showAudioKeepalive={hostingConsent.consent === 'accepted'}
           toolContribution={toolContribution}
+          modelFolder={modelFolder}
           pipelineHandoff={{
             stages: chat.plan?.stages ?? [],
             hopBytes: chat.hopBytes ?? {},

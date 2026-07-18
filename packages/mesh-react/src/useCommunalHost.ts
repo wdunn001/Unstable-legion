@@ -132,6 +132,19 @@ export interface UseCommunalHostOptions {
    * without a manifest). */
   manifestUrl?: string | readonly string[];
   fallbackShardUrls?: () => readonly string[];
+  /**
+   * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` (from
+   * `apps/chat/src/hooks/useModelFolder.ts`) pointing at a local clone of
+   * this manifest's model package. When set, this host's proactive
+   * preload (`issuePreload` below, `useStageHost`'s `preloadStage.
+   * localFolderHandle`) fetches fragment BYTES from the folder instead of
+   * the network — `manifestUrl`/the fragment hashes it verifies against
+   * are UNCHANGED; see `localFolderFetch.ts`'s trust-model doc comment.
+   * Read via a ref (like `priorityScore` below) so a fresh identity each
+   * render doesn't restart the assembly-loop effect. `undefined` =
+   * unchanged network-fetch behavior.
+   */
+  localFolderHandle?: FileSystemDirectoryHandle;
   /** Uniform per-layer byte estimate, used to convert this peer's
    * WebGPU/wasm capacity into a layer COUNT for `communalHostClaim`. Real
    * models have non-uniform layer sizes; this is the same
@@ -562,6 +575,11 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const pendingClaimRef = useRef<{ claim: CommunalClaimRange; notBeforeMs: number } | null>(null);
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
+  // LOCAL-MODEL-FOLDER — read fresh at issue time (see `issuePreload`
+  // below) without being an assembly-loop effect dependency, same
+  // "ref, not a dep" discipline as `priorityScoreRef` above.
+  const localFolderHandleRef = useRef<FileSystemDirectoryHandle | undefined>(opts.localFolderHandle);
+  localFolderHandleRef.current = opts.localFolderHandle;
 
   // ── Backoff + dedup state (kill the tight retry loop + log storm) ─────
   const backoffOptsRef = useRef<BackoffOptions | undefined>(opts.backoff);
@@ -957,6 +975,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
           useMemoryShardStore: plan.useMemoryShardStore,
+          localFolderHandle: localFolderHandleRef.current,
         });
         setSuppressAdvertise(false);
       } catch (err) {

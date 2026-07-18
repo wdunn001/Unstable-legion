@@ -101,6 +101,17 @@ export interface UseCommunalChatOptions {
    * ("activation input payload is N bytes, expected M"). The manifest is the
    * single source of truth that keeps every stage on the same model. */
   manifestUrl?: string | readonly string[];
+  /**
+   * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` (from
+   * `apps/chat/src/hooks/useModelFolder.ts`) pointing at a local clone of
+   * this manifest's model package. When set, this driver's own local
+   * stage-0 load (both the per-turn path and the `serveFirstStage`
+   * resident path) fetches fragment BYTES from the folder instead of the
+   * network — the manifest/hashes it verifies against are UNCHANGED,
+   * still `manifestUrl` above; see `localFolderFetch.ts`'s trust-model doc
+   * comment. `undefined` = unchanged network-fetch behavior.
+   */
+  localFolderHandle?: FileSystemDirectoryHandle;
   nEmbd?: number;
   ctxSize?: number;
   wireDtype?: 'f32' | 'f16' | 'i8';
@@ -404,6 +415,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     totalLayers = STAGE_TOTAL_LAYERS,
     driverLayers = STAGE_DRIVER_LAYERS,
     manifestUrl,
+    localFolderHandle,
     nEmbd = STAGE_N_EMBD,
     ctxSize = STAGE_CTX_SIZE,
     wireDtype = 'i8',
@@ -591,7 +603,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           // `ResidentStageZero.serveMaxSessions`'s doc comment.
           maxSessions: 1 + serveFirstStageMaxSessions,
         },
-        { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+        { useMemoryShardStore: stage0Plan.useMemoryShardStore, localFolderHandle },
       );
       logRef.current(`[communal-chat] resident stage-0 loaded (nEmbd=${client.nEmbd}); warming up…`);
       await warmUpStageWorker(client, logRef.current);
@@ -620,7 +632,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     } finally {
       if (eng.loadInFlight === doLoad) eng.loadInFlight = null;
     }
-  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
+  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, localFolderHandle, createStageWorker, serveFirstStageMaxSessions]);
 
   // EAGER SERVE — the instant "Serve the first stage" is on, load the
   // resident stage-0 so a thin client that routes here isn't stuck waiting out
@@ -808,7 +820,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
                 shardBytes: stage0Plan.shardBytes,
                 ctxSize,
               },
-              { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+              { useMemoryShardStore: stage0Plan.useMemoryShardStore, localFolderHandle },
             );
             log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
             await warmUpStageWorker(localWorker, log);
@@ -1071,6 +1083,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       modelId,
       totalLayers,
       driverLayers,
+      manifestUrl,
+      localFolderHandle,
       nEmbd,
       ctxSize,
       wireDtype,

@@ -68,6 +68,22 @@ export type StageWorkerRequest =
        * path (unchanged default for every existing caller).
        */
       useMemoryShardStore?: boolean;
+      /**
+       * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` the user picked
+       * via `showDirectoryPicker()` (see `apps/chat/src/hooks/
+       * useModelFolder.ts`), pointing at a local clone of the model
+       * package (the HF repo, or a `.88` slice). `FileSystemDirectoryHandle`
+       * is structured-cloneable, so it crosses this postMessage boundary
+       * with no transfer list needed. When present, the worker builds
+       * `createLocalFolderFetch(handle)` (mesh-react's
+       * `localFolderFetch.ts`) and passes it as `loadStage`'s
+       * `opts.fetchImpl` — fragment BYTES come from the folder, but the
+       * manifest/hashes this load verifies against still come from the
+       * REMOTE source exactly as always (see that module's trust-model doc
+       * comment). Absent/undefined = unchanged default behavior (fetch
+       * from the network).
+       */
+      localFolderHandle?: FileSystemDirectoryHandle;
     }
   | {
       type: 'prefill';
