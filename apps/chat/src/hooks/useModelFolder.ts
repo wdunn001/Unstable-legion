@@ -25,7 +25,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const DB_NAME = 'unstable-legion-chat';
+// SEPARATE database from the thread store (`db/threadStore.ts`, also named
+// 'unstable-legion-chat'). Sharing a DB name with a DIFFERENT object store at
+// the same version is an IndexedDB collision: whichever opens first creates
+// the DB with only ITS store, and the other's `transaction()` then throws
+// "object store not found". This feature gets its own DB so the two never
+// race. (A prior build shared the name and broke the thread store — see the
+// threadStore DB_VERSION bump that repairs DBs created in that window.)
+const DB_NAME = 'unstable-legion-model-folder';
 const DB_VERSION = 1;
 const STORE_NAME = 'model-folder';
 const HANDLE_KEY = 'handle';

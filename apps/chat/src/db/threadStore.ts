@@ -45,7 +45,13 @@ export interface ChatThread {
 }
 
 const DB_NAME = 'unstable-legion-chat';
-const DB_VERSION = 1;
+// v2 REPAIR: a prior build's useModelFolder shared this DB name but declared a
+// different store ('model-folder') at v1, so if it opened first it created the
+// DB WITHOUT 'threads' — leaving putThread/getThreads throwing "object store
+// not found". Bumping the version fires onupgradeneeded on those DBs and the
+// guard below recreates 'threads'. Healthy DBs (already have 'threads') no-op.
+// (useModelFolder now uses its OWN DB, so this collision can't recur.)
+const DB_VERSION = 2;
 const STORE = 'threads';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
