@@ -21,7 +21,7 @@
  */
 import { useMemo, useState } from 'react';
 import { GPU_CATALOG, matchGpuCatalog, findGpuCatalogEntryByName, formatVramLabel, parseGbInput } from '../gpuCatalog.js';
-import { probeGpuAllocatableBytes } from '../gpuProbe.js';
+import { probeGpuAllocatableBytes, PROBE_HEADROOM_FRACTION } from '../gpuProbe.js';
 
 export interface ContributionPanelProps {
   /** Best-effort detected GPU renderer/adapter name (from
@@ -89,10 +89,24 @@ export function ContributionPanel(props: ContributionPanelProps) {
     setProbing(true);
     setProbeMessage(undefined);
     try {
+      const catalogMatch = matchGpuCatalog(props.detectedGpuName);
       const result = await probeGpuAllocatableBytes();
       if (result.ok && result.vramBytes) {
-        props.onChangeBudget(result.vramBytes);
-        setProbeMessage(`Detected ~${formatVramLabel(result.vramBytes)} usable — budget updated.`);
+        // The probe measures ALLOCATABLE bytes, which on Windows (WDDM) spill
+        // PAST dedicated VRAM into shared system memory — inflating the number
+        // (an 11GB card probes ~17GB). When we recognize the GPU, its catalog
+        // VRAM is the true dedicated ceiling, so clamp to it (× the probe's own
+        // headroom fraction, leaving room for KV cache / activations / browser).
+        const ceiling = catalogMatch
+          ? Math.floor(catalogMatch.vramBytes * PROBE_HEADROOM_FRACTION)
+          : Number.POSITIVE_INFINITY;
+        const usable = Math.min(result.vramBytes, ceiling);
+        props.onChangeBudget(usable);
+        setProbeMessage(
+          catalogMatch
+            ? `Detected ${catalogMatch.name} (~${formatVramLabel(catalogMatch.vramBytes)} VRAM) — budget set to ~${formatVramLabel(usable)} usable.`
+            : `Detected ~${formatVramLabel(usable)} usable — budget updated. (On Windows this can include shared system memory; lower it manually if hosting feels slow.)`,
+        );
       } else {
         setProbeMessage(result.reason ?? 'Auto-detect did not find any usable capacity.');
       }
