@@ -84,6 +84,15 @@ export type StageWorkerRequest =
        * from the network).
        */
       localFolderHandle?: FileSystemDirectoryHandle;
+      /**
+       * INCREMENTAL LOAD (#47) — when true (and `descriptor.shardRoles` is
+       * present), the worker loads the stage shard-by-shard via the native
+       * begin/add_shard/finish ABI (`loadStageIncremental`), keeping only ~a
+       * byte-budget of shards in MEMFS at once instead of the whole stage.
+       * Absent/false = the monolithic `loadStage` path (unchanged default).
+       * Gated behind `?incrementalLoad=1` in useStageHost during rollout.
+       */
+      incrementalLoad?: boolean;
     }
   | {
       type: 'prefill';

@@ -372,6 +372,10 @@ interface ShardPlan {
   shardUrls: readonly string[];
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** Per-shard role from the layer-package manifest (Fragment.role) — carried
+   * so the incremental loader can tell the metadata fragment from data shards
+   * (see stage-runtime's StageDescriptor.shardRoles / loadStageIncremental). */
+  shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
   useMemoryShardStore: boolean;
 }
 
@@ -449,6 +453,7 @@ export async function resolveCommunalShardPlan(
       shardUrls: fragments.map((f) => f.url),
       shardHashes: fragments.map((f) => f.sha256),
       shardBytes: fragments.map((f) => f.bytes),
+      shardRoles: fragments.map((f) => f.role),
       useMemoryShardStore,
     },
     manifestCache: cache,
@@ -974,6 +979,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardUrls: plan.shardUrls,
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
+          shardRoles: plan.shardRoles,
           useMemoryShardStore: plan.useMemoryShardStore,
           localFolderHandle: localFolderHandleRef.current,
         });

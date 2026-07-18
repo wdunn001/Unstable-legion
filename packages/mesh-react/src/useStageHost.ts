@@ -200,6 +200,9 @@ export interface UseStageHostOptions {
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
+    /** Per-shard manifest role — carried for the incremental loader (see
+     * stage-runtime StageDescriptor.shardRoles). */
+    shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
     useMemoryShardStore?: boolean;
     /**
      * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` this host should
@@ -409,6 +412,8 @@ interface PendingOpen {
    * convention has no per-fragment hashes to source these from). */
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** M3 preload only — per-shard manifest role for the incremental loader. */
+  shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** M3 preload only (`opts.preloadStage.localFolderHandle`, see that
@@ -1030,13 +1035,27 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 shardUrls: req.shardUrls,
                 shardHashes: req.shardHashes,
                 shardBytes: req.shardBytes,
+                shardRoles: req.shardRoles,
                 ctxSize: req.ctxSize,
                 // +1: legion_stage_open always creates one FUSED session
                 // internally (used here only for the warm-up dispatch below) —
                 // see this file's top doc comment and MULTI-SESSION.md.
                 maxSessions: driverMaxSessions + 1,
               },
-              { useMemoryShardStore: req.useMemoryShardStore, localFolderHandle: req.localFolderHandle },
+              {
+                useMemoryShardStore: req.useMemoryShardStore,
+                localFolderHandle: req.localFolderHandle,
+                // GATED ROLLOUT (#47): opt into the incremental shard-by-shard
+                // loader via ?incrementalLoad=1. Needs per-shard roles (the
+                // artifact-slice manifest path) — a legacy full.gguf open has
+                // none and stays on the monolithic loadStage. Read here (main
+                // thread) so no flag has to thread through every hook.
+                incrementalLoad:
+                  !!req.shardRoles &&
+                  req.shardRoles.length === req.shardUrls.length &&
+                  typeof location !== 'undefined' &&
+                  new URLSearchParams(location.search).get('incrementalLoad') === '1',
+              },
               (progress) => {
                 progressTick();
                 // `progress.shardsFetched` is the just-completed shard's
@@ -1157,6 +1176,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardUrls: req.shardUrls,
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
+        shardRoles: req.shardRoles,
         useMemoryShardStore: req.useMemoryShardStore,
         localFolderHandle: req.localFolderHandle,
       };

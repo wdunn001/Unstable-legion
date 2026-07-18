@@ -19,6 +19,7 @@
  */
 import {
   loadStage,
+  loadStageIncremental,
   createMemoryShardStore,
   type StageDescriptor,
   type StageHandle,
@@ -111,10 +112,28 @@ async function handle(req: StageWorkerRequest): Promise<void> {
         // model). Absent -> unchanged default `fetch`.
         const fetchImpl = req.localFolderHandle ? createLocalFolderFetch(req.localFolderHandle) : undefined;
         if (fetchImpl) console.log('[stage-worker] loading from local folder (falls back to network for missing fragments)');
+        // INCREMENTAL LOAD (#47): shard-by-shard begin/add_shard/finish keeps
+        // only ~a byte-budget of shards in MEMFS at once (vs loadStage staging
+        // the whole stage). Gated by req.incrementalLoad AND requires per-shard
+        // roles (the metadata fragment must be identifiable). Falls back to the
+        // monolithic loadStage otherwise — identical opts (LoadStageIncremental-
+        // Options extends LoadStageOptions), so the shard-store/fetch/progress
+        // wiring below is shared.
+        const useIncremental =
+          !!req.incrementalLoad &&
+          Array.isArray(descriptor.shardRoles) &&
+          descriptor.shardRoles.length === descriptor.shardUrls.length;
+        // loadStageIncremental accepts a superset of loadStage's opts
+        // (LoadStageIncrementalOptions extends LoadStageOptions), so it's a safe
+        // widening cast to a common call signature for the shared opts below.
+        const loadFn: typeof loadStage = useIncremental
+          ? (loadStageIncremental as typeof loadStage)
+          : loadStage;
+        if (useIncremental) console.log('[stage-worker] using INCREMENTAL shard-by-shard load (#47)');
         // M3: in-memory shard store when the caller says the claimed
         // range would exceed the OPFS-origin quota — see
         // stageWorkerProtocol.ts's `useMemoryShardStore` doc comment.
-        stage = await loadStage(descriptor, {
+        stage = await loadFn(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
           ...(fetchImpl ? { fetchImpl } : {}),
