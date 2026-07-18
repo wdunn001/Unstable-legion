@@ -222,9 +222,9 @@ test('deriveTopologySegments: covered segment reports the FULL host count, not j
   assert.equal(view.find((s) => s.kind === 'local')?.hostCount, undefined); // local carries no count
 });
 
-test('deriveCrewScale: distinct hosts, redundant full copies, and seats — all from your crew, self excluded', () => {
-  // Two segments; segment A has 3 hosts, segment B has 2 → 2 full copies
-  // (the bottleneck), seats = min(Σ maxSessions) across segments.
+test('deriveCrewScale: counts ALL hosts including self, redundant full copies, and seats', () => {
+  // Two segments; segment A has 3 hosts (incl. self), segment B has 2 → 2
+  // full copies (the bottleneck), seats = min(Σ maxSessions) across segments.
   const scale = deriveCrewScale(
     topology({
       segments: [
@@ -234,7 +234,7 @@ test('deriveCrewScale: distinct hosts, redundant full copies, and seats — all 
           candidates: [
             candidate({ peerId: 'a', maxSessions: 4 }),
             candidate({ peerId: 'b', maxSessions: 4 }),
-            candidate({ peerId: 'self', maxSessions: 4 }), // self must not inflate the crew headcount
+            candidate({ peerId: 'self', maxSessions: 4 }), // you ARE a host — must be counted
           ],
         },
         {
@@ -244,13 +244,25 @@ test('deriveCrewScale: distinct hosts, redundant full copies, and seats — all 
         },
       ],
     }),
-    { selfId: 'self' },
   );
   assert.ok(scale);
-  assert.equal(scale.hosts, 3); // a, b, c — self excluded
+  assert.equal(scale.hosts, 4); // a, b, self, c — self INCLUDED
   assert.equal(scale.fullModels, 2); // min(3 hosts on A, 2 on B)
   assert.equal(scale.seats, 10); // min(Σ4+4+4=12 on A, Σ5+5=10 on B)
-  assert.equal(scale.label, '3 hosts · 2 full copies · 10 seats');
+  assert.equal(scale.label, '4 hosts · 2 full copies · 10 seats');
+});
+
+test('deriveCrewScale: a solo self-host reads "1 host", never 0 (consistent with fullModels/seats)', () => {
+  const scale = deriveCrewScale(
+    topology({
+      segments: [{ layerStart: 2, layerEnd: 36, candidates: [candidate({ peerId: 'self', maxSessions: 3 })] }],
+    }),
+  );
+  assert.ok(scale);
+  assert.equal(scale.hosts, 1); // you, hosting alone
+  assert.equal(scale.fullModels, 1);
+  assert.equal(scale.seats, 3);
+  assert.equal(scale.label, '1 host · 3 seats'); // full-copies omitted at 1 (noise)
 });
 
 test('deriveCrewScale: a coverage gap means no complete copy and no seats (0 full copies)', () => {
@@ -259,7 +271,6 @@ test('deriveCrewScale: a coverage gap means no complete copy and no seats (0 ful
       segments: [{ layerStart: 2, layerEnd: 20, candidates: [candidate({ peerId: 'a' }), candidate({ peerId: 'b' })] }],
       gaps: [{ layerStart: 20, layerEnd: 36 }],
     }),
-    { selfId: 'self' },
   );
   assert.ok(scale);
   assert.equal(scale.hosts, 2);
@@ -269,7 +280,7 @@ test('deriveCrewScale: a coverage gap means no complete copy and no seats (0 ful
 });
 
 test('deriveCrewScale: no communal segments at all -> undefined (nothing to summarize)', () => {
-  assert.equal(deriveCrewScale(topology({ segments: [] }), { selfId: 'self' }), undefined);
+  assert.equal(deriveCrewScale(topology({ segments: [] })), undefined);
 });
 
 // ── deriveChatNotice — honest driver-side failure/reconnect copy ─────────

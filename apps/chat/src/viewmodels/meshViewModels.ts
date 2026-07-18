@@ -316,12 +316,17 @@ export interface CrewScaleView {
 /** Aggregate "your crew" scale from the discovered topology. `undefined`
  * when there are no communal segments at all (nothing to summarize — the
  * whole model is in the driver's own local layers). */
-export function deriveCrewScale(topology: CommunalTopology, opts: { selfId: string }): CrewScaleView | undefined {
+export function deriveCrewScale(topology: CommunalTopology): CrewScaleView | undefined {
   if (topology.segments.length === 0) return undefined;
 
+  // Count ALL distinct hosts covering the model, INCLUDING you when you're
+  // one of them — a solo self-host must read "1 host", not "0". (A pure
+  // driver that hosts no communal segment simply isn't a candidate, so it
+  // isn't counted.) This MUST include self to stay consistent with
+  // fullModels/seats below, which already do.
   const distinctHosts = new Set<string>();
   for (const seg of topology.segments) {
-    for (const c of seg.candidates) if (c.peerId !== opts.selfId) distinctHosts.add(c.peerId);
+    for (const c of seg.candidates) distinctHosts.add(c.peerId);
   }
   const hosts = distinctHosts.size;
 

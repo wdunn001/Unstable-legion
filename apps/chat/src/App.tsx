@@ -451,7 +451,7 @@ function Dashboard(props: {
     () => deriveTopologySegments(topology, { selfId: selfId2, nickOf }),
     [topology, selfId2, nickOf],
   );
-  const crewScale = useMemo(() => deriveCrewScale(topology, { selfId: selfId2 }), [topology, selfId2]);
+  const crewScale = useMemo(() => deriveCrewScale(topology), [topology]);
   const now = Date.now();
   const topStandings = useMemo(() => standingLedger.topContributors(20, now), [standingLedger, now]);
   const standingView = useMemo(
