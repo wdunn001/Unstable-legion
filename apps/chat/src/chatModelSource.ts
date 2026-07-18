@@ -213,6 +213,20 @@ function channelShardUrls(ch: ChatModelChannelSpec): readonly string[] {
   return [`/webllm/stages/${ch.id}/full.gguf`];
 }
 
+/** Human-facing Hugging Face repo page for a channel — where a user can
+ * download the model weights to load from a local folder (see
+ * `useModelFolder` / `ModelFolderPanel`). Derived from the channel's
+ * `hfManifestUrl` (`…/resolve/main/model-package.json` → `…/tree/main`) so
+ * there's still ONE source of truth per channel. Returns undefined if the
+ * manifest URL isn't an HF `/resolve/` URL (e.g. a future self-hosted-only
+ * channel), so the panel simply omits the link rather than linking somewhere
+ * wrong. */
+export function channelDownloadUrl(ch: ChatModelChannelSpec): string | undefined {
+  const marker = '/resolve/main/';
+  const at = ch.hfManifestUrl.indexOf(marker);
+  return at === -1 ? undefined : `${ch.hfManifestUrl.slice(0, at)}/tree/main`;
+}
+
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI
  * surfaces (header pill, capacity meter, topology map). A pure,
  * unit-tested formatter rather than a string baked into a component, so
@@ -257,6 +271,10 @@ export interface ChatModelConfig {
    * see `wire-dtype.spec.ts`.
    */
   wireDtype: 'f32' | 'f16' | 'i8';
+  /** Hugging Face repo page for this model's weights, for the local-folder
+   * panel's "download the weights" link. Undefined for the test model (no
+   * public repo) and any channel whose manifest isn't an HF `/resolve/` URL. */
+  downloadUrl?: string;
 }
 
 const VALID_WIRE_DTYPES = new Set(['f32', 'f16', 'i8']);
@@ -320,5 +338,6 @@ export function resolveChatModelConfig(channelId: string = getStoredChannelId())
     displayName: ch.displayName,
     modelLabel: chatModelLabel(ch.displayName, ch.quant),
     wireDtype,
+    downloadUrl: channelDownloadUrl(ch),
   };
 }

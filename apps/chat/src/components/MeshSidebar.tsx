@@ -30,6 +30,9 @@ export interface MeshSidebarProps {
    * unconditionally (unlike `ContributionPanel`, which is nested inside
    * `HostingConsentBanner`'s hosting-accepted state). */
   modelFolder: UseModelFolderHandle;
+  /** HF repo page for the active model's weights — passed to ModelFolderPanel's
+   * "Download the weights" link. Undefined omits the link. */
+  modelFolderDownloadUrl?: string;
 }
 
 export function MeshSidebar(props: MeshSidebarProps) {
@@ -50,7 +53,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
         <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span> {props.capacity.statusLine}
       </button>
       <HostingConsentBanner {...props.consentBanner} />
-      <ModelFolderPanel modelFolder={props.modelFolder} />
+      <ModelFolderPanel modelFolder={props.modelFolder} downloadUrl={props.modelFolderDownloadUrl} />
       {props.showAudioKeepalive && (
         <label className="audio-keepalive-row" title="Keep this tab active (and hosting) while it's in the background.">
           <input type="checkbox" checked={props.audioKeepalive.enabled} onChange={() => void props.audioKeepalive.toggle()} />

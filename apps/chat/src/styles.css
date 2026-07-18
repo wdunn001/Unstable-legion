@@ -1020,6 +1020,14 @@ code {
 .model-folder-active {
   color: var(--accent);
 }
+.model-folder-download-link {
+  color: var(--accent);
+  white-space: nowrap;
+}
+.model-folder-persist-hint {
+  margin-top: 4px;
+  opacity: 0.85;
+}
 .model-folder-needs-permission {
   color: var(--warn, var(--danger));
   border: 1px solid var(--warn, var(--danger));

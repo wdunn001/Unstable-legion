@@ -20,10 +20,15 @@ import type { UseModelFolderHandle } from '../hooks/useModelFolder.js';
 
 export interface ModelFolderPanelProps {
   modelFolder: UseModelFolderHandle;
+  /** Hugging Face repo page for the active model's weights — rendered as a
+   * "Download the weights" link so a user who doesn't have them yet can get
+   * a folder to point at. Omitted (no link) for the test model / any channel
+   * without a public repo. See `channelDownloadUrl` in chatModelSource. */
+  downloadUrl?: string;
 }
 
 export function ModelFolderPanel(props: ModelFolderPanelProps) {
-  const { modelFolder } = props;
+  const { modelFolder, downloadUrl } = props;
 
   if (!modelFolder.supported) {
     return (
@@ -41,6 +46,18 @@ export function ModelFolderPanel(props: ModelFolderPanelProps) {
         Already have the model weights on disk (a clone of the Hugging Face repo, or a slice from another machine)?
         Point this tab at that folder and it fetches layer/shared fragments from it instead of downloading — anything
         missing from the folder still downloads normally.
+        {downloadUrl && (
+          <>
+            {' '}
+            <a className="model-folder-download-link" href={downloadUrl} target="_blank" rel="noreferrer noopener">
+              Download the weights ↗
+            </a>
+          </>
+        )}
+      </p>
+      <p className="contribution-note model-folder-persist-hint">
+        Tip: when Chrome asks for folder access, choose <strong>“Allow on every visit”</strong> — then this tab
+        re-uses the same folder automatically on reload, with no re-grant click.
       </p>
 
       {modelFolder.handle && (

@@ -896,6 +896,7 @@ function Dashboard(props: {
           showAudioKeepalive={hostingConsent.consent === 'accepted'}
           toolContribution={toolContribution}
           modelFolder={modelFolder}
+          modelFolderDownloadUrl={modelConfig.downloadUrl}
           pipelineHandoff={{
             stages: chat.plan?.stages ?? [],
             hopBytes: chat.hopBytes ?? {},
