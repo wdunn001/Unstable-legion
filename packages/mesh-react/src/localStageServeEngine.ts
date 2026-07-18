@@ -465,10 +465,16 @@ export function createLocalStageServeEngine(opts: LocalStageServeEngineOptions):
             state.forwardHeaderSent = true;
           }
           const activationF32 = new Float32Array(result.activation.payload);
+          // Forward the tokens THIS stage actually embedded, not `frame.tokens`.
+          // A text-relay thin driver sends promptText and NO tokens (frame.tokens
+          // is null), so the isFirst stage tokenized server-side into `tokens`
+          // (pendingPromptTokens). Forwarding `frame.tokens` here read `.length`
+          // on null and freed the session; downstream also needs the real token
+          // count to derive positions. On decode steps `tokens` === frame.tokens.
           const outBytes = state.forwardEncoder.encodeFrame(activationF32, {
             seq: frame.seq,
             posStart: frame.posStart ?? 0,
-            tokens: frame.tokens,
+            tokens: [...tokens],
             done: frame.done,
             ...(frame.finishReason !== undefined ? { finishReason: frame.finishReason } : {}),
           });
