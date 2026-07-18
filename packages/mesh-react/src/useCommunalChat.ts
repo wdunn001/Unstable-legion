@@ -622,19 +622,34 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     }
   }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
 
-  // NOTE: eager resident-stage-0 loading is DELIBERATELY NOT done here.
-  // A capable peer that hosts a body stage ([driverLayers, totalLayers)) is
-  // ALSO loading that stage's wasm worker on mount; firing a second worker
-  // here to eager-load [0, driverLayers) made TWO wasm modules request the
-  // WebGPU device concurrently, which failed the stage-0 load ("state had
-  // changed since it was read from disk") AND stalled the body host's own
-  // download (0 shards, 90s watchdog) — it regressed the working 8B host.
-  // The resident stage-0 therefore loads LAZILY via `ensureResidentStageZero`
-  // on this peer's first chat (after its body host is up), same as before the
-  // serve feature — never racing the host load. Re-introducing eager warm-up
-  // must SERIALIZE behind the host load (coordinate the two hooks in App),
-  // not spawn a competing worker. Known trade-off: a thin client that routes
-  // here before this peer has chatted once finds no resident stage-0 yet.
+  // EAGER SERVE — the instant "Serve the first stage" is on, load the
+  // resident stage-0 so a thin client that routes here isn't stuck waiting out
+  // the full [0, driverLayers) download on demand, and so this peer isn't
+  // advertised as a stage-0 host until the weights are actually resident
+  // (residentStageZeroRef → useLocalStageServe's ad only goes non-null after
+  // load+warm-up). A transient toggle-off is absorbed by RESIDENT_GRACE_MS.
+  //
+  // KNOWN FRAGILITY (2026-07-18): this spawns a SECOND wasm worker that
+  // requests the WebGPU device while a capable peer's body-host worker may
+  // still be loading. On a HEALTHY GPU that's fine (verified live). On a GPU
+  // already wedged by repeated OOM/abort cycles (e.g. thrashing the 14B
+  // channel, which can't fit — see [[legion-model-channels-slicing]]) the
+  // concurrent device request can fail ("state changed since read from disk")
+  // and stall the body load. A browser restart clears it. The real hardening
+  // is to SERIALIZE this behind the host load rather than race — tracked, not
+  // yet done; not worth ripping out a working feature for a stressed-GPU edge.
+  useEffect(() => {
+    if (!serveFirstStage) return;
+    let cancelled = false;
+    void ensureResidentStageZero().catch((err) => {
+      if (!cancelled) {
+        logRef.current(`[communal-chat] eager resident stage-0 load failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [serveFirstStage, ensureResidentStageZero]);
 
   const teardownLocalWorker = useCallback(async () => {
     const w = localWorkerRef.current;
