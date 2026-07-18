@@ -60,6 +60,7 @@ import { formatVramLabel } from './gpuCatalog.js';
 import { buildPrompt } from './chatPrompt.js';
 import {
   deriveCapacityView,
+  deriveCrewScale,
   deriveChatNotice,
   deriveLeaderboard,
   deriveStandingView,
@@ -449,6 +450,7 @@ function Dashboard(props: {
     () => deriveTopologySegments(topology, { selfId: selfId2, nickOf }),
     [topology, selfId2, nickOf],
   );
+  const crewScale = useMemo(() => deriveCrewScale(topology, { selfId: selfId2 }), [topology, selfId2]);
   const now = Date.now();
   const topStandings = useMemo(() => standingLedger.topContributors(20, now), [standingLedger, now]);
   const standingView = useMemo(
@@ -813,6 +815,7 @@ function Dashboard(props: {
         <MeshSidebar
           capacity={capacity}
           segments={segments}
+          crewScale={crewScale}
           totalLayers={modelConfig.totalLayers}
           standing={standingView}
           leaderboard={leaderboard}

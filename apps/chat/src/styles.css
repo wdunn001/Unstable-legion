@@ -656,10 +656,29 @@ code {
   white-space: nowrap;
   border-right: 1px solid var(--panel-2);
 }
+.topology-scale {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.topology-scale-scope {
+  color: var(--muted);
+}
 .topology-segment-label {
   padding: 0 4px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.topology-segment-more {
+  flex: none;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
 }
 .topology-segment-local {
   background: var(--accent);

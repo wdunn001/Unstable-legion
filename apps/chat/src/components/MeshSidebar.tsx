@@ -9,11 +9,12 @@ import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingC
 import { ToolContributionPanel } from './ToolContributionPanel.js';
 import { useMobileCollapse } from '../hooks/useMobileCollapse.js';
 import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
-import type { CapacityView, LeaderboardEntry, StandingView, TopologySegmentView } from '../viewmodels/meshViewModels.js';
+import type { CapacityView, CrewScaleView, LeaderboardEntry, StandingView, TopologySegmentView } from '../viewmodels/meshViewModels.js';
 
 export interface MeshSidebarProps {
   capacity: CapacityView;
   segments: readonly TopologySegmentView[];
+  crewScale?: CrewScaleView;
   totalLayers: number;
   standing: StandingView;
   leaderboard: readonly LeaderboardEntry[];
@@ -50,7 +51,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
       )}
       <CapacityMeter capacity={props.capacity} />
       {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
-      <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} />
+      <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} scale={props.crewScale} />
       <PipelineHandoff {...props.pipelineHandoff} />
       <ToolContributionPanel tools={props.toolContribution} />
       <StandingPanel standing={props.standing} />

@@ -220,6 +220,12 @@ export interface TopologySegmentView {
   label?: string;
   peerId?: string;
   isSelf: boolean;
+  /** How many distinct hosts cover this exact layer-range. A covered
+   * segment can be served by MANY redundant hosts; the bar names the
+   * primary in `label` and this count reveals the rest ("+2 more"). 1 for a
+   * lone host, undefined for local/gap. This is what fixes the old
+   * "only the first host is ever shown" blind spot. */
+  hostCount?: number;
 }
 
 /** Full [0, totalLayers) picture for the layer-bar visual: the driver's
@@ -241,13 +247,16 @@ export function deriveTopologySegments(
     });
   }
 
-  type Ordered = { layerStart: number; layerEnd: number; kind: 'covered' | 'gap'; peerId?: string };
+  type Ordered = { layerStart: number; layerEnd: number; kind: 'covered' | 'gap'; peerId?: string; hostCount?: number };
   const ordered: Ordered[] = [
     ...topology.segments.map((s) => ({
       layerStart: s.layerStart,
       layerEnd: s.layerEnd,
       kind: 'covered' as const,
       peerId: s.candidates[0]?.peerId,
+      // Distinct hosts covering this exact range — a segment's candidates
+      // can include the same peer twice across churn transients, so dedupe.
+      hostCount: new Set(s.candidates.map((c) => c.peerId)).size,
     })),
     ...topology.gaps.map((g) => ({ layerStart: g.layerStart, layerEnd: g.layerEnd, kind: 'gap' as const })),
   ].sort((a, b) => a.layerStart - b.layerStart);
@@ -260,6 +269,7 @@ export function deriveTopologySegments(
       kind: seg.kind,
       peerId: seg.peerId,
       isSelf,
+      ...(seg.kind === 'covered' ? { hostCount: seg.hostCount } : {}),
       label:
         seg.kind === 'gap'
           ? undefined
@@ -270,6 +280,69 @@ export function deriveTopologySegments(
   }
 
   return segments;
+}
+
+// ── Crew scale line ──────────────────────────────────────────────────────
+//
+// The topology bar names ONE host per layer-range, which hid the real
+// answer to "how many people are hosting this?" — a segment can be covered
+// by many redundant hosts, and the mesh can hold several complete copies at
+// once. This aggregate answers that at a glance, scoped to YOUR CREW (the
+// peers you've discovered covering this model — the same roster the
+// topology is built from). A global census across peers you haven't
+// discovered is a separate, coordinator-scale concern (see the census
+// backlog item), deliberately not conflated here.
+
+export interface CrewScaleView {
+  /** Distinct host peers across the assembled pipeline's segments — the
+   * crew you can see, EXCLUDING you (you're rendered as "you" in the bar). */
+  hosts: number;
+  /** Redundant COMPLETE copies your crew can run independently: the min,
+   * over every covered segment, of how many distinct hosts cover it. 0 when
+   * the model isn't fully assembled (a gap exists). Distinct from `seats`:
+   * this counts physical model copies loaded across the crew, `seats` counts
+   * concurrent chats. Undercounts hosts on an ALTERNATIVE layer-tiling than
+   * the one the greedy topology chose — a known limit of a single-tiling
+   * view, not the census. */
+  fullModels: number;
+  /** Total concurrent chat capacity — min over segments of Σ maxSessions
+   * (the bottleneck). 0 when not assembled. Mirrors `occupancy.total`. */
+  seats: number;
+  /** Compact, model-agnostic summary: "3 hosts · 2 full copies · 15 seats".
+   * Omits any count that's zero/one where it would read as noise. */
+  label: string;
+}
+
+/** Aggregate "your crew" scale from the discovered topology. `undefined`
+ * when there are no communal segments at all (nothing to summarize — the
+ * whole model is in the driver's own local layers). */
+export function deriveCrewScale(topology: CommunalTopology, opts: { selfId: string }): CrewScaleView | undefined {
+  if (topology.segments.length === 0) return undefined;
+
+  const distinctHosts = new Set<string>();
+  for (const seg of topology.segments) {
+    for (const c of seg.candidates) if (c.peerId !== opts.selfId) distinctHosts.add(c.peerId);
+  }
+  const hosts = distinctHosts.size;
+
+  const assembled = topology.gaps.length === 0;
+  const fullModels = assembled
+    ? topology.segments.reduce((min, s) => Math.min(min, new Set(s.candidates.map((c) => c.peerId)).size), Number.POSITIVE_INFINITY)
+    : 0;
+  const seats = assembled
+    ? topology.segments.reduce((min, s) => Math.min(min, s.candidates.reduce((sum, c) => sum + c.maxSessions, 0)), Number.POSITIVE_INFINITY)
+    : 0;
+
+  const parts: string[] = [`${hosts} host${hosts === 1 ? '' : 's'}`];
+  if (fullModels > 1) parts.push(`${fullModels} full copies`);
+  if (seats > 0) parts.push(`${seats} seat${seats === 1 ? '' : 's'}`);
+
+  return {
+    hosts,
+    fullModels: Number.isFinite(fullModels) ? fullModels : 0,
+    seats: Number.isFinite(seats) ? seats : 0,
+    label: parts.join(' · '),
+  };
 }
 
 export function shortPeerId(id: string): string {
