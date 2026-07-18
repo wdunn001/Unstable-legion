@@ -201,9 +201,16 @@ export function useLocalStageServe(opts: UseLocalStageServeOptions): UseLocalSta
     setSessions(holder.engine.getSessions());
     setQueueLength(holder.engine.getQueueLength());
     setLastError(holder.engine.getLastError());
+    // Only push a NEW `loadedStageEntry` when its CONTENT changed — the
+    // engine returns a fresh object each call, and a churning identity here
+    // is what feeds `useStageHost`'s cap-publish effect a new array every
+    // render. Content-compare (cheap, tiny object) so the entry's identity
+    // stays stable across no-op syncs, keeping the cap publisher quiet.
     const entry = holder.engine.getLoadedStageEntry();
-    loadedStageEntryRef.current = entry;
-    setLoadedStageEntry(entry);
+    if (JSON.stringify(entry) !== JSON.stringify(loadedStageEntryRef.current)) {
+      loadedStageEntryRef.current = entry;
+      setLoadedStageEntry(entry);
+    }
   }, []);
 
   useEffect(() => {

@@ -607,6 +607,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
   // fighting another server on the same peer for it).
   const extraLoadedStagesRef = useRef<readonly MeshLoadedStage[]>(opts.extraLoadedStages ?? []);
   extraLoadedStagesRef.current = opts.extraLoadedStages ?? [];
+  // REUSE-STAGE0 — a CONTENT signature of `extraLoadedStages`. The publish
+  // effect below reads the live array from `extraLoadedStagesRef` and calls
+  // `setStageHostCap`, so depending on the raw `opts.extraLoadedStages`
+  // (a fresh array identity every render) would re-run the effect on every
+  // render → setState → render → … an infinite loop (React #185, seen live
+  // the instant a served stage-0 was adopted). Key the effect on this stable
+  // string instead: it republishes on a real content change (a served
+  // session opening/closing, the entry appearing/disappearing) and never on
+  // bare identity churn.
+  const extraLoadedStagesKey = JSON.stringify(opts.extraLoadedStages ?? []);
   // REUSE-STAGE0 — the CURRENT claim (`preloadStage`, when set) read fresh
   // inside the "answer" effect's `handleSessionOpen` without that effect
   // depending on `opts.preloadStage`'s identity (same ref-read idiom as
@@ -805,7 +815,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       republishNowRef.current = () => undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes, opts.extraLoadedStages]);
+  }, [peer, enabled, limits, supportState.ok, visible, onBattery, keepaliveEnabled, republishMs, opts.failureDomainId, opts.contributionBudgetBytes, extraLoadedStagesKey]);
 
   // ── Answer stage-control + activation frames while enabled ──────────
   useEffect(() => {
