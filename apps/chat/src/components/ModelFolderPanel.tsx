@@ -45,26 +45,43 @@ export function ModelFolderPanel(props: ModelFolderPanelProps) {
 
       {modelFolder.handle && (
         <p className="model-folder-status model-folder-active">
-          Using local folder — layers are verified against the official checksums.
-        </p>
-      )}
-      {modelFolder.needsPermission && (
-        <p className="model-folder-status model-folder-needs-permission">
-          A previously-picked folder needs permission again — pick it once more to reconnect.
+          ✓ Local folder active — layers load from disk, verified against the official checksums.
         </p>
       )}
       {modelFolder.error && <p className="model-folder-status model-folder-error">{modelFolder.error}</p>}
 
-      <div className="contribution-field-row">
-        <button type="button" className="btn btn-ghost model-folder-pick" onClick={() => void modelFolder.pick()}>
-          {modelFolder.handle ? 'Change folder…' : 'Choose folder…'}
-        </button>
-        {modelFolder.handle && (
-          <button type="button" className="btn-link model-folder-clear" onClick={() => void modelFolder.clear()}>
-            Use downloads instead
+      {modelFolder.needsPermission ? (
+        // A folder is remembered but its read permission didn't survive the
+        // reload (File System Access API needs a fresh user gesture to
+        // re-grant). Model loading is PAUSED (App gates hosting/serve on this)
+        // so it can't silently fall back to downloading the whole model —
+        // make the user choose: re-grant the folder, or explicitly download.
+        <div className="model-folder-status model-folder-needs-permission">
+          <p>
+            ⚠ Your remembered local folder needs a click to re-grant read access. <strong>Loading is paused</strong> so
+            it doesn&rsquo;t silently download the whole model — choose one:
+          </p>
+          <div className="contribution-field-row">
+            <button type="button" className="btn btn-ghost model-folder-pick" onClick={() => void modelFolder.pick()}>
+              Re-grant folder
+            </button>
+            <button type="button" className="btn-link model-folder-clear" onClick={() => void modelFolder.clear()}>
+              Download instead
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="contribution-field-row">
+          <button type="button" className="btn btn-ghost model-folder-pick" onClick={() => void modelFolder.pick()}>
+            {modelFolder.handle ? 'Change folder…' : 'Choose folder…'}
           </button>
-        )}
-      </div>
+          {modelFolder.handle && (
+            <button type="button" className="btn-link model-folder-clear" onClick={() => void modelFolder.clear()}>
+              Use downloads instead
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

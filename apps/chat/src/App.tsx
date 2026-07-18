@@ -318,7 +318,13 @@ function Dashboard(props: {
   // this hook itself no-ops (no engine, no wire subscriptions) whenever the
   // resident worker hasn't loaded yet or the toggle is off.
   const localServe = useLocalStageServe({
-    enabled: hostingConsent.serveFirstStage,
+    // PAUSE while a remembered local folder is awaiting a re-grant click: a
+    // reload drops the folder's read permission, and without this the serve/
+    // host loads would silently DOWNLOAD the whole model instead of reading
+    // from the folder the user picked. Resolving the folder (re-grant, or
+    // "download instead") clears needsPermission and resumes. See
+    // useModelFolder.ts + ModelFolderPanel.
+    enabled: hostingConsent.serveFirstStage && !modelFolder.needsPermission,
     peer,
     residentStageZeroRef: chat.residentStageZeroRef,
     priorityScore,
@@ -327,7 +333,10 @@ function Dashboard(props: {
   });
 
   const communal = useCommunalHost({
-    enabled: hostingEnabled,
+    // Paused while a remembered local folder awaits a re-grant click — see the
+    // localServe `enabled` comment above (don't silently download the whole
+    // body stage when the user meant to load it from their folder).
+    enabled: hostingEnabled && !modelFolder.needsPermission,
     peer,
     baseCap: props.baseCap,
     createStageWorker,

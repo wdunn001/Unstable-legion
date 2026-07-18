@@ -1021,7 +1021,15 @@ code {
   color: var(--accent);
 }
 .model-folder-needs-permission {
-  color: var(--danger);
+  color: var(--warn, var(--danger));
+  border: 1px solid var(--warn, var(--danger));
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0 0;
+  background: var(--chip-warn-bg, rgba(255, 180, 0, 0.08));
+}
+.model-folder-needs-permission p {
+  margin: 0 0 6px;
 }
 .model-folder-error {
   color: var(--danger);
