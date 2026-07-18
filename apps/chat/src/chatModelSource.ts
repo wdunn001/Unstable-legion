@@ -138,6 +138,26 @@ export const CHAT_CHANNELS: readonly ChatModelChannelSpec[] = [
     avgLayerBytes: 230_000_000,
     hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-14b/resolve/main/model-package.json',
   },
+  {
+    // Qwen3-32B (huggingface.co/Qwen/Qwen3-32B config.json): num_hidden_layers=64,
+    // hidden_size=5120, num_key_value_heads=8, head_dim=128 → KV = 2*8*128*1 =
+    // 2048 (same int8-KV constant). q4_K_M GGUF ~20GB / 64 layers ≈ 315MB per
+    // layer (layer-000 measured 315MB → ~320MB upper bound). Untied embeddings
+    // (manifest shared.output.tensor_count=2); embeddings tensor ~437MB (thin
+    // phones need a serving host here too). Manifest + layer fragments
+    // CORS-verified on HF (access-control-allow-origin:*). At ~20GB this is a
+    // heavy model — expect to split it across several peers (or load from a
+    // local folder, see useModelFolder); solo-on-one-tab is unproven.
+    id: 'qwen3-32b-q4',
+    displayName: 'Qwen3-32B',
+    quant: 'Q4_K_M',
+    totalLayers: 64,
+    driverLayers: 2,
+    ctxSize: 4096,
+    nEmbd: 5120,
+    avgLayerBytes: 320_000_000,
+    hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-32b/resolve/main/model-package.json',
+  },
 ];
 
 export const DEFAULT_CHANNEL_ID = CHAT_MODEL_ID;

@@ -15,12 +15,24 @@ test('chatModelLabel: joins display name + quant with the product\'s "·" separa
   assert.equal(chatModelLabel('Qwen3-8B', 'Q4_K_M'), 'Qwen3-8B · Q4_K_M');
 });
 
-test('CHAT_CHANNELS: includes 8B (default) and 14B, each a distinct own mesh (unique modelId)', () => {
+test('CHAT_CHANNELS: includes 8B (default), 14B, 32B, each a distinct own mesh (unique modelId)', () => {
   const ids = CHAT_CHANNELS.map((c) => c.id);
   assert.ok(ids.includes('qwen3-8b-q4'));
   assert.ok(ids.includes('qwen3-14b-q4'));
+  assert.ok(ids.includes('qwen3-32b-q4'));
   assert.equal(new Set(ids).size, ids.length, 'modelIds must be unique — they key the mesh');
   assert.equal(DEFAULT_CHANNEL_ID, 'qwen3-8b-q4', 'default stays 8B (proven, phone-verified)');
+});
+
+test('resolveChatModelConfig: 32B channel resolves the 32B architecture + label', () => {
+  const config = resolveChatModelConfig('qwen3-32b-q4');
+  assert.equal(config.modelId, 'qwen3-32b-q4');
+  assert.equal(config.displayName, 'Qwen3-32B');
+  assert.equal(config.modelLabel, 'Qwen3-32B · Q4_K_M');
+  assert.equal(config.totalLayers, 64);
+  assert.equal(config.nEmbd, 5120);
+  assert.equal(config.driverLayers, 2);
+  assert.equal(config.isTestModel, false);
 });
 
 test('resolveChatModelConfig: default channel names the real 8B target, not a test model', () => {
