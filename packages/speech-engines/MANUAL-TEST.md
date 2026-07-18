@@ -54,6 +54,57 @@ end.
    error instead of a silent hang or crash — confirms `useSpeechClient`'s
    no-target error path.
 
+## 3. Chat app (apps/chat) — voice INPUT in the composer
+
+The demo's `SpeechPanel` above is the dev harness; `apps/chat` is the
+product surface (legion.codecai.net). This is voice INPUT only: mic →
+transcript dropped into the composer textarea. No auto-send, no TTS, no
+LLM-loop change — the user still hits Send/Enter themselves.
+
+### 3a. Local (host-own) path — one tab
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`.
+2. Open `http://localhost:5174` (or whatever port Vite prints), pick a
+   nick, join.
+3. In the right-hand mesh sidebar's **Tool contributions** card, scroll to
+   the bottom and toggle **🎤 Host speech-to-text (uses your GPU)** on.
+   - Expect `initializing (downloading model on first use)…` while the
+     Whisper worker loads, then the status line clears once ready (no
+     error line).
+4. In the composer (bottom of the chat pane), the mic button (🎤) should
+   now be enabled — hover it to confirm the tooltip reads "Speak your
+   message" rather than the disabled-reachability tooltip.
+5. Click the mic button, grant mic permission if prompted, speak a short
+   sentence. Click it again to stop (or wait for the 30s auto-stop).
+   - Expect the button to show a recording indicator while capturing,
+     then `transcribing…` briefly.
+6. Expect the transcript text to land in the composer textarea (replacing
+   placeholder text, appended after any text you'd already typed) and the
+   textarea to be focused — verify nothing was auto-sent.
+7. Toggle ASR host back off and confirm the mic button becomes disabled
+   again (tooltip: "Enable Host speech-to-text, or wait for a peer that
+   offers it") once no peer advertises `asr.transcribe` either.
+
+### 3b. Mesh path — two tabs
+
+1. Tab A: as in 3a, enable **Host speech-to-text**, leave it ready.
+2. Tab B: open the same chat URL/room with a different nick, leave its
+   ASR host toggle **off**.
+3. In Tab B, the composer's mic button should become enabled once Tab A's
+   peer roster entry shows up (advertising `asr.transcribe` — Tab B has
+   no local host, so `useSpeechClient` resolves to Tab A's peer via
+   `callTool`).
+4. Record + stop in Tab B. Expect the transcript to land in Tab B's
+   composer textarea after a brief mesh round trip (slower than the local
+   path in 3a, but not multi-second under normal conditions).
+5. Turn Tab A's host toggle off, then try recording in Tab B again.
+   Expect the mic button to go back to disabled once the roster updates
+   (no local host, no remote advertiser) — rather than a silent hang.
+6. Mic-permission-denied check: in either tab, deny the browser's mic
+   permission prompt (or revoke it beforehand) and click the mic button.
+   Expect a visible "Mic error: …" line under the composer, not a silent
+   no-op.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -65,4 +116,6 @@ end.
   wasm fallback runs single-threaded (slower, still correct). See the
   package README's "COOP/COEP" section.
 - The recording is capped at ~6s by default (`useMicCapture`'s
-  `maxMs`) — long dictation isn't the point of this PoC.
+  `maxMs`) in apps/demo's SpeechPanel — long dictation isn't the point of
+  that PoC. apps/chat's Composer passes `maxMs: 30_000` since a real chat
+  message is often longer than a 6s clip.

@@ -31,8 +31,17 @@ const BUILTIN_HINTS: Record<string, string> = {
   fetch_text: 'Fetch a URL through your browser (CORS applies)',
 };
 
-export function ToolContributionPanel(props: { tools: UseToolContributionHandle }) {
-  const { tools } = props;
+export interface ToolContributionSpeechProps {
+  enabled: boolean;
+  onToggleEnabled: (enabled: boolean) => void;
+  /** True once the Whisper worker is loaded and the `transcribe` tool is
+   * registered/advertised — see `useSpeechHost`. */
+  ready: boolean;
+  error: string | null;
+}
+
+export function ToolContributionPanel(props: { tools: UseToolContributionHandle; speechHost: ToolContributionSpeechProps }) {
+  const { tools, speechHost } = props;
   const [mcpUrl, setMcpUrl] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
@@ -107,6 +116,21 @@ export function ToolContributionPanel(props: { tools: UseToolContributionHandle 
           {tools.servedCount === 1 ? '' : 's'} this session
         </p>
       )}
+      <div className="tool-contrib-speech">
+        <label className="tool-contrib-row" title="Loads a local Whisper model and transcribes for any peer that asks.">
+          <input
+            type="checkbox"
+            checked={speechHost.enabled}
+            onChange={(e) => speechHost.onToggleEnabled(e.target.checked)}
+          />
+          <span className="tool-contrib-name">🎤 Host speech-to-text (uses your GPU)</span>
+        </label>
+        <p className="tool-contrib-sub">Advertises asr.transcribe to the mesh so other tabs can send you their mic audio.</p>
+        {speechHost.enabled && !speechHost.ready && !speechHost.error && (
+          <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
+        )}
+        {speechHost.error && <span className="tool-contrib-speech-error">{speechHost.error}</span>}
+      </div>
     </section>
   );
 }

@@ -598,6 +598,19 @@ code {
 .composer-input:disabled {
   opacity: 0.5;
 }
+.composer-mic-error {
+  color: var(--warn);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.composer-mic {
+  flex: none;
+  min-width: 44px;
+}
+.composer-mic-recording {
+  background: var(--warn);
+  color: #fff;
+}
 
 /* ── Mesh sidebar ─────────────────────────────────────────────────── */
 .mesh-sidebar {
@@ -1090,6 +1103,20 @@ code {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--muted);
+}
+.tool-contrib-speech {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.tool-contrib-speech-status,
+.tool-contrib-speech-error {
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.tool-contrib-speech-error {
+  color: var(--warn);
 }
 
 /* Tool trace chips above an assistant reply. */

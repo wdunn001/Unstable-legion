@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type { CallToolFn, UseSpeechHostHandle } from '@unstable-legion/react';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import type { ChatMessage } from '../db/threadStore.js';
@@ -14,6 +15,9 @@ export interface ChatPaneProps {
   notice?: ChatNoticeView;
   onSend: (text: string) => void;
   onStop: () => void;
+  /** Voice-input wiring for the Composer's mic button — see Composer.tsx. */
+  speechHost: UseSpeechHostHandle;
+  callTool: CallToolFn;
 }
 
 export function ChatPane(props: ChatPaneProps) {
@@ -60,7 +64,15 @@ export function ChatPane(props: ChatPaneProps) {
           <span className="chat-notice-message">{props.notice.message}</span>
         </div>
       )}
-      <Composer disabled={disabled} disabledReason={disabledReason} busy={props.busy} onSend={props.onSend} onStop={props.onStop} />
+      <Composer
+        disabled={disabled}
+        disabledReason={disabledReason}
+        busy={props.busy}
+        onSend={props.onSend}
+        onStop={props.onStop}
+        speechHost={props.speechHost}
+        callTool={props.callTool}
+      />
     </div>
   );
 }

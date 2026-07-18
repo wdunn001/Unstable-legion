@@ -6,7 +6,7 @@ import { PipelineHandoff, type PipelineHandoffProps } from './PipelineHandoff.js
 import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
 import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingConsentBanner.js';
-import { ToolContributionPanel } from './ToolContributionPanel.js';
+import { ToolContributionPanel, type ToolContributionSpeechProps } from './ToolContributionPanel.js';
 import { useMobileCollapse } from '../hooks/useMobileCollapse.js';
 import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
 import type { CapacityView, CrewScaleView, LeaderboardEntry, StandingView, TopologySegmentView } from '../viewmodels/meshViewModels.js';
@@ -22,6 +22,7 @@ export interface MeshSidebarProps {
   audioKeepalive: AudioKeepaliveHandle;
   showAudioKeepalive: boolean;
   toolContribution: UseToolContributionHandle;
+  speechHost: ToolContributionSpeechProps;
   pipelineHandoff: PipelineHandoffProps;
 }
 
@@ -53,7 +54,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
       {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
       <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} scale={props.crewScale} />
       <PipelineHandoff {...props.pipelineHandoff} />
-      <ToolContributionPanel tools={props.toolContribution} />
+      <ToolContributionPanel tools={props.toolContribution} speechHost={props.speechHost} />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />
     </aside>
