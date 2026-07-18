@@ -124,10 +124,6 @@ export function ContributionPanel(props: ContributionPanelProps) {
         Hosting up to {props.layersHosted} of {props.totalLayers} layers (~{props.approxGbLabel}). Pick your GPU, type a
         VRAM number, or auto-detect to raise this.
       </p>
-      <p className="contribution-note">
-        Prefer ONE tab with a higher budget over many tabs — co-located tabs count as one failure domain and share this
-        origin&rsquo;s ~3.3GB disk cache and one GPU.
-      </p>
 
       <label className="contribution-field">
         <span>GPU</span>

@@ -846,7 +846,15 @@ function Dashboard(props: {
               layersHosted,
               totalLayers: communalLayerCount,
               approxGbLabel: formatVramLabel(effectiveApproxBytes),
-              maxLayersOverride: hostingConsent.maxLayersOverride,
+              // Clamp to the CURRENT model's communal layer count so a stored
+              // override from a bigger model (e.g. 38 set on 14B) doesn't
+              // render "38 of 34" after switching back to 8B. The stored value
+              // is left intact (so switching back to 14B restores 38); only
+              // the displayed/slider value is clamped to what this model allows.
+              maxLayersOverride:
+                hostingConsent.maxLayersOverride !== undefined
+                  ? Math.min(communalLayerCount, hostingConsent.maxLayersOverride)
+                  : undefined,
               onChangeMaxLayers: hostingConsent.setMaxLayersOverride,
               serveFirstStage: hostingConsent.serveFirstStage,
               onChangeServeFirstStage: hostingConsent.setServeFirstStage,

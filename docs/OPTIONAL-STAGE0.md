@@ -103,3 +103,31 @@ ever calling local prefill/decode**.
   the whole mesh-core path are landed and tested. On a capable device you can
   exercise thin mode today by injecting the existing stage worker as the
   tokenizer.
+
+## Three roles, and why a capable peer's stage 0 loads LAZILY
+
+A capable peer can play up to three independent roles; they load different
+things at different times, which is easy to conflate:
+
+| Role | Loads | Why |
+| --- | --- | --- |
+| **Host** (contribute to the mesh) | the **body stage** `[driverLayers, totalLayers)` | Runs *other drivers'* activations through its layers — it serves *their* requests. It **never touches its own stage 0** to do this: the driver's stage 0 (wherever that driver is) produced the activation; the host just runs the body on it. |
+| **Driver** (chat yourself) | your **stage 0** `[0, driverLayers)` + a route through body hosts | Tokenize → embed → first layers → produce the first activation, then hand off. This is the *only* role that needs stage 0. |
+| **Serve stage 0** (the "Serve the first stage" toggle) | your stage 0 `[0, driverLayers)`, reused | Lets **thin drivers** (phones) borrow your already-loaded stage 0 as their isFirst host (the RESIDENT stage-0 path — `useCommunalChat.residentStageZeroRef` → `useLocalStageServe`). |
+
+**Consequence:** a peer that is *purely a host* — contributing its body layers
+to serve everyone else, never chatting — does **not** need stage 0 at all.
+Eager-loading stage 0 for that peer would waste ~350MB VRAM + load time it
+never uses. That is why stage 0 is loaded **lazily** on this peer's first
+chat (via `ensureResidentStageZero`), not at hosting-enable time.
+
+**Current wiring (2026-07-18):** the "Serve the first stage" toggle both
+(a) eager-loads the resident stage 0 (so a thin client that routes here isn't
+stuck waiting out a cold `[0, driverLayers)` download) **and** (b) advertises
+this peer as an isFirst host for thin clients. Splitting those two — always
+eager-load stage 0 regardless of the toggle, and have the toggle *only*
+advertise willingness to serve — was considered and **deferred**: it re-opens
+the "who actually needs stage 0" question above (a pure host would then pay
+for stage 0 it never uses) and the eager path can race the body-host WebGPU
+load on a stressed GPU (see the KNOWN FRAGILITY note in `useCommunalChat.ts`).
+Revisit alongside serializing the eager load behind the host load.
