@@ -105,3 +105,26 @@ test('buildPrompt: completed rounds fold as assistant <tool_call> + user <tool_r
   assert.ok(idxUser >= 0 && idxCall > idxUser && idxResponse > idxCall, 'user -> tool_call -> tool_response in order');
   assert.ok(prompt.endsWith('<|im_start|>assistant\n<think>\n\n</think>\n\n'), 'ends with a fresh assistant cue');
 });
+
+test('buildPrompt: maxPromptTokens drops OLDEST history turns to fit; newest + current turn always kept', () => {
+  // 12 fat turns (~600 chars ≈ 200 est tokens each) — well past any small budget.
+  const big = 'x'.repeat(600);
+  const history: ChatMessage[] = [];
+  for (let i = 0; i < 12; i++) history.push(msg(i % 2 === 0 ? 'user' : 'assistant', `turn${i}-${big}`));
+
+  const untrimmed = buildPrompt(history, 'NOW', { maxTurns: 100 });
+  const trimmed = buildPrompt(history, 'NOW', { maxTurns: 100, maxPromptTokens: 500 });
+
+  assert.ok(trimmed.length < untrimmed.length, 'a token budget shortens the prompt');
+  assert.ok(trimmed.includes('NOW'), 'the current user turn is never dropped');
+  assert.ok(trimmed.endsWith('<|im_start|>assistant\n<think>\n\n</think>\n\n'), 'assistant cue kept');
+  assert.ok(trimmed.includes('turn11'), 'the NEWEST history turn is kept');
+  assert.ok(!trimmed.includes('turn0'), 'the OLDEST history turn is dropped to fit');
+});
+
+test('buildPrompt: without maxPromptTokens, no token trim (only the maxTurns count bound applies)', () => {
+  const history: ChatMessage[] = [];
+  for (let i = 0; i < 4; i++) history.push(msg(i % 2 === 0 ? 'user' : 'assistant', `keep${i}-${'y'.repeat(2000)}`));
+  const prompt = buildPrompt(history, 'NOW', { maxTurns: 100 });
+  for (let i = 0; i < 4; i++) assert.ok(prompt.includes(`keep${i}`), `turn ${i} kept when no token budget set`);
+});

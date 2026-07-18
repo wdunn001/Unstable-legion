@@ -136,6 +136,15 @@ const TRYSTERO_CONFIG: MeshProviderProps['trysteroConfig'] = {
 
 const PERSONA_STORAGE_KEY = 'unstable-legion-chat-persona-v1';
 
+// Generation budget. maxDecodeTokens is a CAP, not a target — short answers
+// stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
+// run further; it doesn't slow short chats. Was 256, which truncated real
+// answers and forced a "continue" that then overran the context. The prompt is
+// trimmed to `ctxSize - MAX_DECODE_TOKENS - margin` so prompt+generation can't
+// exceed the KV window (an overflow traps the stage-runtime wasm mid-decode).
+const MAX_DECODE_TOKENS = 1024;
+const PROMPT_TOKEN_MARGIN = 128;
+
 export function App() {
   const { persona, update: updatePersona } = usePersona(PERSONA_STORAGE_KEY);
   const [joined, setJoined] = useState(false);
@@ -214,6 +223,11 @@ function Dashboard(props: {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
   const roster = useMeshRoster();
+
+  // Trim the assembled prompt to leave room for the model's own generation
+  // within the KV window — see MAX_DECODE_TOKENS. Floored so a small ctx never
+  // yields an absurdly tiny (or negative) budget.
+  const maxPromptTokens = Math.max(512, modelConfig.ctxSize - MAX_DECODE_TOKENS - PROMPT_TOKEN_MARGIN);
 
   // One contribution-economy ledger per Dashboard mount (== per
   // MeshProvider subtree) — same "one ledger, shared across every role"
@@ -536,7 +550,7 @@ function Dashboard(props: {
   const doSend = useCallback(
     (text: string) => {
       const baseMessages = threads.activeThread?.messages ?? [];
-      const prompt = buildPrompt(baseMessages, text, { tools: meshTools });
+      const prompt = buildPrompt(baseMessages, text, { tools: meshTools, maxPromptTokens });
       threads.appendMessage('user', text);
       const assistantId = threads.appendMessage('assistant', '');
       exchangeRef.current = {
@@ -549,9 +563,9 @@ function Dashboard(props: {
         cancelled: false,
       };
       setStreamingMessageId(assistantId);
-      void chat.start(prompt, { maxDecodeTokens: 256 });
+      void chat.start(prompt, { maxDecodeTokens: MAX_DECODE_TOKENS });
     },
-    [threads, chat, meshTools],
+    [threads, chat, meshTools, maxPromptTokens],
   );
 
   useEffect(() => {
@@ -623,7 +637,7 @@ function Dashboard(props: {
       // useCommunalChat) — a start() fired straight from the status effect
       // is silently refused and the reply would stay blank forever (first
       // live-test symptom of this loop). Wait out the teardown, bounded.
-      const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds });
+      const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds, maxPromptTokens });
       const deadline = Date.now() + 15_000;
       while (chat.isRunning() && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 150));
@@ -638,10 +652,10 @@ function Dashboard(props: {
         finalizeExchange();
         return;
       }
-      void chat.start(prompt, { maxDecodeTokens: 256 });
+      void chat.start(prompt, { maxDecodeTokens: MAX_DECODE_TOKENS });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [peer, threads, chat, meshTools, priorityScore, standingLedger, toolContribution, telemetry],
+    [peer, threads, chat, meshTools, priorityScore, standingLedger, toolContribution, telemetry, maxPromptTokens],
   );
 
   const finalizeExchange = useCallback(() => {
