@@ -44,6 +44,7 @@ import { JoinScreen } from './components/JoinScreen.js';
 import { ConversationList } from './components/ConversationList.js';
 import { ChatPane } from './components/ChatPane.js';
 import { MeshSidebar } from './components/MeshSidebar.js';
+import { ModelChannelPicker } from './components/ModelChannelPicker.js';
 import type { HopConnType } from './components/PipelineHandoff.js';
 import { TrustBadge } from './components/TrustBadge.js';
 import { TrustInterstitial } from './components/TrustInterstitial.js';
@@ -768,10 +769,12 @@ function Dashboard(props: {
         {/* Product requirement: the model this mesh is assembling/serving
          * is always named, never buried behind a status number — read
          * from chatModelSource.ts's single source of truth, not hardcoded
-         * here. */}
-        <span className="app-model-pill" title={`This mesh is assembling/serving ${modelConfig.modelLabel}`}>
-          {modelConfig.modelLabel}
-        </span>
+         * here. Now also the channel switcher (each channel = its own mesh). */}
+        <ModelChannelPicker
+          currentModelId={modelConfig.modelId}
+          currentLabel={modelConfig.modelLabel}
+          isTestModel={modelConfig.isTestModel}
+        />
         <span className="app-header-sep">·</span>
         <span className="app-nick">@{props.nick}</span>
         <span className="app-header-sep">·</span>

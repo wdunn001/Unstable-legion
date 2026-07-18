@@ -295,6 +295,39 @@ code {
   font-size: 12px;
   white-space: nowrap;
 }
+/* Picker variant: the pill wraps a native <select> (accessible, no custom
+   dropdown state) plus a caret. The select is transparent + inherits the
+   pill's font so it reads as the pill, not a form control. */
+.app-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  padding-right: 5px;
+}
+.app-model-picker select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+.app-model-picker select option {
+  /* dropdown list is OS-drawn — force readable colors in dark theme */
+  color: var(--text);
+  background: var(--panel);
+  font-weight: normal;
+}
+.app-model-picker-caret {
+  font-size: 9px;
+  opacity: 0.75;
+  pointer-events: none;
+}
 .app-nick {
   color: var(--muted);
 }

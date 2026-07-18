@@ -80,41 +80,117 @@ export const CHAT_KV_BYTES_PER_TOKEN_PER_LAYER = 2048;
 /** Planning-upper-bound per-layer weight-byte estimate — see module doc. */
 export const CHAT_AVG_LAYER_BYTES = 140_000_000;
 
-export function chatShardPath(): string {
-  return `/webllm/stages/${CHAT_MODEL_ID}/full.gguf`;
+// ── Model channels ───────────────────────────────────────────────────────
+//
+// The app offers a small set of interchangeable communal MODELS ("channels").
+// Each channel is its OWN mesh — peers only host for others sharing the same
+// `modelId` — so switching channel means leaving one mesh, joining another,
+// and pulling that model's layer fragments. Default stays Qwen3-8B (proven,
+// phone-verified); Qwen3-14B is opt-in. Switching PERSISTS the choice and
+// RELOADS the page: a model swap re-downloads GBs and re-inits every
+// host/driver hook regardless, so a clean reload is safer than hot-swapping
+// `modelId` through the live hook tree. `?testModel=1` still overrides
+// everything (below) for e2e/dev.
+
+export interface ChatModelChannelSpec {
+  /** modelId — the mesh-coordination key every peer matches on. */
+  id: string;
+  displayName: string;
+  quant: string;
+  totalLayers: number;
+  driverLayers: number;
+  ctxSize: number;
+  nEmbd: number;
+  avgLayerBytes: number;
+  /** Primary manifest source: the model's HF `model-package.json` (CORS-
+   * enabled, RELATIVE fragment paths so the weights come from HF too). A
+   * same-origin `/webllm/` mirror is appended as an independent fallback. */
+  hfManifestUrl: string;
 }
-export function chatShardUrls(baseUrl?: string): readonly string[] {
-  const path = chatShardPath();
-  return [baseUrl ? new URL(path, baseUrl).toString() : path];
+
+export const CHAT_CHANNELS: readonly ChatModelChannelSpec[] = [
+  {
+    id: CHAT_MODEL_ID, // 'qwen3-8b-q4'
+    displayName: CHAT_MODEL_DISPLAY_NAME,
+    quant: CHAT_MODEL_QUANT,
+    totalLayers: CHAT_TOTAL_LAYERS,
+    driverLayers: CHAT_DRIVER_LAYERS,
+    ctxSize: CHAT_CTX_SIZE,
+    nEmbd: CHAT_N_EMBD,
+    avgLayerBytes: CHAT_AVG_LAYER_BYTES,
+    hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/model-package.json',
+  },
+  {
+    // Qwen3-14B (huggingface.co/Qwen/Qwen3-14B config.json): num_hidden_layers=40,
+    // hidden_size=5120, num_key_value_heads=8, head_dim=128 → KV = 2*8*128*1 =
+    // 2048 (same int8-KV constant as 8B). q4_K_M GGUF ~9GB / 40 layers ≈ 230MB
+    // upper-bound per layer (layer-000 measured 216MB). Untied embeddings
+    // (manifest shared.output.tensor_count=2); embeddings tensor ~437MB, so a
+    // phone (128MB storage-buffer cap) is a THIN client here too and needs a
+    // serving host — which the resident-stage-0 reuse path now provides.
+    id: 'qwen3-14b-q4',
+    displayName: 'Qwen3-14B',
+    quant: 'Q4_K_M',
+    totalLayers: 40,
+    driverLayers: 2,
+    ctxSize: 4096,
+    nEmbd: 5120,
+    avgLayerBytes: 230_000_000,
+    hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-14b/resolve/main/model-package.json',
+  },
+];
+
+export const DEFAULT_CHANNEL_ID = CHAT_MODEL_ID;
+
+const CHANNEL_STORAGE_KEY = 'legion:model-channel';
+
+/** The persisted channel selection (localStorage). Falls back to the default
+ * (Qwen3-8B) for an unset / unknown / since-removed id, and outside a
+ * browser. */
+export function getStoredChannelId(): string {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(CHANNEL_STORAGE_KEY) : null;
+    if (raw && CHAT_CHANNELS.some((c) => c.id === raw)) return raw;
+  } catch {
+    /* storage blocked (private mode / SSR) — fall through to default */
+  }
+  return DEFAULT_CHANNEL_ID;
 }
-/** Weight-distribution manifest sources, ORDERED by priority — fed to
- * `resolveCommunalShardPlan`, which takes the first source that fetches +
- * parses and resolves relative fragment paths against the WINNER:
- *
- *   1. Hugging Face (wdunn001/legion-model-qwen3-8b) — primary. Free
- *      global CDN, CORS verified (`Access-Control-Allow-Origin` echoes
- *      the origin on both the 302 and the CDN hop), LFS oids match the
- *      manifest's sha256s. Its manifest carries RELATIVE paths, so the
- *      weights come from HF too.
- *   2. cdn.codecai.net (/webllm/ mirror, .198) — fallback, fully
- *      independent of HF: manifest AND weights same-origin.
- *
- * (GitHub itself can't serve the weights to browsers: jsDelivr's /gh/
- * caps files at 20MB and the release-asset host sends no CORS — see the
- * legion-model-qwen3-8b repo's README, which now only hosts the manifest
- * for reference.)
- *
- * Both sources describe byte-identical, content-addressed artifacts (same
- * sha256s), so OPFS-cached fragments hit regardless of which source a
- * given session resolved through. */
-export function chatManifestUrls(): readonly string[] {
-  const localPath = `/webllm/stages/${CHAT_MODEL_ID}/model-package.json`;
-  // The local mirror URL MUST be absolute: fragmentsForRange resolves each
-  // fragment via `new URL(fragment.path, manifestUrl)`, which throws
-  // "Invalid base URL" on a site-relative base (hotfix/manifest-abs-url).
+
+/** Persist a channel selection (no-op for an unknown id or unavailable
+ * storage). Does NOT reload — the caller (the picker) owns that. */
+export function setStoredChannelId(id: string): void {
+  if (!CHAT_CHANNELS.some((c) => c.id === id)) return;
+  try {
+    localStorage?.setItem(CHANNEL_STORAGE_KEY, id);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Weight-distribution manifest sources for a channel, ORDERED by priority —
+ * fed to `resolveCommunalShardPlan`, which takes the first source that
+ * fetches + parses and resolves relative fragment paths against the WINNER:
+ *   1. Hugging Face (the channel's `hfManifestUrl`) — primary. Free global
+ *      CDN, CORS verified, LFS oids match the manifest sha256s; its manifest
+ *      carries RELATIVE paths so the weights come from HF too.
+ *   2. same-origin `/webllm/stages/<id>/model-package.json` (.198 mirror) —
+ *      fallback, fully independent of HF (manifest AND weights same-origin).
+ * Both describe byte-identical content-addressed artifacts, so OPFS-cached
+ * fragments hit regardless of which source a session resolved through. */
+function channelManifestUrls(ch: ChatModelChannelSpec): readonly string[] {
+  const localPath = `/webllm/stages/${ch.id}/model-package.json`;
+  // MUST be absolute: fragmentsForRange resolves each fragment via
+  // `new URL(fragment.path, manifestUrl)`, which throws on a site-relative base.
   const local =
     typeof location !== 'undefined' && location.origin ? new URL(localPath, location.origin).toString() : localPath;
-  return ['https://huggingface.co/wdunn001/legion-model-qwen3-8b/resolve/main/model-package.json', local];
+  return [ch.hfManifestUrl, local];
+}
+
+/** Fallback-only monolith path (never used in production — the per-layer
+ * manifest is; a full.gguf isn't staged for these models). */
+function channelShardUrls(ch: ChatModelChannelSpec): readonly string[] {
+  return [`/webllm/stages/${ch.id}/full.gguf`];
 }
 
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI
@@ -173,10 +249,12 @@ function resolveWireDtype(params: URLSearchParams | undefined): 'f32' | 'f16' | 
   return raw && VALID_WIRE_DTYPES.has(raw) ? (raw as 'f32' | 'f16' | 'i8') : 'i8';
 }
 
-/** Resolve the effective model config for the current page. Reads
- * `?testModel=1` from `location.search` — see module doc. Safe to call
- * outside a browser (SSR/tests): falls back to production Qwen3-8B. */
-export function resolveChatModelConfig(): ChatModelConfig {
+/** Resolve the effective model config for the current page. `channelId`
+ * defaults to the persisted selection (Qwen3-8B when unset). Reads
+ * `?testModel=1` from `location.search`, which OVERRIDES the channel — see
+ * module doc. Safe to call outside a browser (SSR/tests): falls back to the
+ * default channel. Pass `channelId` explicitly in tests to avoid storage. */
+export function resolveChatModelConfig(channelId: string = getStoredChannelId()): ChatModelConfig {
   const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;
   const isTestModel = params?.get('testModel') === '1';
   // e2e resilience knob: point a host at a shard URL that 404s so the load
@@ -205,18 +283,22 @@ export function resolveChatModelConfig(): ChatModelConfig {
     };
   }
 
+  const ch =
+    CHAT_CHANNELS.find((c) => c.id === channelId) ??
+    CHAT_CHANNELS.find((c) => c.id === DEFAULT_CHANNEL_ID) ??
+    CHAT_CHANNELS[0]!;
   return {
-    modelId: CHAT_MODEL_ID,
-    totalLayers: CHAT_TOTAL_LAYERS,
-    driverLayers: CHAT_DRIVER_LAYERS,
-    ctxSize: CHAT_CTX_SIZE,
-    nEmbd: CHAT_N_EMBD,
-    avgLayerBytes: CHAT_AVG_LAYER_BYTES,
-    manifestUrl: chatManifestUrls(),
-    shardUrls: () => chatShardUrls(),
+    modelId: ch.id,
+    totalLayers: ch.totalLayers,
+    driverLayers: ch.driverLayers,
+    ctxSize: ch.ctxSize,
+    nEmbd: ch.nEmbd,
+    avgLayerBytes: ch.avgLayerBytes,
+    manifestUrl: channelManifestUrls(ch),
+    shardUrls: () => channelShardUrls(ch),
     isTestModel: false,
-    displayName: CHAT_MODEL_DISPLAY_NAME,
-    modelLabel: chatModelLabel(CHAT_MODEL_DISPLAY_NAME, CHAT_MODEL_QUANT),
+    displayName: ch.displayName,
+    modelLabel: chatModelLabel(ch.displayName, ch.quant),
     wireDtype,
   };
 }
