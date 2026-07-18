@@ -1538,7 +1538,12 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           let textDelta: string | undefined;
           if (state.textOutput) {
             state.sampledTokens = state.sampledTokens ?? [];
-            state.sampledTokens.push(result.predictedToken);
+            // Never fold a stop token (e.g. ChatML <|im_end|>) into the
+            // streamed text — it's a control signal, not content, and the
+            // detokenizer renders it as the literal "<|im_end|>", which
+            // leaked into thin-client output. isEog is the stop; the text
+            // stops with it.
+            if (!isEog) state.sampledTokens.push(result.predictedToken);
             const fullText = await client.detokenize(state.sampledTokens);
             const { delta, cursor } = extractIncrementalTextDelta(fullText, state.textCursor ?? INITIAL_TEXT_CURSOR, {
               flush: isEog,

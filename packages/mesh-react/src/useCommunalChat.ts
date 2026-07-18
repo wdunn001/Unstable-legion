@@ -622,6 +622,28 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     }
   }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
 
+  // EAGER SERVE — the instant "Serve the first stage" is on, load the
+  // resident stage-0 (don't wait for this peer to send its own first chat).
+  // Two problems this fixes: (1) a thin client that routes here would
+  // otherwise wait out the full [0, driverLayers) shard download on demand,
+  // and (2) `residentStageZeroRef` (hence the served-stage advertisement in
+  // useLocalStageServe) only becomes non-null AFTER load+warm-up, so eager
+  // loading is also what keeps this peer from being advertised as a stage-0
+  // host BEFORE the weights are actually in VRAM. A transient toggle-off is
+  // still absorbed by the RESIDENT_GRACE_MS effect above (no cold re-load).
+  useEffect(() => {
+    if (!serveFirstStage) return;
+    let cancelled = false;
+    void ensureResidentStageZero().catch((err) => {
+      if (!cancelled) {
+        logRef.current(`[communal-chat] eager resident stage-0 load failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [serveFirstStage, ensureResidentStageZero]);
+
   const teardownLocalWorker = useCallback(async () => {
     const w = localWorkerRef.current;
     localWorkerRef.current = null;

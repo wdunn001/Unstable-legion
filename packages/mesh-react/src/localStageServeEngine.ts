@@ -496,7 +496,10 @@ export function createLocalStageServeEngine(opts: LocalStageServeEngineOptions):
         let textDelta: string | undefined;
         if (state.textOutput) {
           state.sampledTokens = state.sampledTokens ?? [];
-          state.sampledTokens.push(result.predictedToken);
+          // Stop token (e.g. ChatML <|im_end|>) is a control signal, not
+          // content — folding it in leaks the literal "<|im_end|>" into the
+          // text (parity with useStageHost.ts's final-stage branch).
+          if (!isEog) state.sampledTokens.push(result.predictedToken);
           const fullText = await client.detokenize(state.sampledTokens);
           const { delta, cursor } = extractIncrementalTextDelta(fullText, state.textCursor ?? INITIAL_TEXT_CURSOR, { flush: isEog });
           state.textCursor = cursor;
