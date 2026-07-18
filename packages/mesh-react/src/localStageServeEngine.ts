@@ -144,7 +144,7 @@ export function sameServedConfig(a: ServedStageConfig, b: ServedStageConfig): bo
 }
 
 export interface LocalStageServeEngineOptions {
-  meshPeer: Pick<Peer, 'sendTool' | 'sendStageFrame'>;
+  meshPeer: Pick<Peer, 'sendTool' | 'sendStageFrame' | 'selfId'>;
   /** ALREADY loaded, ALREADY warm — this engine never loads/disposes/
    * resets it. See this module's doc comment. */
   client: ServedStageClient;
@@ -407,7 +407,14 @@ export function createLocalStageServeEngine(opts: LocalStageServeEngineOptions):
       return;
     }
     if (fromPeerId !== state.prevPeerId) {
-      log(`[local-stage-serve] onStageFrame DROPPED — peerId=${fromPeerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
+      // Co-located routing artifact, not a spoof: when this peer serves this
+      // stage AND hosts a sibling stage, its own forward to the sibling (and
+      // the driver's frames for the sibling) are dispatched to THIS handler
+      // too and dropped here. Only warn for a genuinely unknown sender.
+      const knownParticipant = fromPeerId === state.driverPeerId || fromPeerId === state.nextPeerId || fromPeerId === meshPeer.selfId;
+      if (!knownParticipant) {
+        log(`[local-stage-serve] onStageFrame DROPPED — peerId=${fromPeerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
+      }
       return;
     }
     state.lastFrameAt = Date.now();

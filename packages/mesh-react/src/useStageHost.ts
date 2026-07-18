@@ -1436,7 +1436,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       // driver for stage 1, the previous relay for a hop ≥2. (For a 2-stage
       // session prevPeerId === driverPeerId, so this is unchanged.)
       if (peerId !== state.prevPeerId) {
-        log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
+        // A peer that serves MULTIPLE stages for one driver receives every
+        // frame the driver (or its own internal forward) addresses to it and
+        // hands it to ALL local stage handlers; whichever stage the frame
+        // isn't for lands here and is dropped. That's expected co-located
+        // routing, not a spoof — only warn when the sender isn't a known
+        // participant of THIS session (driver / downstream / self).
+        const knownParticipant = peerId === state.driverPeerId || peerId === state.nextPeerId || peerId === meshPeer.selfId;
+        if (!knownParticipant) {
+          log(`[stage-host] onStageFrame DROPPED — peerId=${peerId} is not the upstream of sessionId=${sessionId} (expected=${state.prevPeerId})`);
+        }
         return;
       }
       state.lastFrameAt = Date.now();
