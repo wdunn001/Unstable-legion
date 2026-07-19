@@ -35,6 +35,19 @@ export default defineConfig({
     // signaling surface so the SW can never intercept or proxy them —
     // when in doubt here, passthrough, never cache.
     VitePWA({
+      // DISABLED (2026-07-18): the service worker's app-shell cache made
+      // every field test unreproducible — a deployed fix could not be
+      // observed because the SW kept serving the previously precached
+      // bundle + legion-stage.wasm, so a "still broken" report could
+      // never be distinguished from "stale cache". Deleting the plugin
+      // would NOT fix that: service workers already registered in users'
+      // browsers survive removal and keep serving their cache forever.
+      // `selfDestroying` instead ships a SW that unregisters itself and
+      // deletes its caches on activation — the only way to actually
+      // retire an already-deployed PWA. Everything below is left intact
+      // so this is a one-line revert once stage loading is trustworthy
+      // again and cache-vs-code is no longer a confound.
+      selfDestroying: true,
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       devOptions: { enabled: false },
