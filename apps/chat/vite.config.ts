@@ -51,35 +51,15 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       devOptions: { enabled: false },
-      manifest: {
-        name: 'Unstable Legion',
-        short_name: 'Legion',
-        description:
-          "Unstable Legion's flagship chat app — open it and you join the shared communal mesh serving Qwen3-8B.",
-        display: 'standalone',
-        start_url: '/',
-        scope: '/',
-        theme_color: '#0c0c0c',
-        background_color: '#0c0c0c',
-        icons: [
-          {
-            src: '/icon-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: '/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-          {
-            src: '/icon-512-maskable.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'maskable',
-          },
-        ],
-      },
+      // `selfDestroying` only retires the SERVICE WORKER (cache). It STILL
+      // emitted manifest.webmanifest and injected its <link> into index.html,
+      // so Chrome kept treating this as an installable PWA — and an already
+      // INSTALLED copy keeps launching as a standalone app with its own
+      // storage. `manifest: false` stops the manifest being emitted or
+      // linked, which is what actually de-PWAs the site. The previous
+      // manifest object (name/icons/theme) is in git history — restore it
+      // alongside removing this line to re-enable installability.
+      manifest: false,
       workbox: {
         // App shell only — see plugin-level comment above.
         globPatterns: ['**/*.{js,css,html,wasm,ico,png,svg,webmanifest}'],
