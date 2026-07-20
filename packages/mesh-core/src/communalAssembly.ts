@@ -431,3 +431,82 @@ export function communalHostClaim(input: CommunalHostClaimInput): CommunalHostCl
     reason: othersTopology.segments.length === 0 ? 'no coverage anywhere yet and self has no gap to claim (should not happen unless capacity is 0)' : 'fully covered and every segment already at spare capacity — nothing useful to host',
   };
 }
+
+/**
+ * Singleton multi-range (#63): ADDITIONAL islands a host can serve, on top of
+ * its `communalHostClaim` primary, using leftover capacity — so ONE peer with
+ * spare room can cover several gaps a distinct-host cover couldn't (running
+ * them as islands on one loaded model / one unified-KV context).
+ *
+ * Kept as a SEPARATE, purely-additive function so the fragile decentralized
+ * single-claim consensus in `communalHostClaim` stays byte-identical. Two
+ * safety properties make this stampede-free without touching that consensus:
+ *   1. Only the deterministic OVERFLOW LEADER takes seconds — the single host
+ *      that ranks first by (priorityScore desc, stabilityScore desc, peerId
+ *      asc) across the roster. So two spare hosts never grab the same gap.
+ *   2. It only ever claims gaps that remain uncovered AFTER self's own primary
+ *      claim and every other host's advertised ranges — never contends for a
+ *      range someone already serves.
+ * The returned islands are advertised as extra `loadedStages` entries; the
+ * driver's `planCommunalRoute` (peer-blind) may then place this peer at more
+ * than one hop, and the host serves each island as a stage-range override.
+ *
+ * Returns [] when self isn't the overflow leader, has no spare capacity, has no
+ * primary claim, or no residual gaps remain — i.e. the common case is a no-op.
+ */
+export function communalHostAdditionalClaims(
+  input: CommunalHostClaimInput,
+  primaryClaim: CommunalClaimRange | null,
+): CommunalClaimRange[] {
+  if (!primaryClaim) return [];
+  const {
+    roster,
+    selfPeerId,
+    modelId,
+    totalLayers,
+    driverLayers,
+    firstLayer = driverLayers,
+    selfCapacityLayers,
+    selfFailureDomainId = selfPeerId,
+    priorityScore = () => 0,
+  } = input;
+
+  let spare = selfCapacityLayers - (primaryClaim.layerEnd - primaryClaim.layerStart);
+  if (spare <= 0) return [];
+
+  // (1) Overflow-leader gate — only the single top-ranked host claims seconds,
+  // ranked by (priorityScore desc, peerId asc). Both are available for any
+  // peerId (unlike per-peer stability, which lives under stageHost), keeping
+  // this a pure, deterministic function of the roster.
+  const others = roster.filter((r) => r.peerId !== selfPeerId);
+  const selfIsOverflowLeader = others.every((r) => {
+    const pa = priorityScore(selfPeerId);
+    const pb = priorityScore(r.peerId);
+    if (pa !== pb) return pa > pb;
+    return selfPeerId < r.peerId;
+  });
+  if (!selfIsOverflowLeader) return [];
+
+  // (2) Residual gaps AFTER self's primary claim + all others.
+  const rosterWithPrimary = [
+    ...others,
+    syntheticRosterEntry(selfPeerId, modelId, primaryClaim, 1, selfFailureDomainId),
+  ];
+  const topo = buildCommunalTopology(rosterWithPrimary, { modelId, totalLayers, driverLayers, communalStart: firstLayer });
+
+  const additional: CommunalClaimRange[] = [];
+  for (const gap of topo.gaps) {
+    if (spare <= 0) break;
+    const layerStart = gap.layerStart;
+    const layerEnd = Math.min(gap.layerStart + spare, gap.layerEnd);
+    if (layerEnd <= layerStart) continue;
+    additional.push({
+      layerStart,
+      layerEnd,
+      includeOutput: layerEnd === totalLayers,
+      ...(layerStart === 0 ? { includeEmbeddings: true } : {}),
+    });
+    spare -= layerEnd - layerStart;
+  }
+  return additional;
+}

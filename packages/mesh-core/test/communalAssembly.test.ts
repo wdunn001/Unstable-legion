@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { communalHostClaim, DEFAULT_MAX_SPARES_PER_SEGMENT } from '../src/communalAssembly.ts';
+import { communalHostClaim, communalHostAdditionalClaims, DEFAULT_MAX_SPARES_PER_SEGMENT } from '../src/communalAssembly.ts';
 import { buildCommunalTopology } from '../src/communalTopology.ts';
 import type { MeshRosterEntry } from '../src/types.ts';
 
@@ -537,4 +537,73 @@ test('property: no PERSISTENT wasteful overlap — once converged with a gap-fre
     const idleCount = hosts.filter((h) => h.currentClaim === null).length;
     assert.ok(idleCount >= hostCount - (DEFAULT_MAX_SPARES_PER_SEGMENT + 1), `seed=${seed} too few hosts went idle: ${idleCount}/${hostCount}`);
   }
+});
+
+// ── communalHostAdditionalClaims (singleton multi-range / #63) ────────────
+
+test('communalHostAdditionalClaims: null primary -> no additional islands', () => {
+  const extra = communalHostAdditionalClaims(
+    { roster: [], selfPeerId: 'a', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 100 },
+    null,
+  );
+  assert.deepEqual(extra, []);
+});
+
+test('communalHostAdditionalClaims: no spare capacity -> no additional islands', () => {
+  // primary [2,10) is 8 layers; capacity exactly 8 -> zero spare.
+  const extra = communalHostAdditionalClaims(
+    { roster: [], selfPeerId: 'a', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 8 },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true },
+  );
+  assert.deepEqual(extra, []);
+});
+
+test('communalHostAdditionalClaims: overflow leader with spare + a residual gap -> claims it as a second island', () => {
+  // self 'aaa' serves primary [2,10); peer 'bbb' serves [10,15); residual [15,28).
+  const roster = [makePeer('bbb', [{ layerStart: 10, layerEnd: 15 }])];
+  const extra = communalHostAdditionalClaims(
+    { roster, selfPeerId: 'aaa', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 100 },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true },
+  );
+  assert.deepEqual(extra, [{ layerStart: 15, layerEnd: 28, includeOutput: true }]);
+});
+
+test('communalHostAdditionalClaims: NOT the overflow leader (loses peerId tie-break) -> no seconds', () => {
+  // self 'zzz' ranks below 'aaa' (same priority, lexically greater peerId) -> not leader.
+  const roster = [makePeer('aaa', [{ layerStart: 10, layerEnd: 15 }])];
+  const extra = communalHostAdditionalClaims(
+    { roster, selfPeerId: 'zzz', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 100 },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true },
+  );
+  assert.deepEqual(extra, []);
+});
+
+test('communalHostAdditionalClaims: priorityScore overrides the peerId tie-break for the overflow leader', () => {
+  // self 'zzz' would lose the lexical tie-break, but a higher priorityScore wins.
+  const roster = [makePeer('aaa', [{ layerStart: 10, layerEnd: 15 }])];
+  const priorityScore = (p: string) => (p === 'zzz' ? 10 : 0);
+  const extra = communalHostAdditionalClaims(
+    { roster, selfPeerId: 'zzz', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 100, priorityScore },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true },
+  );
+  assert.deepEqual(extra, [{ layerStart: 15, layerEnd: 28, includeOutput: true }]);
+});
+
+test('communalHostAdditionalClaims: fully covered by others -> no residual gap -> no seconds', () => {
+  const roster = [makePeer('bbb', [{ layerStart: 10, layerEnd: 28, includeOutput: true }])];
+  const extra = communalHostAdditionalClaims(
+    { roster, selfPeerId: 'aaa', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 100 },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true },
+  );
+  assert.deepEqual(extra, []);
+});
+
+test('communalHostAdditionalClaims: spare capacity caps a large residual gap', () => {
+  // residual [15,28) is 13 layers but spare is only 5 -> claims [15,20).
+  const roster = [makePeer('bbb', [{ layerStart: 10, layerEnd: 15 }])];
+  const extra = communalHostAdditionalClaims(
+    { roster, selfPeerId: 'aaa', modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS, selfCapacityLayers: 13 },
+    { layerStart: 2, layerEnd: 10, includeEmbeddings: true }, // primary is 8; spare = 13-8 = 5
+  );
+  assert.deepEqual(extra, [{ layerStart: 15, layerEnd: 20, includeOutput: false }]);
 });
