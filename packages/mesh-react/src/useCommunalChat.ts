@@ -501,7 +501,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     eng.serveMaxSessions = 0;
     residentStageZeroRef.current = null;
     if (client) {
-      logRef.current(`[communal-chat] freeing resident stage-0 (${reason})`);
+      logRef.current(`[communal-chat] DISPOSING resident stage-0 worker + terminate() (${reason})`);
       void client.dispose().catch(() => undefined);
     }
   }, []);

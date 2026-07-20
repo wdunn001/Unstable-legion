@@ -672,6 +672,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const eng = engineRef.current;
     if (!eng) return;
     const w = eng.workerClient;
+    // Capture the range BEFORE nulling loadedConfig so the dispose log names
+    // which stage was freed — needed to count construct-vs-dispose balance
+    // and prove/disprove a leaked context (#56).
+    const cfg = eng.loadedConfig;
     eng.workerClient = undefined;
     eng.loadedConfig = undefined;
     eng.loadInFlight = undefined;
@@ -681,7 +685,8 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: 0 };
     republishNowRef.current();
     if (w) {
-      logRef.current(`[stage-host] freeing resident stage (${reason})`);
+      const range = cfg ? `[${cfg.layerStart},${cfg.layerEnd})` : '[?]';
+      logRef.current(`[stage-host] DISPOSING resident stage worker ${range} + terminate() (${reason})`);
       void w.dispose().catch(() => undefined);
     }
   }, [driverMaxSessions]);
@@ -903,6 +908,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
     async function disposeWorker(): Promise<void> {
       const w = engine.workerClient;
+      // Range captured before nulling loadedConfig so the dispose log names the
+      // stage — lets us count construct(`loading stage layers=…`) vs dispose to
+      // prove/disprove a leaked context on claim-resize reload (#56).
+      const disposingCfg = engine.loadedConfig;
+      if (w) {
+        const range = disposingCfg ? `[${disposingCfg.layerStart},${disposingCfg.layerEnd})` : '[?]';
+        log(`[stage-host] DISPOSING stage worker ${range} + terminate() (reload/supersede)`);
+      }
       engine.workerClient = undefined;
       engine.loadedConfig = undefined;
       // RETRACT THE ADVERTISEMENT THE INSTANT THE WEIGHTS GO AWAY.
