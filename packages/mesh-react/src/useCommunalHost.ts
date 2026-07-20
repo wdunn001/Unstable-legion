@@ -49,6 +49,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   communalHostClaim,
+  communalHostAdditionalClaims,
   hostStabilityScore,
   type CommunalClaimRange,
   type MeshLoadedStage,
@@ -846,6 +847,27 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           lastDecisionKeyRef.current = decisionKey;
         }
 
+        // Singleton multi-range (#63): if this host is the overflow leader with
+        // spare capacity, it ALSO serves these additional islands — advertised
+        // separately, loaded together as one span. [] in the common case, which
+        // preserves the single-range behaviour exactly.
+        const additionalIslands = decision.claim
+          ? communalHostAdditionalClaims(
+              {
+                roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
+                selfPeerId: safePeer.selfId,
+                modelId,
+                totalLayers,
+                driverLayers,
+                firstLayer: supportThinDrivers ? 0 : driverLayers,
+                selfCapacityLayers,
+                selfFailureDomainId: failureDomainId,
+                priorityScore: priorityScoreRef.current,
+              },
+              decision.claim,
+            )
+          : [];
+
         if (decision.yieldCurrent) {
           if (phaseRef.current !== 'draining') {
             log('[communal-host] yielding wasteful duplicate — stop advertising, draining');
@@ -914,7 +936,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           if (retry && retry.key === rangeKey && !retry.inFlight && Date.now() >= retry.nextAttemptAt) {
             retry.inFlight = true;
             log(`[communal-host] retry attempt ${retry.attempt} for [${decision.claim.layerStart},${decision.claim.layerEnd})`);
-            await issuePreload(decision.claim);
+            await issuePreload(decision.claim, additionalIslands);
           }
           return;
         }
@@ -974,10 +996,26 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
      * here and scheduled for backoff; a WORKER-LOAD failure comes back
      * asynchronously via `handleLifecycle('preload-failed')`. Either way the
      * failing claim backs off instead of hammering. */
-    async function issuePreload(target: CommunalClaimRange): Promise<void> {
+    async function issuePreload(
+      target: CommunalClaimRange,
+      // Singleton multi-range (#63): additional islands this host also serves
+      // (from communalHostAdditionalClaims). When non-empty, LOAD the contiguous
+      // span covering target + these (one model / one unified-KV context) but
+      // ADVERTISE each island separately so a driver routes each gap to us.
+      extraIslands: readonly CommunalClaimRange[] = [],
+    ): Promise<void> {
       setPhase('loading');
       try {
-        const { plan, manifestCache } = await resolveCommunalShardPlan(target, {
+        const islands = [target, ...extraIslands];
+        const spanStart = Math.min(...islands.map((i) => i.layerStart));
+        const spanEnd = Math.max(...islands.map((i) => i.layerEnd));
+        const spanRange: CommunalClaimRange = {
+          layerStart: spanStart,
+          layerEnd: spanEnd,
+          includeOutput: spanEnd === totalLayers,
+          ...(spanStart === 0 ? { includeEmbeddings: true } : {}),
+        };
+        const { plan, manifestCache } = await resolveCommunalShardPlan(spanRange, {
           manifestUrl,
           fallbackShardUrls,
           opfsQuotaBytes: opfsQuotaBytesRef.current,
@@ -987,11 +1025,14 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         if (cancelled) return;
         setPreloadStage({
           modelId,
-          layerStart: target.layerStart,
-          layerEnd: target.layerEnd,
+          layerStart: spanStart,
+          layerEnd: spanEnd,
           totalLayers,
           ctxSize,
           wireDtype,
+          ...(extraIslands.length > 0
+            ? { islands: islands.map((i) => ({ layerStart: i.layerStart, layerEnd: i.layerEnd })) }
+            : {}),
           shardUrls: plan.shardUrls,
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,

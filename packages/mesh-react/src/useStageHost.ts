@@ -192,11 +192,16 @@ export interface UseStageHostOptions {
    */
   preloadStage?: {
     modelId: string;
+    /** The contiguous SPAN to load (covers every island in `islands`). */
     layerStart: number;
     layerEnd: number;
     totalLayers: number;
     ctxSize: number;
     wireDtype: 'f32' | 'f16' | 'i8';
+    /** Singleton multi-range (#63): the islands to ADVERTISE (one loadedStages
+     * entry each), all within [layerStart, layerEnd). Absent/one-island ⇒
+     * advertise the whole span as one entry (the pre-#63 single-range case). */
+    islands?: readonly { layerStart: number; layerEnd: number }[];
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
@@ -410,6 +415,9 @@ interface PendingOpen {
    * stage-range override on its own seq lane of the shared unified-KV context. */
   loadLayerStart?: number;
   loadLayerEnd?: number;
+  /** Singleton multi-range (#63): islands to advertise for a span-load preload
+   * (see StageEngine.advertiseIslands). Only set on the self-directed preload. */
+  advertiseIslands?: readonly { layerStart: number; layerEnd: number }[];
   totalLayers: number;
   ctxSize: number;
   wireDtype: 'f32' | 'f16' | 'i8';
@@ -542,6 +550,12 @@ interface StageEngine {
   loadInFlight: Promise<void> | undefined;
   hostSessions: Map<string, HostSessionState>;
   loadEpoch: number;
+  /** Singleton multi-range (#63): when this host loaded a SPAN to cover several
+   * islands, the islands to ADVERTISE (one loadedStages entry each) instead of
+   * the single span — so a driver's route walker can place this peer at the
+   * specific gaps it fills, with the space between them served by others.
+   * Absent ⇒ advertise the whole loaded range as one entry (pre-#63). */
+  advertiseIslands?: readonly { layerStart: number; layerEnd: number }[];
 }
 
 function sameConfig(a: LoadedConfig, b: LoadedConfig): boolean {
@@ -898,20 +912,36 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: hostSessions.size };
       loadedStagesRef.current =
         engine.workerClient && engine.loadedConfig
-          ? [
-              {
-                modelId: engine.loadedConfig.modelId,
-                layerStart: engine.loadedConfig.layerStart,
-                layerEnd: engine.loadedConfig.layerEnd,
-                includeEmbeddings: engine.workerClient.isFirst,
-                includeOutput: engine.workerClient.isFinal,
-                ctxSize: engine.loadedConfig.ctxSize,
-                wireDtype: engine.loadedConfig.wireDtype,
-                maxSessions: driverMaxSessions,
-                activeSessions: hostSessions.size,
-                epoch: engine.loadEpoch,
-              },
-            ]
+          ? // Singleton multi-range (#63): advertise one entry PER ISLAND when a
+            // span was loaded to cover several — so a driver can place this peer
+            // at each gap it fills; otherwise the whole loaded range as one entry.
+            (engine.advertiseIslands && engine.advertiseIslands.length > 0
+              ? engine.advertiseIslands.map((isl) => ({
+                  modelId: engine.loadedConfig!.modelId,
+                  layerStart: isl.layerStart,
+                  layerEnd: isl.layerEnd,
+                  includeEmbeddings: isl.layerStart === 0,
+                  includeOutput: isl.layerEnd === engine.loadedConfig!.totalLayers,
+                  ctxSize: engine.loadedConfig!.ctxSize,
+                  wireDtype: engine.loadedConfig!.wireDtype,
+                  maxSessions: driverMaxSessions,
+                  activeSessions: hostSessions.size,
+                  epoch: engine.loadEpoch,
+                }))
+              : [
+                  {
+                    modelId: engine.loadedConfig.modelId,
+                    layerStart: engine.loadedConfig.layerStart,
+                    layerEnd: engine.loadedConfig.layerEnd,
+                    includeEmbeddings: engine.workerClient.isFirst,
+                    includeOutput: engine.workerClient.isFinal,
+                    ctxSize: engine.loadedConfig.ctxSize,
+                    wireDtype: engine.loadedConfig.wireDtype,
+                    maxSessions: driverMaxSessions,
+                    activeSessions: hostSessions.size,
+                    epoch: engine.loadEpoch,
+                  },
+                ])
           : [];
       // M3: an immediate republish (not waiting for the next `republishMs`
       // heartbeat) whenever occupancy/load state changes — a driver
@@ -1163,6 +1193,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         }
         engine.workerClient = client;
         engine.loadedConfig = want;
+        // Singleton multi-range (#63): advertise the preload's islands (if any);
+        // a plain single-range load clears it back to whole-span advertising.
+        engine.advertiseIslands = req.advertiseIslands;
         engine.loadEpoch += 1;
       })();
       engine.loadInFlight = doLoad;
@@ -1212,6 +1245,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardRoles: req.shardRoles,
         useMemoryShardStore: req.useMemoryShardStore,
         localFolderHandle: req.localFolderHandle,
+        // Singleton multi-range (#63): advertise these islands rather than the
+        // whole loaded span (absent ⇒ one entry for the whole range).
+        ...(req.islands ? { advertiseIslands: req.islands } : {}),
       };
       try {
         await ensureWorkerLoaded(pending);

@@ -197,6 +197,7 @@ export {
 } from './communalTopology.js';
 export {
   communalHostClaim,
+  communalHostAdditionalClaims,
   DEFAULT_MAX_SPARES_PER_SEGMENT,
   DEFAULT_JITTER_BASE_MS,
   type CommunalPriorityScoreFn,
