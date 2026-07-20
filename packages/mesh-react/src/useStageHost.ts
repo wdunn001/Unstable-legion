@@ -440,6 +440,9 @@ interface PendingOpen {
   isFinalOverride?: boolean;
   /** Downstream peer to forward the boundary activation to (iff not final). */
   nextPeerId?: string;
+  /** Singleton multi-range (#63): the sessionId to relay downstream under (the
+   * next peer's per-island id). Absent ⇒ reuse this session's own sessionId. */
+  nextSessionId?: string;
   /** Upstream peer whose `sf` frames to accept — the driver for stage 1, the
    * previous relay for a hop ≥2. Defaults to the opener (`peerId`). */
   prevPeerId?: string;
@@ -477,6 +480,9 @@ interface HostSessionState {
   /** RELAY: the peer we forward our boundary activation to (downstream).
    * Undefined for the final stage, which samples and returns `stage.token`. */
   nextPeerId?: string;
+  /** Singleton multi-range (#63): the sessionId to relay downstream under (the
+   * next peer's per-island id). Absent ⇒ reuse this session's own sessionId. */
+  nextSessionId?: string;
   /** RELAY: the per-session encoder a NON-final host uses to re-encode its
    * boundary activation for `nextPeerId`. Built lazily on first forward
    * (needs `client.nEmbd`, known only after the worker loads). Its header is
@@ -1283,6 +1289,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           // for ≥2); default to the opener so a legacy/2-stage open is unchanged.
           prevPeerId: req.prevPeerId ?? req.peerId,
           nextPeerId: req.nextPeerId,
+          nextSessionId: req.nextSessionId,
           modelId: req.modelId,
           stageIndex: req.stageIndex ?? 1,
           wireDtype: req.wireDtype,
@@ -1518,6 +1525,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         // assumption (final stage, driver upstream, no downstream).
         isFinalOverride: msg.payload.isFinal,
         nextPeerId: msg.payload.nextPeerId,
+        nextSessionId: msg.payload.nextSessionId,
         prevPeerId: msg.payload.prevPeerId,
         stageIndex: msg.payload.stageIndex,
         promptText: msg.payload.promptText,
@@ -1636,6 +1644,11 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
             // isPrefill (seq===0) and positions exactly as this host did.
             if (!state.nextPeerId) throw new Error('relay stage has no nextPeerId — cannot forward');
             if (!result.activation) throw new Error('relay stage produced no boundary activation to forward');
+            // Singleton multi-range (#63): forward under the DOWNSTREAM island's
+            // sessionId when the driver assigned one (the next peer serves >1
+            // island, so its islands are distinct sessions); otherwise reuse our
+            // own sessionId — the pre-#63 single-island-per-peer behaviour.
+            const forwardSessionId = state.nextSessionId ?? sessionId;
             if (!state.forwardEncoder) {
               state.forwardEncoder = createLegionActivationWireEncoder({
                 modelId: state.modelId,
@@ -1648,7 +1661,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               // One header, before the first activation frame — the downstream
               // host (opened with NO wireHeader) is awaitingHeader and takes
               // this as its decoder header (the legacy first-frame path).
-              await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, state.forwardEncoder.headerBytes()), state.nextPeerId);
+              await meshPeer.sendStageFrame(encodeStageFrameEnvelope(forwardSessionId, state.forwardEncoder.headerBytes()), state.nextPeerId);
               state.forwardHeaderSent = true;
             }
             const activationF32 = new Float32Array(result.activation.payload);
@@ -1659,7 +1672,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               done: frame.done,
               ...(frame.finishReason !== undefined ? { finishReason: frame.finishReason } : {}),
             });
-            await meshPeer.sendStageFrame(encodeStageFrameEnvelope(sessionId, outBytes), state.nextPeerId);
+            await meshPeer.sendStageFrame(encodeStageFrameEnvelope(forwardSessionId, outBytes), state.nextPeerId);
             state.decodedCount += 1;
             syncPublicState();
             return;

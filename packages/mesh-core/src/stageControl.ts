@@ -189,6 +189,14 @@ export interface StageSessionOpenPayload {
    * for stage 1, the previous relay for a hop ≥2. Without it the host's
    * spoof guard (sender must equal driverPeerId) drops relayed frames. */
   prevPeerId?: string;
+  /** Singleton multi-range (#63): the sessionId this host must use when it
+   * relays its boundary activation DOWNSTREAM (iff `isFinal === false`). Every
+   * stage of a pipeline normally shares ONE sessionId — but when the downstream
+   * peer serves MORE THAN ONE island, its islands must be distinct sessions, so
+   * the driver assigns them per-stage ids and tells each relay which id to
+   * forward to. Absent ⇒ relay reuses its OWN sessionId (the pre-#63 behaviour,
+   * correct whenever every hop is a distinct single-island peer). */
+  nextSessionId?: string;
   /**
    * TEXT-RELAY (additive, v1-safe — absent ⇒ unchanged pre-textRelay
    * behavior: the host trusts the first `sf` frame's own `tokens`

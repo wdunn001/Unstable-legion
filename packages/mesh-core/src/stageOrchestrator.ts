@@ -1005,7 +1005,18 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   async function attachOneStage(
     stageIndex: number,
     candidates: readonly CommunalHostStageAd[],
-    relay: { isFinal: boolean; prevPeerId: string; nextPeerId?: string },
+    relay: {
+      isFinal: boolean;
+      prevPeerId: string;
+      nextPeerId?: string;
+      // Singleton multi-range (#63): this stage's own sessionId (suffixed when
+      // its peer serves >1 island), the downstream island's sessionId to relay
+      // under, and the contiguous SPAN this peer loads to cover all its islands.
+      sessionId: string;
+      nextSessionId?: string;
+      loadLayerStart?: number;
+      loadLayerEnd?: number;
+    },
     /** TEXT-RELAY only — the prompt (or reconstructed history) text to send
      * on THIS stage's open. Only ever passed for `stageIndex === 1` by
      * `startCommunalSession` below; `undefined` everywhere else, including
@@ -1029,10 +1040,15 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           nEmbd: opts.localHooks.nEmbd,
           dtype: cand.wireDtype,
         });
-        const open = makeStageSessionOpen(sessionId, {
+        const open = makeStageSessionOpen(relay.sessionId, {
           modelId: opts.modelId,
           layerStart: cand.layerStart,
           layerEnd: cand.layerEnd,
+          // Singleton multi-range (#63): span to LOAD (present iff this peer
+          // serves >1 island); each session runs its island as an override.
+          ...(relay.loadLayerStart !== undefined
+            ? { loadLayerStart: relay.loadLayerStart, loadLayerEnd: relay.loadLayerEnd }
+            : {}),
           totalLayers: route.plan.totalLayers,
           ctxSize: cand.ctxSize,
           wireDtype: cand.wireDtype,
@@ -1051,6 +1067,7 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
           isFinal: relay.isFinal,
           prevPeerId: relay.prevPeerId,
           ...(relay.nextPeerId !== undefined ? { nextPeerId: relay.nextPeerId } : {}),
+          ...(relay.nextSessionId !== undefined ? { nextSessionId: relay.nextSessionId } : {}),
         });
         const reply = await sendLoadAndAwaitWithProgress(
           opts.peer,
@@ -1135,13 +1152,38 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     // different peer than the plan, the neighbor's spoof guard rejects the
     // mismatched sender → clean replan, never silent corruption.
     const planByIndex = new Map(r.plan.stages.map((s) => [s.stageIndex, s]));
-    const relayFor = (stageIndex: number): { isFinal: boolean; prevPeerId: string; nextPeerId?: string } => {
+    const relayFor = (
+      stageIndex: number,
+    ): {
+      isFinal: boolean;
+      prevPeerId: string;
+      nextPeerId?: string;
+      sessionId: string;
+      nextSessionId?: string;
+      loadLayerStart?: number;
+      loadLayerEnd?: number;
+    } => {
       const self = planByIndex.get(stageIndex);
       const next = planByIndex.get(stageIndex + 1);
+      const nextSid = next ? stageSessionId(next.stageIndex) : undefined;
+      // Singleton multi-range (#63): if THIS stage's peer serves more than one
+      // island, the host loads the contiguous SPAN of all its islands once and
+      // runs each as an override — tell it the span so both islands share one
+      // unified-KV context.
+      const peerStages = self ? r.plan.stages.filter((s) => s.peerId === self.peerId) : [];
+      const multiIsland = peerStages.length > 1;
       return {
         isFinal: self?.isFinal ?? true,
         prevPeerId: stageIndex === 1 ? opts.peer.selfId : planByIndex.get(stageIndex - 1)!.peerId,
         ...(next ? { nextPeerId: next.peerId } : {}),
+        sessionId: stageSessionId(stageIndex),
+        ...(nextSid && nextSid !== sessionId ? { nextSessionId: nextSid } : {}),
+        ...(multiIsland
+          ? {
+              loadLayerStart: Math.min(...peerStages.map((s) => s.layerStart)),
+              loadLayerEnd: Math.max(...peerStages.map((s) => s.layerEnd)),
+            }
+          : {}),
       };
     };
     for (const stage of remoteStages) {
@@ -1172,14 +1214,34 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
     // prefill frame.
   }
 
+  // Singleton multi-range (#63): the sessionId a given pipeline stage runs
+  // under. Normally every stage shares the base `sessionId` — but when a peer
+  // serves MORE THAN ONE island, its islands must be distinct sessions, so
+  // those stages get a per-stage suffix. Pure function of the CURRENT
+  // route+sessionId, so it stays correct across replans (both change together).
+  function stageSessionId(stageIndex: number): string {
+    const st = route.plan.stages.find((s) => s.stageIndex === stageIndex);
+    if (!st) return sessionId;
+    const peerStageCount = route.plan.stages.filter((s) => s.peerId === st.peerId).length;
+    return peerStageCount > 1 ? `${sessionId}#s${stageIndex}` : sessionId;
+  }
+  function finalStageIndex(): number {
+    return Math.max(...route.plan.stages.map((s) => s.stageIndex));
+  }
+
   async function sendFrameAndAwaitToken(
     bytes: Uint8Array,
     peerId: string,
     seq: number,
     timeoutMs: number,
   ): Promise<{ token: number; done: boolean; finishReason?: string }> {
-    const waiter = tokenTracker.expect(stageTokenCallId(sessionId, seq), timeoutMs);
-    await opts.peer.sendStageFrame(encodeStageFrameEnvelope(sessionId, bytes), peerId);
+    // Send to stage 1 under stage 1's id; the final stage samples and returns
+    // its token under the FINAL stage's id — distinct only when a multi-island
+    // peer forced a suffix, identical (= base sessionId) otherwise.
+    const sendSessionId = stageSessionId(1);
+    const awaitSessionId = stageSessionId(finalStageIndex());
+    const waiter = tokenTracker.expect(stageTokenCallId(awaitSessionId, seq), timeoutMs);
+    await opts.peer.sendStageFrame(encodeStageFrameEnvelope(sendSessionId, bytes), peerId);
     const reply = await waiter;
     const decoded = decodeStageControl({ kind: 'result', ...reply });
     if (!decoded || decoded.kind !== 'stage.token') throw new Error(`expected stage.token for seq=${seq}, got ${decoded?.kind ?? 'unparsable'}`);
