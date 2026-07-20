@@ -1510,7 +1510,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       const { sessionId, payload: bytes } = envelope;
       const state = hostSessions.get(sessionId);
       if (!state) {
-        log(`[stage-host] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${peerId}`);
+        // NOT an error, so NOT logged (see #55): `peer.onStageFrame`
+        // broadcasts every inbound frame to ALL listeners, so a tab running
+        // both this body-host engine AND localStageServeEngine sees the
+        // sibling engine's frames (and selfId loopback frames) here. A
+        // sessionId absent from THIS engine's map belongs to another engine
+        // or was already freed — a filter-miss, not a drop. The old "DROPPED
+        // — unknown sessionId" warning fired once per token in the solo
+        // self-host case and actively misled diagnosis. A genuinely orphaned
+        // frame shows up as a generation stall upstream, not as noise here.
         return;
       }
       // Spoof guard: only this session's UPSTREAM peer may drive it — the

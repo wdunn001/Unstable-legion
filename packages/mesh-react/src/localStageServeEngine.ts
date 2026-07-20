@@ -403,7 +403,16 @@ export function createLocalStageServeEngine(opts: LocalStageServeEngineOptions):
     const { sessionId, payload: bytes } = envelope;
     const state = hostSessions.get(sessionId);
     if (!state) {
-      log(`[local-stage-serve] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${fromPeerId}`);
+      // NOT an error, so NOT logged (see #55): `peer.onStageFrame` broadcasts
+      // every inbound frame to ALL listeners. A tab that runs both this
+      // stage-0 serve engine AND useStageHost's body-host engine (the solo
+      // whole-model / serveFirstStage case) sees the sibling engine's frames
+      // — and its own selfId loopback frames — here too. A sessionId absent
+      // from THIS engine's map simply belongs to another engine or was
+      // already freed: a filter-miss, not a drop. Warning on it (the old
+      // "DROPPED — unknown sessionId" spam, one line per token) made real
+      // diagnosis harder. A genuinely orphaned frame surfaces as a
+      // generation stall at the orchestrator, not as noise here.
       return;
     }
     if (fromPeerId !== state.prevPeerId) {
