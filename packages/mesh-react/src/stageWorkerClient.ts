@@ -196,8 +196,8 @@ export class StageWorkerClient {
   /** M2: open a new lane (StageSessionHandle) on this already-loaded
    * stage. Rejects if the worker hasn't loaded a stage yet or the
    * model's lane_count (maxSessions, fixed at load time) is exhausted. */
-  async sessionCreate(sessionId: string): Promise<void> {
-    const res = await this.send({ type: 'sessionCreate', sessionId });
+  async sessionCreate(sessionId: string, island?: { layerStart: number; layerEnd: number }): Promise<void> {
+    const res = await this.send({ type: 'sessionCreate', sessionId, island });
     if (res.type !== 'result' || res.kind !== 'sessionCreate') {
       throw new Error(`[${this.label}] unexpected sessionCreate response`);
     }

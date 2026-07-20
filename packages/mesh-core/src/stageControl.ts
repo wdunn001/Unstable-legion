@@ -145,8 +145,18 @@ export interface StageTokenPayload {
 export interface StageSessionOpenPayload {
   sessionId: string;
   modelId: string;
+  /** The layer ISLAND this session serves. For a singleton multi-range host
+   * (#63) this is a sub-range of what the host loads; the host runs it as a
+   * per-session stage-range override on its own seq lane. */
   layerStart: number;
   layerEnd: number;
+  /** Singleton multi-range (#63): the contiguous SPAN the host should load to
+   * cover all islands it serves (one model / one unified-KV context). Absent ⇒
+   * the host loads exactly [layerStart, layerEnd) — the pre-#63 single-range
+   * behaviour (island === loaded stage). When present, [layerStart, layerEnd)
+   * must be within [loadLayerStart, loadLayerEnd). */
+  loadLayerStart?: number;
+  loadLayerEnd?: number;
   totalLayers: number;
   ctxSize: number;
   wireDtype: 'f32' | 'f16' | 'i8';

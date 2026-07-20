@@ -400,8 +400,16 @@ interface PendingOpen {
   peerId: string;
   callId: string;
   modelId: string;
+  /** The layer ISLAND this session serves. */
   layerStart: number;
   layerEnd: number;
+  /** Singleton multi-range (#63): the contiguous SPAN to LOAD (covering all of
+   * this host's islands). Absent ⇒ load exactly [layerStart, layerEnd) (the
+   * pre-#63 single-range behaviour). When present, the worker loads the span
+   * once and each session runs its island [layerStart, layerEnd) as a
+   * stage-range override on its own seq lane of the shared unified-KV context. */
+  loadLayerStart?: number;
+  loadLayerEnd?: number;
   totalLayers: number;
   ctxSize: number;
   wireDtype: 'f32' | 'f16' | 'i8';
@@ -936,10 +944,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
      * reloads when idle and the config differs; throws when busy with a
      * genuinely different config (a real conflict, not just capacity). */
     async function ensureWorkerLoaded(req: PendingOpen): Promise<void> {
+      // Singleton multi-range (#63): the worker loads the contiguous SPAN
+      // covering all this host's islands (default: exactly the one island).
+      // Individual sessions then run their island as a stage-range override.
+      const loadStart = req.loadLayerStart ?? req.layerStart;
+      const loadEnd = req.loadLayerEnd ?? req.layerEnd;
       const want: LoadedConfig = {
         modelId: req.modelId,
-        layerStart: req.layerStart,
-        layerEnd: req.layerEnd,
+        layerStart: loadStart,
+        layerEnd: loadEnd,
         totalLayers: req.totalLayers,
         ctxSize: req.ctxSize,
         wireDtype: req.wireDtype,
@@ -985,10 +998,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
       const doLoad = (async (): Promise<void> => {
         await disposeWorker();
-        log(`[stage-host] loading stage layers=[${req.layerStart},${req.layerEnd}) maxSessions=${driverMaxSessions + 1} (driver=${driverMaxSessions}+1 fused)`);
+        log(`[stage-host] loading stage layers=[${loadStart},${loadEnd}) maxSessions=${driverMaxSessions + 1} (driver=${driverMaxSessions}+1 fused)`);
         const client = new StageWorkerClient(
           createStageWorker(),
-          `stage-host-${req.layerStart}-${req.layerEnd}`,
+          `stage-host-${loadStart}-${loadEnd}`,
           log,
           (message) => onLifecycleRef.current?.({ type: 'worker-crashed', reason: message }),
         );
@@ -1042,8 +1055,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
             client.load(
               {
                 modelId: req.modelId,
-                layerStart: req.layerStart,
-                layerEnd: req.layerEnd,
+                // Load the SPAN (#63); sessions run their island as an override.
+                layerStart: loadStart,
+                layerEnd: loadEnd,
                 totalLayers: req.totalLayers,
                 shardUrls: req.shardUrls,
                 shardHashes: req.shardHashes,
@@ -1219,7 +1233,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       try {
         await ensureWorkerLoaded(req);
         const client = engine.workerClient!;
-        await client.sessionCreate(req.sessionId);
+        // Singleton multi-range (#63): when the host loaded a SPAN wider than
+        // this session's island, bind the session to its island via a
+        // stage-range override; otherwise (single-range) create a plain session
+        // over the whole loaded stage.
+        const island =
+          req.loadLayerStart !== undefined || req.loadLayerEnd !== undefined
+            ? { layerStart: req.layerStart, layerEnd: req.layerEnd }
+            : undefined;
+        await client.sessionCreate(req.sessionId, island);
         let decoder: LegionActivationWireDecoder | undefined;
         let awaitingHeader = true;
         if (req.wireHeaderB64) {
@@ -1439,13 +1461,22 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       // unaffected — this guard only engages once a claim exists, and in
       // every pre-existing flow a driver only ever requests the EXACT
       // range this host currently advertises, so this is a no-op there.
+      // Singleton multi-range (#63): accept any island WITHIN this host's claim
+      // (the claim is the loaded span), not only an exact-match range. A gapped
+      // multi-island host gets several stage.session.open's — one per island —
+      // all inside its claimed span. Pre-#63 the claim == the one served range,
+      // so exact match and subset-match coincide; this only widens acceptance.
       const claim = claimedRangeRef.current;
-      if (claim && (msg.payload.layerStart !== claim.layerStart || msg.payload.layerEnd !== claim.layerEnd)) {
+      if (claim && (msg.payload.layerStart < claim.layerStart || msg.payload.layerEnd > claim.layerEnd)) {
         log(
-          `[stage-host] stage.session.open for [${msg.payload.layerStart},${msg.payload.layerEnd}) IGNORED — this host's claim is [${claim.layerStart},${claim.layerEnd})`,
+          `[stage-host] stage.session.open for [${msg.payload.layerStart},${msg.payload.layerEnd}) IGNORED — outside this host's claim [${claim.layerStart},${claim.layerEnd})`,
         );
         return;
       }
+      // The contiguous span this host loads to cover all its islands (default:
+      // exactly the requested island — single-range hosts are unchanged).
+      const loadStart = msg.payload.loadLayerStart ?? msg.payload.layerStart;
+      const loadEnd = msg.payload.loadLayerEnd ?? msg.payload.layerEnd;
       log(`[stage-host] stage.session.open from ${peerId} sessionId=${msg.sessionId} layers=[${msg.payload.layerStart},${msg.payload.layerEnd})`);
       // The `stage.session.open` payload carries NO shard info by design — the
       // host resolves shards for the requested range from its OWN manifest.
@@ -1454,15 +1485,17 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       let shardUrls: readonly string[] = [];
       if (resolveSessionShardsRef.current) {
         try {
+          // Resolve shards for the SPAN to LOAD (#63), not just this island —
+          // the worker loads the span once and runs each island as an override.
           shardUrls = await resolveSessionShardsRef.current({
             modelId: msg.payload.modelId,
-            layerStart: msg.payload.layerStart,
-            layerEnd: msg.payload.layerEnd,
+            layerStart: loadStart,
+            layerEnd: loadEnd,
             totalLayers: msg.payload.totalLayers,
           });
         } catch (err) {
           log(
-            `[stage-host] shard resolution failed for [${msg.payload.layerStart},${msg.payload.layerEnd}): ${err instanceof Error ? err.message : String(err)}`,
+            `[stage-host] shard resolution failed for [${loadStart},${loadEnd}): ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
@@ -1474,6 +1507,8 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         modelId: msg.payload.modelId,
         layerStart: msg.payload.layerStart,
         layerEnd: msg.payload.layerEnd,
+        loadLayerStart: msg.payload.loadLayerStart,
+        loadLayerEnd: msg.payload.loadLayerEnd,
         totalLayers: msg.payload.totalLayers,
         ctxSize: msg.payload.ctxSize,
         wireDtype: msg.payload.wireDtype,
