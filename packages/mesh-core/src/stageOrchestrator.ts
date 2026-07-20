@@ -1170,7 +1170,9 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
       // island, the host loads the contiguous SPAN of all its islands once and
       // runs each as an override — tell it the span so both islands share one
       // unified-KV context.
-      const peerStages = self ? r.plan.stages.filter((s) => s.peerId === self.peerId) : [];
+      // REMOTE stages only (stageIndex >= 1) — stage 0 is the driver's local
+      // resident, never a session island (see stageSessionId's note).
+      const peerStages = self ? r.plan.stages.filter((s) => s.peerId === self.peerId && s.stageIndex >= 1) : [];
       const multiIsland = peerStages.length > 1;
       return {
         isFinal: self?.isFinal ?? true,
@@ -1222,7 +1224,12 @@ export function runCommunalDriverSession(opts: CommunalDriverSessionOptions): St
   function stageSessionId(stageIndex: number): string {
     const st = route.plan.stages.find((s) => s.stageIndex === stageIndex);
     if (!st) return sessionId;
-    const peerStageCount = route.plan.stages.filter((s) => s.peerId === st.peerId).length;
+    // Count REMOTE stages only (stageIndex >= 1). Stage 0 is ALWAYS the driver's
+    // own local resident stage (served by ensureResidentStageZero, not a
+    // session.open'd island) — counting it would make a solo self-host driver
+    // (which is the peer for both stage 0 and the body) look "multi-island" and
+    // wrongly span-load + suffix the body session, disposing its worker.
+    const peerStageCount = route.plan.stages.filter((s) => s.peerId === st.peerId && s.stageIndex >= 1).length;
     return peerStageCount > 1 ? `${sessionId}#s${stageIndex}` : sessionId;
   }
   function finalStageIndex(): number {
