@@ -155,23 +155,33 @@ export async function createWhisperEngine(opts: WhisperEngineOptions = {}): Prom
   return {
     id,
     async transcribe(input: SpeechEngineInput): Promise<AsrTranscribeContent> {
+      // Guard: transformers.js reads `audio.length` internally, so an
+      // undefined/empty PCM surfaces as an opaque "reading 'length'" error.
+      // Fail loud + clear here instead (e.g. a mic clip that decoded to
+      // nothing, or a bad worker payload).
+      if (!(input.pcm instanceof Float32Array) || input.pcm.length === 0) {
+        throw new Error(
+          `whisper: no audio samples to transcribe (pcm=${
+            input.pcm instanceof Float32Array ? input.pcm.length : typeof input.pcm
+          }) — clip may be empty/too short`,
+        );
+      }
+      console.debug(`[legion-speech] whisper: transcribing ${input.pcm.length} samples @ ${input.sampleRate}Hz`);
       const startedAt = Date.now();
-      const output = await resolvedTranscriber(input.pcm, {
-        return_timestamps: true,
+      // Text only — no `return_timestamps` (whisper's timestamp decode is
+      // fragile and voice-input doesn't need segments; keep the path simple
+      // and robust). Segments can come back as a future opt-in.
+      const output = (await resolvedTranscriber(input.pcm, {
         ...(input.language ? { language: input.language } : {}),
-      });
+      })) as { text?: string };
       const durationMs = Date.now() - startedAt;
-      const segments = output.chunks?.map((c) => ({
-        text: c.text,
-        start: c.timestamp[0],
-        end: c.timestamp[1] ?? c.timestamp[0],
-      }));
+      const text = typeof output?.text === 'string' ? output.text.trim() : '';
+      console.debug(`[legion-speech] whisper: done in ${durationMs}ms — "${text.slice(0, 80)}"`);
       return {
-        text: output.text.trim(),
+        text,
         language: input.language,
         durationMs,
         engine: id,
-        ...(segments && segments.length > 0 ? { segments } : {}),
       };
     },
   };

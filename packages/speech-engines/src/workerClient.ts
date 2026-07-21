@@ -67,7 +67,10 @@ export class SpeechWorkerClient {
       };
       return await new Promise<AsrTranscribeContent>((resolve, reject) => {
         this.pending.set(id, { resolve, reject });
-        this.worker.postMessage(req, [pcm.buffer]);
+        // Structured-clone COPY (no transferable list): the pcm is ~160 KB
+        // for a few seconds of audio — a copy is negligible and avoids any
+        // transfer edge case leaving the worker's view detached/undefined.
+        this.worker.postMessage(req);
       });
     })();
   }
