@@ -10,6 +10,7 @@ import {
 import { TTS_SKILL } from '@unstable-legion/core';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
+import { toSpeakableText } from '../speakableText.js';
 import type { ChatMessage } from '../db/threadStore.js';
 import type { CapacityView, ChatNoticeView } from '../viewmodels/meshViewModels.js';
 
@@ -62,8 +63,13 @@ export function ChatPane(props: ChatPaneProps) {
     (id: string, text: string) => {
       setSpeakError(null);
       setSpeakingId(id);
+      // Read the explanation, not the markup: strip code blocks, markdown,
+      // URLs, and any <think> block before synthesizing. Fall back to a
+      // short spoken note when a reply is code-only (nothing to read).
+      const speakable =
+        toSpeakableText(text) || 'This reply is code only, so there is nothing to read aloud.';
       void ttsClient
-        .synthesize(text)
+        .synthesize(speakable)
         .then((content) => audioPlayback.play(content))
         .catch((err) => {
           setSpeakError(err instanceof Error ? err.message : String(err));
