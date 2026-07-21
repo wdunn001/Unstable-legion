@@ -28,9 +28,9 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@codecai/web": "file:../../codec-local/packages/web",
-    "@codecai/web-safety": "file:../../codec-local/packages/web-safety",
-    "@codecai/web-llm": "file:../../codec-local/packages/web-llm",
+    "@codecai/web": "^0.5.0",
+    "@codecai/web-safety": "^0.5.0",
+    "@codecai/web-llm": "^0.5.0",
     "@msgpack/msgpack": "^3.0.0",
     "@trystero-p2p/mqtt": "0.24.0",
     "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"
