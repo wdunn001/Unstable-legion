@@ -82,21 +82,28 @@ function readWebglRendererName(): string | undefined {
   }
 }
 
-/** Derive the single "gpuName" display string from whichever source
- * succeeded — WebGPU adapter info (description, else device, else
- * vendor+architecture) takes priority over the WebGL fallback since it's
- * the more directly relevant surface (same API this peer actually hosts
- * over). */
-function deriveGpuName(
+/** Derive the single "gpuName" display string from whichever source names
+ * the actual CARD. Priority: WebGPU `description`/`device` (a real model
+ * name when present) → the WebGL `UNMASKED_RENDERER` (e.g. "ANGLE (NVIDIA,
+ * NVIDIA GeForce RTX 2080 Ti …)") → last, WebGPU `vendor+architecture`.
+ *
+ * The WebGL renderer OUTRANKS vendor+architecture on purpose: Chromium/Edge
+ * privacy-redact `adapter.info` to just `{vendor:"nvidia", architecture:
+ * "turing"}` (empty device/description), and "nvidia turing" matches NO
+ * catalog entry — so the auto-detect VRAM clamp (matchGpuCatalog) never
+ * fired and the raw shared-memory probe over-reported (11GB card → 17.7GB).
+ * The WebGL string carries the model number the catalog actually matches. */
+export function deriveGpuName(
   adapterInfo: { vendor?: string; architecture?: string; device?: string; description?: string } | undefined,
   webglRenderer: string | undefined,
 ): string | undefined {
   if (adapterInfo?.description) return adapterInfo.description;
   if (adapterInfo?.device) return adapterInfo.device;
+  if (webglRenderer) return webglRenderer;
   if (adapterInfo?.vendor || adapterInfo?.architecture) {
     return [adapterInfo.vendor, adapterInfo.architecture].filter(Boolean).join(' ');
   }
-  return webglRenderer;
+  return undefined;
 }
 
 /**

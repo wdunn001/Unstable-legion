@@ -200,7 +200,21 @@ export interface UseStageHostOptions {
     shardUrls: readonly string[];
     shardHashes?: readonly string[];
     shardBytes?: readonly number[];
+    /** Per-shard manifest role — carried for the incremental loader (see
+     * stage-runtime StageDescriptor.shardRoles). */
+    shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
     useMemoryShardStore?: boolean;
+    /**
+     * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` this host should
+     * fetch fragment BYTES from instead of the network (see
+     * `localFolderFetch.ts`'s trust-model doc comment: the manifest/hashes
+     * this load verifies against are still `shardHashes` above, sourced
+     * from the REMOTE manifest exactly as always — the folder never
+     * supplies anything but bytes). `useCommunalHost.ts` wires this from
+     * its own `localFolderHandle` option. `undefined` = unchanged
+     * network-fetch behavior.
+     */
+    localFolderHandle?: FileSystemDirectoryHandle;
   } | null;
   /**
    * M3 — publish `stageHost` WITHOUT `loadedStages` while true, even
@@ -398,8 +412,17 @@ interface PendingOpen {
    * convention has no per-fragment hashes to source these from). */
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** M3 preload only — per-shard manifest role for the incremental loader. */
+  shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
+  /** M3 preload only (`opts.preloadStage.localFolderHandle`, see that
+   * option's doc comment) — a wire-triggered open (`origin: 'legacy' |
+   * 'session'` from a remote driver) never carries one; a remote peer has
+   * no way to hand THIS browser a `FileSystemDirectoryHandle` (it isn't
+   * network-serializable), so this only ever gets set for the
+   * self-directed preload path. */
+  localFolderHandle?: FileSystemDirectoryHandle;
   /** Present only for `origin === 'session'` — lets the host build the
    * decoder at accept time instead of via the legacy first-frame convention.
    * Absent for a relay hop ≥2, which takes its upstream's header inline. */
@@ -649,6 +672,10 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     const eng = engineRef.current;
     if (!eng) return;
     const w = eng.workerClient;
+    // Capture the range BEFORE nulling loadedConfig so the dispose log names
+    // which stage was freed — needed to count construct-vs-dispose balance
+    // and prove/disprove a leaked context (#56).
+    const cfg = eng.loadedConfig;
     eng.workerClient = undefined;
     eng.loadedConfig = undefined;
     eng.loadInFlight = undefined;
@@ -658,7 +685,8 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     sessionCapacityRef.current = { maxSessions: driverMaxSessions, activeSessions: 0 };
     republishNowRef.current();
     if (w) {
-      logRef.current(`[stage-host] freeing resident stage (${reason})`);
+      const range = cfg ? `[${cfg.layerStart},${cfg.layerEnd})` : '[?]';
+      logRef.current(`[stage-host] DISPOSING resident stage worker ${range} + terminate() (${reason})`);
       void w.dispose().catch(() => undefined);
     }
   }, [driverMaxSessions]);
@@ -880,6 +908,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
 
     async function disposeWorker(): Promise<void> {
       const w = engine.workerClient;
+      // Range captured before nulling loadedConfig so the dispose log names the
+      // stage — lets us count construct(`loading stage layers=…`) vs dispose to
+      // prove/disprove a leaked context on claim-resize reload (#56).
+      const disposingCfg = engine.loadedConfig;
+      if (w) {
+        const range = disposingCfg ? `[${disposingCfg.layerStart},${disposingCfg.layerEnd})` : '[?]';
+        log(`[stage-host] DISPOSING stage worker ${range} + terminate() (reload/supersede)`);
+      }
       engine.workerClient = undefined;
       engine.loadedConfig = undefined;
       // RETRACT THE ADVERTISEMENT THE INSTANT THE WEIGHTS GO AWAY.
@@ -991,6 +1027,16 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         // for LOAD_STALL_MS) and keep a generous LOAD_CEILING_MS backstop
         // for the pathological "progress never actually finishes" case —
         // see loadWatchdog.ts's module doc.
+        // Rebuild download progress MONOTONICALLY from the SET of completed
+        // shards. The loader fetches shards in PARALLEL and reports each
+        // completion by its 1-based index with a prefix-by-index byte sum
+        // (it assumes every lower-indexed shard is also done), so out-of-order
+        // completion makes the raw numbers bounce — shard 6 → 990MB, then
+        // shard 1 → 6MB — rolling the UI bar BACKWARD. A set only grows, and
+        // req.shardBytes gives each shard's real size, so this only ever
+        // climbs and reflects what's actually downloaded.
+        const completedShardIdx = new Set<number>();
+        const shardSizes = req.shardBytes;
         await runWithStallWatchdog(
           (progressTick) =>
             client.load(
@@ -1002,17 +1048,47 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 shardUrls: req.shardUrls,
                 shardHashes: req.shardHashes,
                 shardBytes: req.shardBytes,
+                shardRoles: req.shardRoles,
                 ctxSize: req.ctxSize,
                 // +1: legion_stage_open always creates one FUSED session
                 // internally (used here only for the warm-up dispatch below) —
                 // see this file's top doc comment and MULTI-SESSION.md.
                 maxSessions: driverMaxSessions + 1,
               },
-              { useMemoryShardStore: req.useMemoryShardStore },
+              {
+                useMemoryShardStore: req.useMemoryShardStore,
+                localFolderHandle: req.localFolderHandle,
+                // GATED ROLLOUT (#47): opt into the incremental shard-by-shard
+                // loader via ?incrementalLoad=1. Needs per-shard roles (the
+                // artifact-slice manifest path) — a legacy full.gguf open has
+                // none and stays on the monolithic loadStage. Read here (main
+                // thread) so no flag has to thread through every hook.
+                incrementalLoad:
+                  !!req.shardRoles &&
+                  req.shardRoles.length === req.shardUrls.length &&
+                  typeof location !== 'undefined' &&
+                  new URLSearchParams(location.search).get('incrementalLoad') === '1',
+              },
               (progress) => {
                 progressTick();
-                setLoadProgress(progress);
-                lastProgress = progress;
+                // `progress.shardsFetched` is the just-completed shard's
+                // 1-based INDEX (not a count). Fold it into the completed set
+                // and recompute a monotonic count + real-byte sum; dupes
+                // (the loader re-reports some shards) are absorbed by the set.
+                if (progress.shardsFetched > 0) completedShardIdx.add(progress.shardsFetched);
+                const monotonicShards = completedShardIdx.size;
+                let monotonicBytes = progress.bytesFetched;
+                if (shardSizes && shardSizes.length > 0) {
+                  monotonicBytes = 0;
+                  for (const idx of completedShardIdx) monotonicBytes += shardSizes[idx - 1] ?? 0;
+                }
+                const monotonic: StageWorkerLoadProgress = {
+                  ...progress,
+                  shardsFetched: monotonicShards,
+                  bytesFetched: monotonicBytes,
+                };
+                setLoadProgress(monotonic);
+                lastProgress = monotonic;
                 // Prefer the loader's OWN phase — it knows whether it's still
                 // fetching or already inside legion_stage_open pushing weights
                 // to VRAM. The shard-count guess below is only a fallback for
@@ -1022,18 +1098,27 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 // minutes in the GPU upload.
                 const phase =
                   progress.phase ??
-                  (progress.totalShards > 0 && progress.shardsFetched >= progress.totalShards ? 'opening' : 'downloading');
-                notifyDriverLoadProgress(progress, phase);
+                  (monotonic.totalShards > 0 && monotonic.shardsFetched >= monotonic.totalShards ? 'opening' : 'downloading');
+                notifyDriverLoadProgress(monotonic, phase);
                 log(
-                  `[stage-host] load progress: shard ${progress.shardsFetched}/${progress.totalShards}` +
-                    (progress.totalBytes
-                      ? ` (${(progress.bytesFetched / 1048576).toFixed(0)}/${(progress.totalBytes / 1048576).toFixed(0)} MB)`
+                  `[stage-host] load progress: ${monotonic.shardsFetched}/${monotonic.totalShards} shards` +
+                    (monotonic.totalBytes
+                      ? ` (${(monotonic.bytesFetched / 1048576).toFixed(0)}/${(monotonic.totalBytes / 1048576).toFixed(0)} MB)`
                       : ''),
                 );
               },
             ),
           { stallMs: LOAD_STALL_MS, ceilingMs: LOAD_CEILING_MS },
-        ).catch((err) => {
+        ).catch(async (err) => {
+          // Dispose the worker whose load FAILED before the caller retries with
+          // a fresh one. A failed load never reaches `engine.workerClient =
+          // client` below, so `disposeWorker()` (which only frees the ASSIGNED
+          // worker) would never touch it — its partial in-heap MEMFS staging
+          // (up to ~the model's byte size) would linger and STACK across
+          // retries, making each attempt OOM sooner (observed on 14B: fail at
+          // shard 38 → shard 1 → before any shard). Terminating the worker
+          // frees that heap so every retry starts from a clean slate.
+          await client.dispose().catch(() => undefined);
           if (err instanceof StallTimeoutError) {
             throw new Error(`stage worker load ${err.message}`);
           }
@@ -1048,7 +1133,14 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
           'warming',
         );
         log('[stage-host] warming up WebGPU shader pipelines before accepting sessions…');
-        await warmUpStageWorker(client, log);
+        // Same disposal discipline as the load catch above — a warm-up failure
+        // (it allocates too) must free the worker rather than orphan its heap.
+        try {
+          await warmUpStageWorker(client, log);
+        } catch (err) {
+          await client.dispose().catch(() => undefined);
+          throw err;
+        }
         engine.workerClient = client;
         engine.loadedConfig = want;
         engine.loadEpoch += 1;
@@ -1097,7 +1189,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardUrls: req.shardUrls,
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
+        shardRoles: req.shardRoles,
         useMemoryShardStore: req.useMemoryShardStore,
+        localFolderHandle: req.localFolderHandle,
       };
       try {
         await ensureWorkerLoaded(pending);
@@ -1429,7 +1523,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
       const { sessionId, payload: bytes } = envelope;
       const state = hostSessions.get(sessionId);
       if (!state) {
-        log(`[stage-host] onStageFrame DROPPED — unknown sessionId=${sessionId} from ${peerId}`);
+        // NOT an error, so NOT logged (see #55): `peer.onStageFrame`
+        // broadcasts every inbound frame to ALL listeners, so a tab running
+        // both this body-host engine AND localStageServeEngine sees the
+        // sibling engine's frames (and selfId loopback frames) here. A
+        // sessionId absent from THIS engine's map belongs to another engine
+        // or was already freed — a filter-miss, not a drop. The old "DROPPED
+        // — unknown sessionId" warning fired once per token in the solo
+        // self-host case and actively misled diagnosis. A genuinely orphaned
+        // frame shows up as a generation stall upstream, not as noise here.
         return;
       }
       // Spoof guard: only this session's UPSTREAM peer may drive it — the

@@ -103,13 +103,35 @@ export class StageWorkerClient {
    * `runWithStallWatchdog` usage) instead of only a flat total timeout. */
   async load(
     descriptor: StageDescriptor,
-    opts: { useMemoryShardStore?: boolean } = {},
+    opts: {
+      useMemoryShardStore?: boolean;
+      /** LOCAL-MODEL-FOLDER — see `StageWorkerRequest`'s `load.localFolderHandle`
+       * doc comment (stageWorkerProtocol.ts). Forwarded verbatim into the
+       * postMessage payload; `FileSystemDirectoryHandle` structured-clones
+       * to a worker with no transfer list needed. Absent = unchanged
+       * network-fetch behavior. */
+      localFolderHandle?: FileSystemDirectoryHandle;
+      /** INCREMENTAL LOAD (#47) — use the shard-by-shard begin/add_shard/finish
+       * path (loadStageIncremental) instead of the monolithic loadStage. Needs
+       * `descriptor.shardRoles`. See StageWorkerRequest's `load.incrementalLoad`. */
+      incrementalLoad?: boolean;
+    } = {},
     onProgress?: (progress: StageWorkerLoadProgress) => void,
   ): Promise<void> {
     const reqId = this.nextReqId++;
     if (onProgress) this.progressHandlers.set(reqId, onProgress);
     try {
-      const res = await this.send({ type: 'load', descriptor, useMemoryShardStore: opts.useMemoryShardStore }, [], reqId);
+      const res = await this.send(
+        {
+          type: 'load',
+          descriptor,
+          useMemoryShardStore: opts.useMemoryShardStore,
+          localFolderHandle: opts.localFolderHandle,
+          incrementalLoad: opts.incrementalLoad,
+        },
+        [],
+        reqId,
+      );
       if (res.type !== 'ready') throw new Error(`[${this.label}] unexpected response to load: ${res.type}`);
       this.isFirst = res.isFirst;
       this.isFinal = res.isFinal;

@@ -16,3 +16,27 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// ── File System Access API — not yet in TypeScript's lib.dom.d.ts (Chrome/
+// Edge only; see `useModelFolder.ts`'s `supported` feature-detect). Just
+// enough surface for the "load model layers from a local folder" feature:
+// picking a folder and re-verifying/re-requesting read permission on a
+// handle restored from IndexedDB across visits. ───────────────────────────
+interface FileSystemHandlePermissionDescriptor {
+  mode?: 'read' | 'readwrite';
+}
+
+interface FileSystemHandle {
+  queryPermission?(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>;
+  requestPermission?(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>;
+}
+
+interface DirectoryPickerOptions {
+  id?: string;
+  mode?: 'read' | 'readwrite';
+  startIn?: FileSystemHandle | string;
+}
+
+interface Window {
+  showDirectoryPicker?(options?: DirectoryPickerOptions): Promise<FileSystemDirectoryHandle>;
+}

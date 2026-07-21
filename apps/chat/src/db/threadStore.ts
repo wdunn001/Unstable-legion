@@ -45,7 +45,13 @@ export interface ChatThread {
 }
 
 const DB_NAME = 'unstable-legion-chat';
-const DB_VERSION = 1;
+// v2 REPAIR: a prior build's useModelFolder shared this DB name but declared a
+// different store ('model-folder') at v1, so if it opened first it created the
+// DB WITHOUT 'threads' — leaving putThread/getThreads throwing "object store
+// not found". Bumping the version fires onupgradeneeded on those DBs and the
+// guard below recreates 'threads'. Healthy DBs (already have 'threads') no-op.
+// (useModelFolder now uses its OWN DB, so this collision can't recur.)
+const DB_VERSION = 2;
 const STORE = 'threads';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -54,6 +60,18 @@ let dbPromise: Promise<IDBDatabase> | null = null;
  * `indexedDB.deleteDatabase` hang waiting on a `blocked` resolution that
  * never fires deterministically in every implementation. */
 let dbInstance: IDBDatabase | null = null;
+
+/** Drop the cached connection so the NEXT call reopens a fresh one. Called
+ * when a connection closes (storage-pressure eviction, a `versionchange`
+ * from another tab, or the browser reclaiming it) or errors — otherwise
+ * `openDb` keeps handing back a dead handle whose `.transaction()` throws
+ * `InvalidStateError: The database connection is closing`. This is exactly
+ * what a full disk triggers: the UA closes the IDB connection under storage
+ * pressure and every subsequent putThread failed until a reload. */
+function clearDbCache(): void {
+  dbPromise = null;
+  dbInstance = null;
+}
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
@@ -67,12 +85,65 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = () => {
-      dbInstance = req.result;
-      resolve(req.result);
+      const db = req.result;
+      dbInstance = db;
+      // A closed connection must not stay cached. `close` fires on UA
+      // eviction; `versionchange` fires when another tab upgrades the DB —
+      // close our handle so theirs isn't blocked, then reopen on next use.
+      db.onclose = () => {
+        if (dbInstance === db) clearDbCache();
+      };
+      db.onversionchange = () => {
+        db.close();
+        if (dbInstance === db) clearDbCache();
+      };
+      resolve(db);
     };
-    req.onerror = () => reject(req.error ?? new Error('failed to open IndexedDB'));
+    req.onerror = () => {
+      clearDbCache();
+      reject(req.error ?? new Error('failed to open IndexedDB'));
+    };
   });
   return dbPromise;
+}
+
+/** Run one transaction, reopening once if the cached connection was closing.
+ * `db.transaction()` throws `InvalidStateError` synchronously on a closing
+ * connection; that single retry (with a freshly reopened db) turns a hard
+ * failure into a transparent recovery. Any other error propagates. */
+async function withStore<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T> | { result?: T },
+  read: boolean,
+): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const db = await openDb();
+    try {
+      const tx = db.transaction(STORE, mode);
+      const store = tx.objectStore(STORE);
+      const req = run(store) as IDBRequest<T>;
+      if (read) {
+        return await promisifyRequest(req);
+      }
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('transaction failed'));
+        tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'));
+      });
+      return req.result as T;
+    } catch (err) {
+      if (
+        attempt === 0 &&
+        err instanceof DOMException &&
+        err.name === 'InvalidStateError'
+      ) {
+        clearDbCache();
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('unreachable');
 }
 
 function promisifyRequest<T>(req: IDBRequest<T>): Promise<T> {
@@ -84,39 +155,24 @@ function promisifyRequest<T>(req: IDBRequest<T>): Promise<T> {
 
 /** All threads, most-recently-updated first. */
 export async function listThreads(): Promise<ChatThread[]> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readonly');
-  const index = tx.objectStore(STORE).index('updatedAt');
-  const threads = await promisifyRequest(index.getAll());
+  const threads = await withStore<ChatThread[]>(
+    'readonly',
+    (store) => store.index('updatedAt').getAll(),
+    true,
+  );
   return threads.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export async function getThread(id: string): Promise<ChatThread | undefined> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readonly');
-  return promisifyRequest(tx.objectStore(STORE).get(id));
+  return withStore<ChatThread | undefined>('readonly', (store) => store.get(id), true);
 }
 
 export async function putThread(thread: ChatThread): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readwrite');
-  tx.objectStore(STORE).put(thread);
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('failed to save thread'));
-    tx.onabort = () => reject(tx.error ?? new Error('save thread transaction aborted'));
-  });
+  await withStore<IDBValidKey>('readwrite', (store) => store.put(thread), false);
 }
 
 export async function deleteThread(id: string): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readwrite');
-  tx.objectStore(STORE).delete(id);
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('failed to delete thread'));
-    tx.onabort = () => reject(tx.error ?? new Error('delete thread transaction aborted'));
-  });
+  await withStore<undefined>('readwrite', (store) => store.delete(id), false);
 }
 
 /** Test-only escape hatch: drops the whole database and forces the next

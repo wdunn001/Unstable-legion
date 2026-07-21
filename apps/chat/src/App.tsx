@@ -55,6 +55,7 @@ import { TrustInterstitial } from './components/TrustInterstitial.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { useThreads } from './hooks/useThreads.js';
 import { useHostingConsent } from './hooks/useHostingConsent.js';
+import { useModelFolder } from './hooks/useModelFolder.js';
 import { useToolContribution, type UseToolContributionHandle } from './hooks/useToolContribution.js';
 import { MAX_TOOL_ROUNDS, buildToolResponsePayload, collectMeshTools, stripToolMarkup } from './toolChat.js';
 import { useGpuDetection } from './hooks/useGpuDetection.js';
@@ -162,6 +163,15 @@ function saveAsrHostEnabled(enabled: boolean): void {
     /* quota / privacy — silent */
   }
 }
+
+// Generation budget. maxDecodeTokens is a CAP, not a target — short answers
+// stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
+// run further; it doesn't slow short chats. Was 256, which truncated real
+// answers and forced a "continue" that then overran the context. The prompt is
+// trimmed to `ctxSize - MAX_DECODE_TOKENS - margin` so prompt+generation can't
+// exceed the KV window (an overflow traps the stage-runtime wasm mid-decode).
+const MAX_DECODE_TOKENS = 1024;
+const PROMPT_TOKEN_MARGIN = 128;
 
 export function App() {
   const { persona, update: updatePersona } = usePersona(PERSONA_STORAGE_KEY);
@@ -271,6 +281,11 @@ function Dashboard(props: {
   const { peer } = useMeshContext();
   const roster = useMeshRoster();
 
+  // Trim the assembled prompt to leave room for the model's own generation
+  // within the KV window — see MAX_DECODE_TOKENS. Floored so a small ctx never
+  // yields an absurdly tiny (or negative) budget.
+  const maxPromptTokens = Math.max(512, modelConfig.ctxSize - MAX_DECODE_TOKENS - PROMPT_TOKEN_MARGIN);
+
   // One contribution-economy ledger per Dashboard mount (== per
   // MeshProvider subtree) — same "one ledger, shared across every role"
   // convention as apps/demo's App.tsx.
@@ -303,6 +318,12 @@ function Dashboard(props: {
 
   const audioKeepalive = useAudioKeepalive();
   const hostingConsent = useHostingConsent();
+  // LOCAL-MODEL-FOLDER — "Load layers from a local folder" (see
+  // ModelFolderPanel / useModelFolder.ts). `handle` feeds BOTH this
+  // driver's own stage-0 load (`chat` below) and this peer's communal
+  // hosting load (`communal` below) — a picked folder benefits either
+  // role, independent of the hosting-consent decision.
+  const modelFolder = useModelFolder();
   // Session-local live on/off — distinct from the persisted `consent`
   // decision (see useHostingConsent's doc comment: "leaving" for this
   // session shouldn't erase a standing "yes").
@@ -344,6 +365,7 @@ function Dashboard(props: {
     totalLayers: modelConfig.totalLayers,
     driverLayers: modelConfig.driverLayers,
     manifestUrl: modelConfig.manifestUrl,
+    localFolderHandle: modelFolder.handle,
     nEmbd: modelConfig.nEmbd,
     ctxSize: modelConfig.ctxSize,
     wireDtype: modelConfig.wireDtype,
@@ -367,7 +389,13 @@ function Dashboard(props: {
   // this hook itself no-ops (no engine, no wire subscriptions) whenever the
   // resident worker hasn't loaded yet or the toggle is off.
   const localServe = useLocalStageServe({
-    enabled: hostingConsent.serveFirstStage,
+    // PAUSE while a remembered local folder is awaiting a re-grant click: a
+    // reload drops the folder's read permission, and without this the serve/
+    // host loads would silently DOWNLOAD the whole model instead of reading
+    // from the folder the user picked. Resolving the folder (re-grant, or
+    // "download instead") clears needsPermission and resumes. See
+    // useModelFolder.ts + ModelFolderPanel.
+    enabled: hostingConsent.serveFirstStage && !modelFolder.needsPermission,
     peer,
     residentStageZeroRef: chat.residentStageZeroRef,
     priorityScore,
@@ -376,7 +404,10 @@ function Dashboard(props: {
   });
 
   const communal = useCommunalHost({
-    enabled: hostingEnabled,
+    // Paused while a remembered local folder awaits a re-grant click — see the
+    // localServe `enabled` comment above (don't silently download the whole
+    // body stage when the user meant to load it from their folder).
+    enabled: hostingEnabled && !modelFolder.needsPermission,
     peer,
     baseCap: props.baseCap,
     createStageWorker,
@@ -394,6 +425,7 @@ function Dashboard(props: {
     ctxSize: modelConfig.ctxSize,
     wireDtype: modelConfig.wireDtype,
     manifestUrl: modelConfig.manifestUrl,
+    localFolderHandle: modelFolder.handle,
     fallbackShardUrls: modelConfig.shardUrls,
     avgLayerBytes: modelConfig.avgLayerBytes,
     keepaliveEnabled: audioKeepalive.enabled,
@@ -581,7 +613,7 @@ function Dashboard(props: {
   const doSend = useCallback(
     (text: string) => {
       const baseMessages = threads.activeThread?.messages ?? [];
-      const prompt = buildPrompt(baseMessages, text, { tools: meshTools });
+      const prompt = buildPrompt(baseMessages, text, { tools: meshTools, maxPromptTokens });
       threads.appendMessage('user', text);
       const assistantId = threads.appendMessage('assistant', '');
       exchangeRef.current = {
@@ -594,9 +626,9 @@ function Dashboard(props: {
         cancelled: false,
       };
       setStreamingMessageId(assistantId);
-      void chat.start(prompt, { maxDecodeTokens: 256 });
+      void chat.start(prompt, { maxDecodeTokens: MAX_DECODE_TOKENS });
     },
-    [threads, chat, meshTools],
+    [threads, chat, meshTools, maxPromptTokens],
   );
 
   useEffect(() => {
@@ -668,7 +700,7 @@ function Dashboard(props: {
       // useCommunalChat) — a start() fired straight from the status effect
       // is silently refused and the reply would stay blank forever (first
       // live-test symptom of this loop). Wait out the teardown, bounded.
-      const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds });
+      const prompt = buildPrompt(ex.baseMessages, ex.userText, { tools: meshTools, rounds: ex.rounds, maxPromptTokens });
       const deadline = Date.now() + 15_000;
       while (chat.isRunning() && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 150));
@@ -683,10 +715,10 @@ function Dashboard(props: {
         finalizeExchange();
         return;
       }
-      void chat.start(prompt, { maxDecodeTokens: 256 });
+      void chat.start(prompt, { maxDecodeTokens: MAX_DECODE_TOKENS });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [peer, threads, chat, meshTools, priorityScore, standingLedger, toolContribution, telemetry],
+    [peer, threads, chat, meshTools, priorityScore, standingLedger, toolContribution, telemetry, maxPromptTokens],
   );
 
   const finalizeExchange = useCallback(() => {
@@ -911,7 +943,15 @@ function Dashboard(props: {
               layersHosted,
               totalLayers: communalLayerCount,
               approxGbLabel: formatVramLabel(effectiveApproxBytes),
-              maxLayersOverride: hostingConsent.maxLayersOverride,
+              // Clamp to the CURRENT model's communal layer count so a stored
+              // override from a bigger model (e.g. 38 set on 14B) doesn't
+              // render "38 of 34" after switching back to 8B. The stored value
+              // is left intact (so switching back to 14B restores 38); only
+              // the displayed/slider value is clamped to what this model allows.
+              maxLayersOverride:
+                hostingConsent.maxLayersOverride !== undefined
+                  ? Math.min(communalLayerCount, hostingConsent.maxLayersOverride)
+                  : undefined,
               onChangeMaxLayers: hostingConsent.setMaxLayersOverride,
               serveFirstStage: hostingConsent.serveFirstStage,
               onChangeServeFirstStage: hostingConsent.setServeFirstStage,
@@ -926,6 +966,8 @@ function Dashboard(props: {
             ready: speechHost.ready,
             error: speechHost.error,
           }}
+          modelFolder={modelFolder}
+          modelFolderDownloadUrl={modelConfig.downloadUrl}
           pipelineHandoff={{
             stages: chat.plan?.stages ?? [],
             hopBytes: chat.hopBytes ?? {},

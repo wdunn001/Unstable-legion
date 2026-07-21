@@ -132,6 +132,19 @@ export interface UseCommunalHostOptions {
    * without a manifest). */
   manifestUrl?: string | readonly string[];
   fallbackShardUrls?: () => readonly string[];
+  /**
+   * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` (from
+   * `apps/chat/src/hooks/useModelFolder.ts`) pointing at a local clone of
+   * this manifest's model package. When set, this host's proactive
+   * preload (`issuePreload` below, `useStageHost`'s `preloadStage.
+   * localFolderHandle`) fetches fragment BYTES from the folder instead of
+   * the network — `manifestUrl`/the fragment hashes it verifies against
+   * are UNCHANGED; see `localFolderFetch.ts`'s trust-model doc comment.
+   * Read via a ref (like `priorityScore` below) so a fresh identity each
+   * render doesn't restart the assembly-loop effect. `undefined` =
+   * unchanged network-fetch behavior.
+   */
+  localFolderHandle?: FileSystemDirectoryHandle;
   /** Uniform per-layer byte estimate, used to convert this peer's
    * WebGPU/wasm capacity into a layer COUNT for `communalHostClaim`. Real
    * models have non-uniform layer sizes; this is the same
@@ -359,6 +372,10 @@ interface ShardPlan {
   shardUrls: readonly string[];
   shardHashes?: readonly string[];
   shardBytes?: readonly number[];
+  /** Per-shard role from the layer-package manifest (Fragment.role) — carried
+   * so the incremental loader can tell the metadata fragment from data shards
+   * (see stage-runtime's StageDescriptor.shardRoles / loadStageIncremental). */
+  shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
   useMemoryShardStore: boolean;
 }
 
@@ -428,7 +445,23 @@ export async function resolveCommunalShardPlan(
   // Base URL for relative fragment paths = the WINNING source, not the
   // primary — a manifest served by the fallback origin must pull its
   // weights from that same origin (absolute paths are unaffected).
-  const fragments = fragmentsForRange(manifest, cache.url, claim.layerStart, claim.layerEnd, opts.includeEmbeddings ?? false, claim.includeOutput);
+  // INCREMENTAL LOAD (#47): under ?incrementalLoad=1, request the header-only
+  // TYPE-index metadata fragment (metadata-index.gguf) that loadStageIncremental's
+  // begin() needs. fragmentsForRange falls back to the KV-only metadata.gguf if
+  // the manifest has no metadata_index, so this is safe on older packages. Read
+  // on the main thread (no per-hook flag plumbing); useStageHost reads the same
+  // param to actually pick loadStageIncremental.
+  const useMetadataIndex =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).get('incrementalLoad') === '1';
+  const fragments = fragmentsForRange(
+    manifest,
+    cache.url,
+    claim.layerStart,
+    claim.layerEnd,
+    opts.includeEmbeddings ?? false,
+    claim.includeOutput,
+    useMetadataIndex,
+  );
   const totalBytes = fragments.reduce((sum, f) => sum + f.bytes, 0);
   const useMemoryShardStore = totalBytes > opts.opfsQuotaBytes;
   return {
@@ -436,6 +469,7 @@ export async function resolveCommunalShardPlan(
       shardUrls: fragments.map((f) => f.url),
       shardHashes: fragments.map((f) => f.sha256),
       shardBytes: fragments.map((f) => f.bytes),
+      shardRoles: fragments.map((f) => f.role),
       useMemoryShardStore,
     },
     manifestCache: cache,
@@ -562,6 +596,11 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
   const pendingClaimRef = useRef<{ claim: CommunalClaimRange; notBeforeMs: number } | null>(null);
   const priorityScoreRef = useRef<PriorityScoreFn>(priorityScore ?? (() => 0));
   priorityScoreRef.current = priorityScore ?? (() => 0);
+  // LOCAL-MODEL-FOLDER — read fresh at issue time (see `issuePreload`
+  // below) without being an assembly-loop effect dependency, same
+  // "ref, not a dep" discipline as `priorityScoreRef` above.
+  const localFolderHandleRef = useRef<FileSystemDirectoryHandle | undefined>(opts.localFolderHandle);
+  localFolderHandleRef.current = opts.localFolderHandle;
 
   // ── Backoff + dedup state (kill the tight retry loop + log storm) ─────
   const backoffOptsRef = useRef<BackoffOptions | undefined>(opts.backoff);
@@ -956,7 +995,9 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardUrls: plan.shardUrls,
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
+          shardRoles: plan.shardRoles,
           useMemoryShardStore: plan.useMemoryShardStore,
+          localFolderHandle: localFolderHandleRef.current,
         });
         setSuppressAdvertise(false);
       } catch (err) {

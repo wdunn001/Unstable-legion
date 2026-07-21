@@ -19,6 +19,7 @@
  */
 import {
   loadStage,
+  loadStageIncremental,
   createMemoryShardStore,
   type StageDescriptor,
   type StageHandle,
@@ -26,6 +27,8 @@ import {
   type ActivationFrame,
 } from '@unstable-legion/stage-runtime';
 import {
+  createLocalFolderFetch,
+  createNullShardStore,
   patchWebGpuDeviceLimits,
   type StageWorkerRequest,
   type StageWorkerResponse,
@@ -98,12 +101,42 @@ async function handle(req: StageWorkerRequest): Promise<void> {
           /* @vite-ignore */ new URL('/wasm/legion-stage.js', self.location.origin).toString()
         );
         console.log(`[stage-worker] glue module imported ${mem()}`);
+        // LOCAL-MODEL-FOLDER: when the caller (useCommunalChat/
+        // useCommunalHost, via StageWorkerClient.load) supplied a picked
+        // FileSystemDirectoryHandle, fetch fragment bytes from IT instead
+        // of the network — createLocalFolderFetch falls back to the real
+        // fetch for anything missing from the folder, and every fragment
+        // (local or network) still gets hashed against the REMOTE
+        // manifest by the unchanged fetchAndCacheFragment verify path (see
+        // localFolderFetch.ts's module doc comment for the full trust
+        // model). Absent -> unchanged default `fetch`.
+        const fetchImpl = req.localFolderHandle ? createLocalFolderFetch(req.localFolderHandle) : undefined;
+        if (fetchImpl) console.log('[stage-worker] loading from local folder (falls back to network for missing fragments)');
+        // INCREMENTAL LOAD (#47): shard-by-shard begin/add_shard/finish keeps
+        // only ~a byte-budget of shards in MEMFS at once (vs loadStage staging
+        // the whole stage). Gated by req.incrementalLoad AND requires per-shard
+        // roles (the metadata fragment must be identifiable). Falls back to the
+        // monolithic loadStage otherwise — identical opts (LoadStageIncremental-
+        // Options extends LoadStageOptions), so the shard-store/fetch/progress
+        // wiring below is shared.
+        const useIncremental =
+          !!req.incrementalLoad &&
+          Array.isArray(descriptor.shardRoles) &&
+          descriptor.shardRoles.length === descriptor.shardUrls.length;
+        // loadStageIncremental accepts a superset of loadStage's opts
+        // (LoadStageIncrementalOptions extends LoadStageOptions), so it's a safe
+        // widening cast to a common call signature for the shared opts below.
+        const loadFn: typeof loadStage = useIncremental
+          ? (loadStageIncremental as typeof loadStage)
+          : loadStage;
+        if (useIncremental) console.log('[stage-worker] using INCREMENTAL shard-by-shard load (#47)');
         // M3: in-memory shard store when the caller says the claimed
         // range would exceed the OPFS-origin quota — see
         // stageWorkerProtocol.ts's `useMemoryShardStore` doc comment.
-        stage = await loadStage(descriptor, {
+        stage = await loadFn(descriptor, {
           createModule: createLegionStageModule,
           baseUrl: self.location.origin,
+          ...(fetchImpl ? { fetchImpl } : {}),
           // Per-shard structured progress -> relayed to the caller as a
           // `progress` response (same reqId as this `load`) so
           // `StageWorkerClient.load()`'s `onProgress` can drive a real
@@ -122,7 +155,18 @@ async function handle(req: StageWorkerRequest): Promise<void> {
               totalBytes: progress.totalBytes,
             });
           },
-          ...(req.useMemoryShardStore ? { shardStore: createMemoryShardStore() } : {}),
+          // Shard store selection:
+          //  - local folder  -> NULL store: the folder is already the durable
+          //    on-disk copy, so caching to OPFS would only duplicate it and
+          //    overrun the storage quota (the QuotaExceededError a folder load
+          //    exists to avoid). Verify still runs; nothing is persisted.
+          //  - useMemoryShardStore -> in-RAM (range exceeds the OPFS quota).
+          //  - else -> loadStage's default OPFS cache.
+          ...(req.localFolderHandle
+            ? { shardStore: createNullShardStore() }
+            : req.useMemoryShardStore
+              ? { shardStore: createMemoryShardStore() }
+              : {}),
         } as Parameters<typeof loadStage>[1]);
         console.log(`[stage-worker] stage loaded ${mem()}`);
         post({

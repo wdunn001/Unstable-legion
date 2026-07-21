@@ -7,11 +7,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  deriveGpuName,
   isThinDriver,
   isThinDriverForModel,
   requiredStorageBufferBytesForManifest,
   USABLE_STAGE_HOST_MIN_BYTES,
 } from '../src/webgpuLimits.ts';
+
+test('deriveGpuName: WebGPU description/device (a real model name) wins when present', () => {
+  assert.equal(deriveGpuName({ description: 'NVIDIA GeForce RTX 4090' }, 'ANGLE (…)'), 'NVIDIA GeForce RTX 4090');
+  assert.equal(deriveGpuName({ device: 'Radeon RX 7900 XTX' }, undefined), 'Radeon RX 7900 XTX');
+});
+
+test('deriveGpuName: WebGL renderer OUTRANKS bare vendor+architecture (the Edge redaction case)', () => {
+  // Chromium/Edge privacy-redact adapter.info to just vendor+architecture with
+  // NO device/description. "nvidia turing" matches no catalog entry; the WebGL
+  // renderer carries the model number the VRAM-clamp needs.
+  const name = deriveGpuName(
+    { vendor: 'nvidia', architecture: 'turing' },
+    'ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Ti Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  );
+  assert.match(name ?? '', /RTX 2080 Ti/);
+});
+
+test('deriveGpuName: falls back to vendor+architecture only when nothing better exists', () => {
+  assert.equal(deriveGpuName({ vendor: 'nvidia', architecture: 'turing' }, undefined), 'nvidia turing');
+  assert.equal(deriveGpuName(undefined, undefined), undefined);
+});
 
 test('isThinDriver: WebGPU absent -> thin', () => {
   assert.equal(isThinDriver({ ok: false, reason: 'no WebGPU' }), true);

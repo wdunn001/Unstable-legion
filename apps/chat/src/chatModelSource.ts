@@ -138,6 +138,26 @@ export const CHAT_CHANNELS: readonly ChatModelChannelSpec[] = [
     avgLayerBytes: 230_000_000,
     hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-14b/resolve/main/model-package.json',
   },
+  {
+    // Qwen3-32B (huggingface.co/Qwen/Qwen3-32B config.json): num_hidden_layers=64,
+    // hidden_size=5120, num_key_value_heads=8, head_dim=128 → KV = 2*8*128*1 =
+    // 2048 (same int8-KV constant). q4_K_M GGUF ~20GB / 64 layers ≈ 315MB per
+    // layer (layer-000 measured 315MB → ~320MB upper bound). Untied embeddings
+    // (manifest shared.output.tensor_count=2); embeddings tensor ~437MB (thin
+    // phones need a serving host here too). Manifest + layer fragments
+    // CORS-verified on HF (access-control-allow-origin:*). At ~20GB this is a
+    // heavy model — expect to split it across several peers (or load from a
+    // local folder, see useModelFolder); solo-on-one-tab is unproven.
+    id: 'qwen3-32b-q4',
+    displayName: 'Qwen3-32B',
+    quant: 'Q4_K_M',
+    totalLayers: 64,
+    driverLayers: 2,
+    ctxSize: 4096,
+    nEmbd: 5120,
+    avgLayerBytes: 320_000_000,
+    hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-32b/resolve/main/model-package.json',
+  },
 ];
 
 export const DEFAULT_CHANNEL_ID = CHAT_MODEL_ID;
@@ -193,6 +213,20 @@ function channelShardUrls(ch: ChatModelChannelSpec): readonly string[] {
   return [`/webllm/stages/${ch.id}/full.gguf`];
 }
 
+/** Human-facing Hugging Face repo page for a channel — where a user can
+ * download the model weights to load from a local folder (see
+ * `useModelFolder` / `ModelFolderPanel`). Derived from the channel's
+ * `hfManifestUrl` (`…/resolve/main/model-package.json` → `…/tree/main`) so
+ * there's still ONE source of truth per channel. Returns undefined if the
+ * manifest URL isn't an HF `/resolve/` URL (e.g. a future self-hosted-only
+ * channel), so the panel simply omits the link rather than linking somewhere
+ * wrong. */
+export function channelDownloadUrl(ch: ChatModelChannelSpec): string | undefined {
+  const marker = '/resolve/main/';
+  const at = ch.hfManifestUrl.indexOf(marker);
+  return at === -1 ? undefined : `${ch.hfManifestUrl.slice(0, at)}/tree/main`;
+}
+
 /** "Qwen3-8B · Q4_K_M" — the exact "name + quant" pairing the product UI
  * surfaces (header pill, capacity meter, topology map). A pure,
  * unit-tested formatter rather than a string baked into a component, so
@@ -237,6 +271,10 @@ export interface ChatModelConfig {
    * see `wire-dtype.spec.ts`.
    */
   wireDtype: 'f32' | 'f16' | 'i8';
+  /** Hugging Face repo page for this model's weights, for the local-folder
+   * panel's "download the weights" link. Undefined for the test model (no
+   * public repo) and any channel whose manifest isn't an HF `/resolve/` URL. */
+  downloadUrl?: string;
 }
 
 const VALID_WIRE_DTYPES = new Set(['f32', 'f16', 'i8']);
@@ -300,5 +338,6 @@ export function resolveChatModelConfig(channelId: string = getStoredChannelId())
     displayName: ch.displayName,
     modelLabel: chatModelLabel(ch.displayName, ch.quant),
     wireDtype,
+    downloadUrl: channelDownloadUrl(ch),
   };
 }

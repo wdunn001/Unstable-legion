@@ -37,6 +37,13 @@ import type { ChatMessage } from './db/threadStore.js';
 
 const DEFAULT_MAX_TURNS = 6;
 
+/** Chars-per-token used to ESTIMATE the prompt's token count for the
+ * `maxPromptTokens` trim (there's no tokenizer at prompt-build time — that
+ * lives in the stage worker). Deliberately LOW (code tokenizes ~3 chars/tok;
+ * English ~4) so the estimate OVER-counts tokens and we trim ENOUGH to stay
+ * safely under the KV window rather than risk the wasm overflow trap. */
+const CHARS_PER_TOKEN = 3;
+
 const SYSTEM_PROMPT =
   'You are a helpful assistant running on Legion, a communal mesh of browser peers. ' +
   'Answer the user directly and concisely.';
@@ -62,6 +69,15 @@ export interface ToolRound {
 
 export interface BuildPromptOptions {
   maxTurns?: number;
+  /** Hard cap on the ASSEMBLED prompt's token count — drop OLDEST history
+   * turns until it fits. Set to `ctxSize - maxDecodeTokens - margin` so the
+   * prompt + the model's own generation can't exceed the KV window: an
+   * overflow makes the stage-runtime wasm TRAP ("unreachable") mid-decode
+   * and kill the host (a full-program answer + "continue" blew past a 4096
+   * ctx). Omitted -> only the `maxTurns` count bound applies (no token
+   * bound). Token count is ESTIMATED from chars (no tokenizer here); see
+   * CHARS_PER_TOKEN. */
+  maxPromptTokens?: number;
   /** Advertise these functions in the system turn (Qwen3 `<tools>` block).
    * Omit/empty -> no tools section, the model never emits `<tool_call>`. */
   tools?: readonly PromptToolSpec[];
@@ -111,22 +127,46 @@ export function buildPrompt(
   const recent = completed.slice(-maxTurns * 2);
 
   const system = SYSTEM_PROMPT + (opts.tools && opts.tools.length > 0 ? toolsSection(opts.tools) : '');
-  const parts: string[] = [`<|im_start|>system\n${system}<|im_end|>`];
-  for (const m of recent) {
-    const role = m.role === 'user' ? 'user' : 'assistant';
-    const content = role === 'assistant' ? stripThink(m.content) : m.content;
-    if (content.length === 0) continue;
-    parts.push(`<|im_start|>${role}\n${content}<|im_end|>`);
-  }
-  parts.push(`<|im_start|>user\n${newUserText}<|im_end|>`);
+  const head = `<|im_start|>system\n${system}<|im_end|>`;
+
+  // FIXED (never dropped): the current user turn, this exchange's tool rounds,
+  // and the assistant cue. History turns are the only droppable part.
+  const tail: string[] = [`<|im_start|>user\n${newUserText}<|im_end|>`];
   // Completed tool rounds of THIS exchange: assistant turn (raw — includes
   // its <tool_call> block) then the tool result as a `<tool_response>` user
   // turn, exactly how Qwen3's template renders role:"tool" messages.
   for (const round of opts.rounds ?? []) {
     const assistantText = round.assistantText.trim();
-    if (assistantText.length > 0) parts.push(`<|im_start|>assistant\n${assistantText}<|im_end|>`);
-    parts.push(`<|im_start|>user\n<tool_response>\n${round.toolResponse}\n</tool_response><|im_end|>`);
+    if (assistantText.length > 0) tail.push(`<|im_start|>assistant\n${assistantText}<|im_end|>`);
+    tail.push(`<|im_start|>user\n<tool_response>\n${round.toolResponse}\n</tool_response><|im_end|>`);
   }
-  parts.push('<|im_start|>assistant\n<think>\n\n</think>\n\n');
-  return parts.join('\n');
+  tail.push('<|im_start|>assistant\n<think>\n\n</think>\n\n');
+
+  const historyParts: string[] = [];
+  for (const m of recent) {
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    const content = role === 'assistant' ? stripThink(m.content) : m.content;
+    if (content.length === 0) continue;
+    historyParts.push(`<|im_start|>${role}\n${content}<|im_end|>`);
+  }
+
+  // Token-budget trim: keep the MOST RECENT history turns that fit under
+  // maxPromptTokens (fixed parts always kept). Prevents the prompt+generation
+  // from overrunning the KV window and trapping the wasm mid-decode.
+  let keptHistory = historyParts;
+  if (opts.maxPromptTokens !== undefined && opts.maxPromptTokens > 0) {
+    const budgetChars = opts.maxPromptTokens * CHARS_PER_TOKEN;
+    const fixedChars = head.length + tail.reduce((n, p) => n + p.length + 1, 0);
+    let usedChars = fixedChars;
+    const kept: string[] = [];
+    for (let i = historyParts.length - 1; i >= 0; i--) {
+      const cost = historyParts[i]!.length + 1;
+      if (usedChars + cost > budgetChars) break; // older turns beyond here are dropped
+      usedChars += cost;
+      kept.unshift(historyParts[i]!);
+    }
+    keptHistory = kept;
+  }
+
+  return [head, ...keptHistory, ...tail].join('\n');
 }

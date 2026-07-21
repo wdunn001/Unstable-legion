@@ -263,6 +263,12 @@ export {
 export { StageWorkerClient, type StageWorkerLog } from './stageWorkerClient.js';
 export type { StageWorkerRequest, StageWorkerResponse, StageWorkerLoadProgress, WireActivationFrame } from './stageWorkerProtocol.js';
 
+// ── Load model layers from a local folder (bytes only — verified against
+// the REMOTE manifest's hashes by the existing fetchAndCacheFragment path,
+// never a "trust the folder" bypass — see localFolderFetch.ts's module
+// doc comment for the full trust model). ────────────────────────────────
+export { createLocalFolderFetch, createNullShardStore, fragmentRelativePath } from './localFolderFetch.js';
+
 // ── WebGPU device buffer-limit patch (FIX for 8B+ models — see
 // webgpuDevicePatch.ts's module doc) — installed by a stage-hosting
 // worker entry point before the wasm module instantiates. ───────────────

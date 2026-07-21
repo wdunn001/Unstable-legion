@@ -101,6 +101,17 @@ export interface UseCommunalChatOptions {
    * ("activation input payload is N bytes, expected M"). The manifest is the
    * single source of truth that keeps every stage on the same model. */
   manifestUrl?: string | readonly string[];
+  /**
+   * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` (from
+   * `apps/chat/src/hooks/useModelFolder.ts`) pointing at a local clone of
+   * this manifest's model package. When set, this driver's own local
+   * stage-0 load (both the per-turn path and the `serveFirstStage`
+   * resident path) fetches fragment BYTES from the folder instead of the
+   * network — the manifest/hashes it verifies against are UNCHANGED,
+   * still `manifestUrl` above; see `localFolderFetch.ts`'s trust-model doc
+   * comment. `undefined` = unchanged network-fetch behavior.
+   */
+  localFolderHandle?: FileSystemDirectoryHandle;
   nEmbd?: number;
   ctxSize?: number;
   wireDtype?: 'f32' | 'f16' | 'i8';
@@ -404,6 +415,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     totalLayers = STAGE_TOTAL_LAYERS,
     driverLayers = STAGE_DRIVER_LAYERS,
     manifestUrl,
+    localFolderHandle,
     nEmbd = STAGE_N_EMBD,
     ctxSize = STAGE_CTX_SIZE,
     wireDtype = 'i8',
@@ -489,7 +501,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     eng.serveMaxSessions = 0;
     residentStageZeroRef.current = null;
     if (client) {
-      logRef.current(`[communal-chat] freeing resident stage-0 (${reason})`);
+      logRef.current(`[communal-chat] DISPOSING resident stage-0 worker + terminate() (${reason})`);
       void client.dispose().catch(() => undefined);
     }
   }, []);
@@ -591,7 +603,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
           // `ResidentStageZero.serveMaxSessions`'s doc comment.
           maxSessions: 1 + serveFirstStageMaxSessions,
         },
-        { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+        { useMemoryShardStore: stage0Plan.useMemoryShardStore, localFolderHandle },
       );
       logRef.current(`[communal-chat] resident stage-0 loaded (nEmbd=${client.nEmbd}); warming up…`);
       await warmUpStageWorker(client, logRef.current);
@@ -620,17 +632,24 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
     } finally {
       if (eng.loadInFlight === doLoad) eng.loadInFlight = null;
     }
-  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, createStageWorker, serveFirstStageMaxSessions]);
+  }, [modelId, totalLayers, driverLayers, ctxSize, wireDtype, manifestUrl, localFolderHandle, createStageWorker, serveFirstStageMaxSessions]);
 
   // EAGER SERVE — the instant "Serve the first stage" is on, load the
-  // resident stage-0 (don't wait for this peer to send its own first chat).
-  // Two problems this fixes: (1) a thin client that routes here would
-  // otherwise wait out the full [0, driverLayers) shard download on demand,
-  // and (2) `residentStageZeroRef` (hence the served-stage advertisement in
-  // useLocalStageServe) only becomes non-null AFTER load+warm-up, so eager
-  // loading is also what keeps this peer from being advertised as a stage-0
-  // host BEFORE the weights are actually in VRAM. A transient toggle-off is
-  // still absorbed by the RESIDENT_GRACE_MS effect above (no cold re-load).
+  // resident stage-0 so a thin client that routes here isn't stuck waiting out
+  // the full [0, driverLayers) download on demand, and so this peer isn't
+  // advertised as a stage-0 host until the weights are actually resident
+  // (residentStageZeroRef → useLocalStageServe's ad only goes non-null after
+  // load+warm-up). A transient toggle-off is absorbed by RESIDENT_GRACE_MS.
+  //
+  // KNOWN FRAGILITY (2026-07-18): this spawns a SECOND wasm worker that
+  // requests the WebGPU device while a capable peer's body-host worker may
+  // still be loading. On a HEALTHY GPU that's fine (verified live). On a GPU
+  // already wedged by repeated OOM/abort cycles (e.g. thrashing the 14B
+  // channel, which can't fit — see [[legion-model-channels-slicing]]) the
+  // concurrent device request can fail ("state changed since read from disk")
+  // and stall the body load. A browser restart clears it. The real hardening
+  // is to SERIALIZE this behind the host load rather than race — tracked, not
+  // yet done; not worth ripping out a working feature for a stressed-GPU edge.
   useEffect(() => {
     if (!serveFirstStage) return;
     let cancelled = false;
@@ -801,7 +820,7 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
                 shardBytes: stage0Plan.shardBytes,
                 ctxSize,
               },
-              { useMemoryShardStore: stage0Plan.useMemoryShardStore },
+              { useMemoryShardStore: stage0Plan.useMemoryShardStore, localFolderHandle },
             );
             log(`[communal-chat] ${elapsed()} local stage-0 worker loaded (nEmbd=${localWorker.nEmbd}); warming up…`);
             await warmUpStageWorker(localWorker, log);
@@ -1064,6 +1083,8 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
       modelId,
       totalLayers,
       driverLayers,
+      manifestUrl,
+      localFolderHandle,
       nEmbd,
       ctxSize,
       wireDtype,

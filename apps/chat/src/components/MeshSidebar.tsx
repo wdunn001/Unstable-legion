@@ -7,8 +7,10 @@ import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
 import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingConsentBanner.js';
 import { ToolContributionPanel, type ToolContributionSpeechProps } from './ToolContributionPanel.js';
+import { ModelFolderPanel } from './ModelFolderPanel.js';
 import { useMobileCollapse } from '../hooks/useMobileCollapse.js';
 import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
+import type { UseModelFolderHandle } from '../hooks/useModelFolder.js';
 import type { CapacityView, CrewScaleView, LeaderboardEntry, StandingView, TopologySegmentView } from '../viewmodels/meshViewModels.js';
 
 export interface MeshSidebarProps {
@@ -24,6 +26,14 @@ export interface MeshSidebarProps {
   toolContribution: UseToolContributionHandle;
   speechHost: ToolContributionSpeechProps;
   pipelineHandoff: PipelineHandoffProps;
+  /** "Load layers from a local folder" — applies to this driver's OWN
+   * stage-0 load regardless of hosting consent, so it's rendered
+   * unconditionally (unlike `ContributionPanel`, which is nested inside
+   * `HostingConsentBanner`'s hosting-accepted state). */
+  modelFolder: UseModelFolderHandle;
+  /** HF repo page for the active model's weights — passed to ModelFolderPanel's
+   * "Download the weights" link. Undefined omits the link. */
+  modelFolderDownloadUrl?: string;
 }
 
 export function MeshSidebar(props: MeshSidebarProps) {
@@ -44,6 +54,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
         <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span> {props.capacity.statusLine}
       </button>
       <HostingConsentBanner {...props.consentBanner} />
+      <ModelFolderPanel modelFolder={props.modelFolder} downloadUrl={props.modelFolderDownloadUrl} />
       {props.showAudioKeepalive && (
         <label className="audio-keepalive-row" title="Keep this tab active (and hosting) while it's in the background.">
           <input type="checkbox" checked={props.audioKeepalive.enabled} onChange={() => void props.audioKeepalive.toggle()} />

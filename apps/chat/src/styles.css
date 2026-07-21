@@ -1022,6 +1022,40 @@ code {
   margin-top: -2px;
 }
 
+/* ── Load layers from a local folder ─────────────────────────────────── */
+.model-folder-panel {
+  margin-top: 6px;
+}
+.model-folder-status {
+  margin: 0;
+  font-size: 11px;
+}
+.model-folder-active {
+  color: var(--accent);
+}
+.model-folder-download-link {
+  color: var(--accent);
+  white-space: nowrap;
+}
+.model-folder-persist-hint {
+  margin-top: 4px;
+  opacity: 0.85;
+}
+.model-folder-needs-permission {
+  color: var(--warn, var(--danger));
+  border: 1px solid var(--warn, var(--danger));
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0 0;
+  background: var(--chip-warn-bg, rgba(255, 180, 0, 0.08));
+}
+.model-folder-needs-permission p {
+  margin: 0 0 6px;
+}
+.model-folder-error {
+  color: var(--danger);
+}
+
 .audio-keepalive-row {
   display: flex;
   align-items: center;
