@@ -568,6 +568,19 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+.msg-speak {
+  margin-top: 6px;
+  font-size: 13px;
+  padding: 0;
+}
+.msg-speak:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.msg-speak-active {
+  opacity: 0.8;
+}
+
 /* ── Composer ─────────────────────────────────────────────────────── */
 .composer {
   border-top: 1px solid var(--border);

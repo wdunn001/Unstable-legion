@@ -1,7 +1,7 @@
 {
   "name": "@unstable-legion/speech",
   "version": "0.0.1",
-  "description": "Browser speech-to-text mesh capability (PoC) — a `SpeechEngine` interface, a transformers.js Whisper implementation, WebAudio decode/resample helpers, a Web Worker host + client, and the `transcribe` mesh tool built on top. Backs the `asr.transcribe` skill defined in `@unstable-legion/core`'s `speech.ts`.",
+  "description": "Browser speech-to-text AND text-to-speech mesh capabilities (PoC) — `SpeechEngine`/`TtsEngine` interfaces, a transformers.js Whisper implementation and a kokoro-js Kokoro implementation, WebAudio decode/resample + WAV-encode helpers, a Web Worker host + client for each, and the `transcribe`/`synthesize` mesh tools built on top. Backs the `asr.transcribe` and `tts.synthesize` skills defined in `@unstable-legion/core`'s `speech.ts`.",
   "license": "BSL-1.1",
   "type": "module",
   "main": "./dist/cjs/index.cjs",
@@ -16,6 +16,10 @@
     "./worker": {
       "types": "./dist/types/worker.d.ts",
       "import": "./dist/esm/worker.js"
+    },
+    "./ttsWorker": {
+      "types": "./dist/types/ttsWorker.d.ts",
+      "import": "./dist/esm/ttsWorker.js"
     }
   },
   "files": [
@@ -33,7 +37,8 @@
   },
   "dependencies": {
     "@unstable-legion/core": "0.0.1",
-    "@huggingface/transformers": "^3.8.1"
+    "@huggingface/transformers": "^3.8.1",
+    "kokoro-js": "^1.2.1"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
@@ -44,5 +49,5 @@
     "url": "https://github.com/wdunn001/unstable-legion.git",
     "directory": "packages/speech-engines"
   },
-  "keywords": ["speech", "asr", "whisper", "transformers.js", "mesh", "browser-ai"]
+  "keywords": ["speech", "asr", "tts", "whisper", "kokoro", "transformers.js", "mesh", "browser-ai"]
 }

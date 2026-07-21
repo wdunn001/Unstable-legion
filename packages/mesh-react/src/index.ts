@@ -91,6 +91,22 @@ export {
   type CallToolFn,
   type AsrTranscribeContentWithSource,
 } from './useSpeechClient.js';
+export {
+  useTtsHost,
+  type UseTtsHostOptions,
+  type UseTtsHostHandle,
+} from './useTtsHost.js';
+export {
+  useTtsClient,
+  type UseTtsClientOptions,
+  type UseTtsClientHandle,
+  type TtsSynthesizeContentWithSource,
+} from './useTtsClient.js';
+export {
+  useAudioPlayback,
+  type AudioPlaybackContent,
+  type UseAudioPlaybackHandle,
+} from './useAudioPlayback.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {
@@ -369,6 +385,8 @@ export {
   type AsrTranscribeArgs,
   type AsrTranscribeContent,
   type AsrTranscribeSegment,
+  type TtsSynthesizeArgs,
+  type TtsSynthesizeContent,
 } from '@unstable-legion/core';
 export type {
   DefaultTurnConfigOptions,

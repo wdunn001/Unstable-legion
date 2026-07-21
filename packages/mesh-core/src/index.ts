@@ -254,6 +254,8 @@ export {
   type AsrTranscribeArgs,
   type AsrTranscribeContent,
   type AsrTranscribeSegment,
+  type TtsSynthesizeArgs,
+  type TtsSynthesizeContent,
 } from './speech.js';
 
 // ── Hierarchical skill resolver (Layer 4) ──────────────────────────

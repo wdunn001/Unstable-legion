@@ -1,5 +1,13 @@
-import { useEffect, useRef } from 'react';
-import type { CallToolFn, UseSpeechHostHandle } from '@unstable-legion/react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useAudioPlayback,
+  useMeshRoster,
+  useTtsClient,
+  type CallToolFn,
+  type UseSpeechHostHandle,
+  type UseTtsHostHandle,
+} from '@unstable-legion/react';
+import { TTS_SKILL } from '@unstable-legion/core';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import type { ChatMessage } from '../db/threadStore.js';
@@ -17,6 +25,12 @@ export interface ChatPaneProps {
   onStop: () => void;
   /** Voice-input wiring for the Composer's mic button — see Composer.tsx. */
   speechHost: UseSpeechHostHandle;
+  /** Voice-OUTPUT wiring for each assistant bubble's 🔊 button — see
+   * MessageBubble.tsx. `useTtsClient`/`useAudioPlayback` are instantiated
+   * ONCE here (not per-bubble) so every message in the pane shares one
+   * `AudioContext` and resolves the same local-vs-mesh target, mirroring
+   * Composer's single `useSpeechClient` instance for the mic button. */
+  ttsHost: UseTtsHostHandle;
   callTool: CallToolFn;
 }
 
@@ -31,6 +45,36 @@ export function ChatPane(props: ChatPaneProps) {
   const disabled = !props.capacity.ready;
   const disabledReason = disabled ? props.capacity.gapMessage : undefined;
 
+  // Reachable if THIS tab hosts TTS, or some roster peer advertises
+  // `tts.synthesize` — same resolution order `useTtsClient` itself uses,
+  // checked here just to decide whether any speak button is clickable.
+  const roster = useMeshRoster();
+  const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
+  const ttsClient = useTtsClient({
+    callTool: props.callTool,
+    synthesizeLocal: props.ttsHost.ready ? props.ttsHost.synthesizeLocal : undefined,
+  });
+  const audioPlayback = useAudioPlayback();
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [speakError, setSpeakError] = useState<string | null>(null);
+
+  const handleSpeak = useCallback(
+    (id: string, text: string) => {
+      setSpeakError(null);
+      setSpeakingId(id);
+      void ttsClient
+        .synthesize(text)
+        .then((content) => audioPlayback.play(content))
+        .catch((err) => {
+          setSpeakError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          setSpeakingId((cur) => (cur === id ? null : cur));
+        });
+    },
+    [ttsClient, audioPlayback],
+  );
+
   return (
     <div className="chat-pane">
       <div className="chat-scroll" ref={scrollRef}>
@@ -43,9 +87,32 @@ export function ChatPane(props: ChatPaneProps) {
             )}
           </div>
         ) : (
-          props.messages.map((m) => <MessageBubble key={m.id} message={m} streaming={m.id === props.streamingMessageId} />)
+          props.messages.map((m) => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              streaming={m.id === props.streamingMessageId}
+              tts={
+                m.role === 'user'
+                  ? undefined
+                  : {
+                      reachable: ttsReachable,
+                      speaking: speakingId === m.id,
+                      onSpeak: () => handleSpeak(m.id, m.content),
+                    }
+              }
+            />
+          ))
         )}
       </div>
+      {speakError && (
+        <div className="chat-notice chat-notice-error" role="alert" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            ⚠
+          </span>
+          <span className="chat-notice-message">Speak failed: {speakError}</span>
+        </div>
+      )}
       {props.notice && (
         <div
           className={`chat-notice ${props.notice.kind === 'retrying' ? 'chat-notice-retrying' : 'chat-notice-error'}`}

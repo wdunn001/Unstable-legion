@@ -105,6 +105,56 @@ LLM-loop change — the user still hits Send/Enter themselves.
    Expect a visible "Mic error: …" line under the composer, not a silent
    no-op.
 
+## 4. Chat app (apps/chat) — voice OUTPUT: 🔊 speak an assistant reply
+
+TTS is the reverse-direction twin of section 3 — text → Kokoro → audio,
+manual "speak" button on each assistant bubble only (no auto-speak; that's
+a later conversation-loop phase, out of scope here).
+
+### 4a. Local (host-own) path — one tab
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`.
+2. Open the dev URL, pick a nick, join.
+3. In the right-hand mesh sidebar's **Tool contributions** card, below the
+   ASR toggle, switch on **🔊 Host text-to-speech (uses your GPU)**.
+   - Expect `initializing (downloading model on first use)…` while the
+     Kokoro worker loads (first run: tens of MB from the HF Hub CDN),
+     then the status line clears once ready (no error line).
+4. Send a message so the model produces an assistant reply.
+5. On the assistant's message bubble, a 🔊 button should now be enabled
+   (hover: tooltip reads "Speak this reply aloud" rather than the
+   disabled-reachability tooltip).
+6. Click it. Expect the button to switch to an ⏳ state while
+   synthesizing, then audio plays back through your speakers/headphones
+   once ready. Check the browser console for `[legion-speech]` lines
+   tracing host construct → worker synth start/done+timing → client →
+   playback, matching the ASR path's logging discipline.
+7. Click 🔊 on a second assistant reply while the first clip is still
+   playing (or immediately after). Expect the second clip to play
+   gaplessly after the first finishes — not overlapping/garbled audio —
+   confirming `useAudioPlayback`'s serial queue.
+8. Toggle TTS host back off and confirm the 🔊 buttons go back to
+   disabled (tooltip: "Enable Host text-to-speech, or wait for a peer
+   that offers it") once no peer advertises `tts.synthesize` either.
+
+### 4b. Mesh path — two tabs
+
+1. Tab A: as in 4a, enable **Host text-to-speech**, leave it ready.
+2. Tab B: open the same chat URL/room with a different nick, leave its
+   TTS host toggle **off**. Send/receive at least one assistant reply in
+   Tab B so it has a message to speak.
+3. In Tab B, an assistant message's 🔊 button should become enabled once
+   Tab A's peer roster entry shows up (advertising `tts.synthesize`) —
+   Tab B has no local host, so `useTtsClient` resolves to Tab A's peer
+   via `callTool`.
+4. Click 🔊 in Tab B. Expect audio to play back in Tab B after a brief
+   mesh round trip (slower than the local path in 4a, but not
+   multi-second under normal conditions) — the synthesized WAV traveled
+   Tab A → Tab B over `tc` as base64, then Tab B decoded + played it.
+5. Turn Tab A's host toggle off, then click 🔊 in Tab B again. Expect a
+   visible "Speak failed: …" notice instead of a silent hang — confirms
+   `useTtsClient`'s no-target error path.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -119,3 +169,10 @@ LLM-loop change — the user still hits Send/Enter themselves.
   `maxMs`) in apps/demo's SpeechPanel — long dictation isn't the point of
   that PoC. apps/chat's Composer passes `maxMs: 30_000` since a real chat
   message is often longer than a 6s clip.
+- Kokoro's ONNX weights are a separate lazy-loaded download from
+  Whisper's — enabling both ASR host and TTS host in the same tab
+  downloads both models (each only on its own toggle-on, not upfront).
+- The `kokoro-js` bundle chunk measured ~1.33 MB minified in a real
+  `vite build` (see this package's README for the matching ASR-side
+  `transformers.web`/onnxruntime-web numbers) — code-split so it only
+  loads when the TTS host toggle is switched on.

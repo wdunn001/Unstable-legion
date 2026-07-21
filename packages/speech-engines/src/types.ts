@@ -5,6 +5,11 @@
  * alongside a Parakeet.js or Piper-derived engine without either the
  * worker host (`worker.ts`) or the mesh tool (`asrTool.ts`) needing to
  * change — they only ever talk to this interface.
+ *
+ * `TtsEngine` is the reverse-direction twin: text in, raw Float32 PCM
+ * out. Kept just as narrow so `kokoroEngine.ts` (kokoro-js, this PoC)
+ * can later sit alongside another TTS backend without `ttsWorker.ts` /
+ * `ttsTool.ts` needing to change.
  */
 import type { AsrTranscribeContent } from '@unstable-legion/core';
 
@@ -27,3 +32,35 @@ export interface SpeechEngine {
 
 /** Factory shape a worker host or test double can construct/swap. */
 export type SpeechEngineFactory = (opts?: Record<string, unknown>) => Promise<SpeechEngine>;
+
+/** Text (+ optional voice/language hint) ready to synthesize. */
+export interface TtsEngineInput {
+  /** Text to synthesize. */
+  text: string;
+  /** Optional engine-specific voice id, e.g. `af_heart`. Omit for the engine's default. */
+  voice?: string;
+  /** Optional ISO-639-1 language hint. */
+  language?: string;
+}
+
+/** Raw synthesis output — no WAV/container encoding here, see `wavEncode.ts`. */
+export interface TtsEngineOutput {
+  /** Mono PCM samples in [-1, 1] at `sampleRate`. */
+  audio: Float32Array;
+  /** Sample rate `audio` was generated at, e.g. `24000` for Kokoro. */
+  sampleRate: number;
+  /** The voice actually used (the requested voice, or the engine's default). */
+  voice: string;
+}
+
+export interface TtsEngine {
+  /** Stable identifier for this engine instance, e.g. `kokoro-82m/webgpu`. */
+  readonly id: string;
+  /** Synthesize one clip of raw PCM from text. */
+  synthesize(input: TtsEngineInput): Promise<TtsEngineOutput>;
+  /** Voice ids this engine instance supports. */
+  listVoices(): string[];
+}
+
+/** Factory shape a worker host or test double can construct/swap. */
+export type TtsEngineFactory = (opts?: Record<string, unknown>) => Promise<TtsEngine>;
