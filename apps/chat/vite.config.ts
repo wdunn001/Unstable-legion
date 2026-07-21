@@ -67,6 +67,13 @@ export default defineConfig({
           '**/*.gguf',
           '**/webllm/**',
           '**/stages/**',
+          // onnxruntime-web's threaded/SIMD WASM (bundled transitively via
+          // @unstable-legion/speech -> @huggingface/transformers, only
+          // ever fetched by the speechWorker after the user opts into ASR
+          // host mode) is ~21MB — far past what the "app shell" precache
+          // budget below is sized for. Same treatment as the gguf/webllm
+          // exclusions above: fetched at runtime, never precached.
+          '**/ort-*.wasm',
         ],
         // legion-stage.wasm is ~4.3MB (the stage-runtime wasm glue, part
         // of the app shell); 6MB gives it headroom without coming
@@ -94,6 +101,12 @@ export default defineConfig({
             handler: 'NetworkOnly',
           },
           {
+            // onnxruntime-web's own WASM — see the matching globIgnores
+            // entry above for why it's excluded from precaching.
+            urlPattern: /\/ort-.*\.wasm(\?.*)?$/,
+            handler: 'NetworkOnly',
+          },
+          {
             // MQTT-over-WSS mesh signaling. The SW never sees WebSocket
             // handshakes via the fetch API anyway, but this keeps the
             // exclusion explicit and self-documenting.
@@ -112,6 +125,14 @@ export default defineConfig({
     },
   },
   preview: { port: 5174, host: '0.0.0.0' },
+  // speechWorker.ts (via @unstable-legion/speech/worker -> lazy
+  // @huggingface/transformers import) needs its worker bundle
+  // code-split, which Rollup can't do under the default 'iife' worker
+  // output format ("UMD and IIFE output formats are not supported for
+  // code-splitting builds") — 'es' matches the `{ type: 'module' }` every
+  // worker in this app is already constructed with at runtime. Same fix as
+  // apps/demo/vite.config.ts.
+  worker: { format: 'es' },
   build: {
     target: 'es2022',
     sourcemap: true,
@@ -121,6 +142,11 @@ export default defineConfig({
       '@unstable-legion/core',
       '@unstable-legion/react',
       '@unstable-legion/stage-runtime',
+      // Same lazy-discovery gotcha as stage-runtime above, for the same
+      // reason: only imported from src/workers/speechWorker.ts, a
+      // separate module graph entry point Vite doesn't crawl from the
+      // main thread until the ASR-host toggle actually constructs one.
+      '@unstable-legion/speech',
       '@codecai/web',
       '@codecai/web-llm',
       '@codecai/web-safety',

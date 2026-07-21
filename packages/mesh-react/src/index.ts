@@ -76,6 +76,38 @@ export {
   type AudioKeepaliveToggleProps,
 } from './components/AudioKeepaliveToggle.js';
 
+// ── Speech mesh-capability (PoC) ─────────────────────────────────────
+export { useMicCapture, type MicClip, type UseMicCaptureOptions, type UseMicCaptureHandle } from './useMicCapture.js';
+export {
+  useSpeechHost,
+  type UseSpeechHostOptions,
+  type UseSpeechHostHandle,
+} from './useSpeechHost.js';
+export {
+  useSpeechClient,
+  type UseSpeechClientOptions,
+  type UseSpeechClientHandle,
+  type SpeechClientClip,
+  type CallToolFn,
+  type AsrTranscribeContentWithSource,
+} from './useSpeechClient.js';
+export {
+  useTtsHost,
+  type UseTtsHostOptions,
+  type UseTtsHostHandle,
+} from './useTtsHost.js';
+export {
+  useTtsClient,
+  type UseTtsClientOptions,
+  type UseTtsClientHandle,
+  type TtsSynthesizeContentWithSource,
+} from './useTtsClient.js';
+export {
+  useAudioPlayback,
+  type AudioPlaybackContent,
+  type UseAudioPlaybackHandle,
+} from './useAudioPlayback.js';
+
 // ── Model catalog (which web-llm models are available) ─────────────
 export {
   DEFAULT_MODEL_CATALOG,
@@ -342,6 +374,19 @@ export {
   defaultTurnConfig,
   isMirroredModelId,
   mirroredModelUrl,
+} from '@unstable-legion/core';
+// Speech mesh-capability (PoC) contract — re-exported so consumers don't
+// need a separate `@unstable-legion/core` import just for these.
+export {
+  ASR_SKILL,
+  ASR_TOOL_NAME,
+  TTS_SKILL,
+  TTS_TOOL_NAME,
+  type AsrTranscribeArgs,
+  type AsrTranscribeContent,
+  type AsrTranscribeSegment,
+  type TtsSynthesizeArgs,
+  type TtsSynthesizeContent,
 } from '@unstable-legion/core';
 export type {
   DefaultTurnConfigOptions,

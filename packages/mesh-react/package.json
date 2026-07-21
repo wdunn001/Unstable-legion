@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@unstable-legion/core": "0.0.1",
+    "@unstable-legion/speech": "0.0.1",
     "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"
   },
   "peerDependencies": {
