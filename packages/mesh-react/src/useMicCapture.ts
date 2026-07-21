@@ -77,9 +77,11 @@ export function useMicCapture(opts: UseMicCaptureOptions = {}): UseMicCaptureHan
     setError(null);
     void (async () => {
       try {
+        console.debug('[legion-speech] mic: requesting getUserMedia({audio:true})…');
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         streamRef.current = stream;
         const mimeType = pickMimeType();
+        console.debug(`[legion-speech] mic: stream granted, recording (mime=${mimeType || 'default'}, maxMs=${maxMs})`);
         const recorder = mimeType
           ? new MediaRecorder(stream, { mimeType })
           : new MediaRecorder(stream);
@@ -93,6 +95,7 @@ export function useMicCapture(opts: UseMicCaptureOptions = {}): UseMicCaptureHan
           void (async () => {
             const blob = new Blob(chunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
             const bytes = await blob.arrayBuffer();
+            console.debug(`[legion-speech] mic: stopped — clip ${bytes.byteLength} bytes (${blob.type || mimeType || 'audio/webm'})`);
             setLastClip({ bytes, mimeType: blob.type || mimeType || 'audio/webm' });
             cleanupStream();
             setRecording(false);
@@ -103,6 +106,7 @@ export function useMicCapture(opts: UseMicCaptureOptions = {}): UseMicCaptureHan
         setRecording(true);
         timerRef.current = setTimeout(() => stop(), maxMs);
       } catch (err) {
+        console.error('[legion-speech] mic: getUserMedia/record failed', err);
         setError(err instanceof Error ? err.message : String(err));
         cleanupStream();
         setRecording(false);

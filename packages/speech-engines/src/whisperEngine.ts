@@ -123,14 +123,17 @@ export async function createWhisperEngine(opts: WhisperEngineOptions = {}): Prom
         env.remoteHost = host;
         const pipelineOpts: Record<string, unknown> = { device: candidate };
         if (opts.dtype) pipelineOpts.dtype = opts.dtype;
+        console.debug(`[legion-speech] whisper: loading ${modelId} device=${candidate} from ${host} … (first load downloads the model)`);
         transcriber = (await pipeline(
           'automatic-speech-recognition',
           modelId,
           pipelineOpts,
         )) as unknown as AsrPipeline;
         device = candidate;
+        console.debug(`[legion-speech] whisper: loaded ${modelId} on ${candidate} from ${host}`);
         break outer;
       } catch (err) {
+        console.warn(`[legion-speech] whisper: load failed device=${candidate} host=${host}:`, err instanceof Error ? err.message : err);
         lastErr = err;
         transcriber = undefined;
       }

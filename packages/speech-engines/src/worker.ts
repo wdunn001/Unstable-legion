@@ -13,15 +13,21 @@
  * same idiom as `apps/demo/src/workers/stageWorker.ts`.
  */
 import { createWhisperEngine } from './whisperEngine.js';
-import { decodeToPcm } from './audioDecode.js';
 import type { SpeechEngine } from './types.js';
 import type { AsrTranscribeContent } from '@unstable-legion/core';
 
 export interface SpeechWorkerTranscribeRequest {
   type: 'transcribe';
   id: number;
-  audioBase64: string;
-  mimeType: string;
+  /**
+   * Mono PCM in [-1, 1], already decoded + resampled to `sampleRate` by
+   * the CLIENT on the main thread. Decoding happens there, not here,
+   * because `AudioContext` (WebAudio's decoder) is a Window-only API — it
+   * does not exist in a DedicatedWorker, so decoding raw bytes in this
+   * worker throws. See `SpeechWorkerClient.transcribe` + `audioDecode.ts`.
+   */
+  pcm: Float32Array;
+  sampleRate: number;
   language?: string;
 }
 
@@ -48,13 +54,6 @@ function getEngine(): Promise<SpeechEngine> {
   return enginePromise;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 function post(msg: SpeechWorkerResponse): void {
   (self as unknown as Worker).postMessage(msg);
 }
@@ -64,12 +63,14 @@ self.onmessage = (ev: MessageEvent<SpeechWorkerRequest>) => {
   if (req.type !== 'transcribe') return;
   void (async () => {
     try {
+      console.debug(`[legion-speech] worker: transcribe req #${req.id} — ${req.pcm.length} samples @ ${req.sampleRate}Hz; loading engine…`);
       const engine = await getEngine();
-      const bytes = base64ToBytes(req.audioBase64);
-      const { pcm, sampleRate } = await decodeToPcm(bytes, req.mimeType);
-      const content = await engine.transcribe({ pcm, sampleRate, language: req.language });
+      console.debug(`[legion-speech] worker: engine ready (${engine.id}); transcribing #${req.id}…`);
+      const content = await engine.transcribe({ pcm: req.pcm, sampleRate: req.sampleRate, language: req.language });
+      console.debug(`[legion-speech] worker: transcribe #${req.id} done — "${content.text.slice(0, 60)}"`);
       post({ type: 'result', id: req.id, content });
     } catch (err) {
+      console.error(`[legion-speech] worker: transcribe #${req.id} FAILED`, err);
       post({ type: 'error', id: req.id, message: err instanceof Error ? err.message : String(err) });
     }
   })();

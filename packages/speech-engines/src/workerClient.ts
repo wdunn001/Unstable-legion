@@ -11,6 +11,14 @@
  */
 import type { AsrTranscribeArgs, AsrTranscribeContent } from '@unstable-legion/core';
 import type { SpeechWorkerRequest, SpeechWorkerResponse } from './worker.js';
+import { decodeToPcm } from './audioDecode.js';
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 export class SpeechWorkerClient {
   private nextId = 1;
@@ -41,17 +49,27 @@ export class SpeechWorkerClient {
 
   transcribe(args: AsrTranscribeArgs): Promise<AsrTranscribeContent> {
     const id = this.nextId++;
-    const req: SpeechWorkerRequest = {
-      type: 'transcribe',
-      id,
-      audioBase64: args.audioBase64,
-      mimeType: args.mimeType,
-      language: args.language,
-    };
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage(req);
-    });
+    // Decode HERE, on the main thread — `AudioContext` (WebAudio's
+    // decoder) is Window-only and absent in the worker. We hand the
+    // worker already-decoded 16 kHz mono PCM, transferring the buffer so
+    // there's no copy.
+    return (async () => {
+      const bytes = base64ToBytes(args.audioBase64);
+      console.debug(`[legion-speech] client: decoding clip #${id} (${bytes.length} bytes, ${args.mimeType}) on main thread…`);
+      const { pcm, sampleRate } = await decodeToPcm(bytes, args.mimeType);
+      console.debug(`[legion-speech] client: decoded #${id} → ${pcm.length} samples @ ${sampleRate}Hz; posting to worker`);
+      const req: SpeechWorkerRequest = {
+        type: 'transcribe',
+        id,
+        pcm,
+        sampleRate,
+        language: args.language,
+      };
+      return await new Promise<AsrTranscribeContent>((resolve, reject) => {
+        this.pending.set(id, { resolve, reject });
+        this.worker.postMessage(req, [pcm.buffer]);
+      });
+    })();
   }
 
   /** Terminate the underlying worker and reject any in-flight requests. */
