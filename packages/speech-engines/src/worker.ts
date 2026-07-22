@@ -1,20 +1,36 @@
 /**
- * Web Worker entry that owns one `SpeechEngine` instance (lazily created
- * on the first `transcribe` request) and answers `SpeechWorkerRequest`
- * messages. The host app constructs this via
+ * Web Worker entry that owns one `SpeechEngine` PER KIND (lazily created
+ * on the first `transcribe` request that asks for it, then memoized) and
+ * answers `SpeechWorkerRequest` messages. The host app constructs this via
  * `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })`
  * (Vite static-worker convention, matching `apps/demo`'s existing
  * `stageWorker.ts` / `llmWorker.ts`) — `SpeechWorkerClient` below is the
  * request/response wrapper most callers should use instead of talking to
  * `postMessage` directly.
  *
+ * Two engines share this one worker file rather than forking it: Whisper
+ * (`whisperEngine.ts` — manual push-to-talk, "🎙 Listen", and mesh-hosted
+ * `asr.transcribe`) and Moonshine (`moonshineEngine.ts` — conversation
+ * mode's local "wake-ear", see `@unstable-legion/react`'s
+ * `useMoonshineTranscriber`). Each `SpeechWorkerRequest` carries an
+ * optional `engine` field (default `'whisper'`, so pre-existing requests
+ * from before this field existed behave identically); `getEngine` below
+ * memoizes one `SpeechEngine` per kind, keyed in a `Map`, so a worker that
+ * only ever serves one kind (the normal case — see
+ * `SpeechWorkerClient`'s constructor `engine` option) never constructs the
+ * other.
+ *
  * Kept DOM-lib only (no `WebWorker` lib) to match this package's shared
  * tsconfig — `self` is cast through `Worker` at the postMessage boundary,
  * same idiom as `apps/demo/src/workers/stageWorker.ts`.
  */
 import { createWhisperEngine } from './whisperEngine.js';
+import { createMoonshineEngine } from './moonshineEngine.js';
 import type { SpeechEngine } from './types.js';
 import type { AsrTranscribeContent } from '@unstable-legion/core';
+
+/** Which `SpeechEngine` backs a request/client. See module doc. */
+export type SpeechWorkerEngineKind = 'whisper' | 'moonshine';
 
 export interface SpeechWorkerTranscribeRequest {
   type: 'transcribe';
@@ -29,6 +45,10 @@ export interface SpeechWorkerTranscribeRequest {
   pcm: Float32Array;
   sampleRate: number;
   language?: string;
+  /** Which `SpeechEngine` should serve this request. Default `'whisper'`
+   * — back-compatible with requests sent before this field existed. See
+   * module doc. */
+  engine?: SpeechWorkerEngineKind;
 }
 
 export type SpeechWorkerRequest = SpeechWorkerTranscribeRequest;
@@ -47,10 +67,14 @@ export interface SpeechWorkerErrorResponse {
 
 export type SpeechWorkerResponse = SpeechWorkerResultResponse | SpeechWorkerErrorResponse;
 
-let enginePromise: Promise<SpeechEngine> | undefined;
+const enginePromises = new Map<SpeechWorkerEngineKind, Promise<SpeechEngine>>();
 
-function getEngine(): Promise<SpeechEngine> {
-  if (!enginePromise) enginePromise = createWhisperEngine();
+function getEngine(kind: SpeechWorkerEngineKind): Promise<SpeechEngine> {
+  let enginePromise = enginePromises.get(kind);
+  if (!enginePromise) {
+    enginePromise = kind === 'moonshine' ? createMoonshineEngine() : createWhisperEngine();
+    enginePromises.set(kind, enginePromise);
+  }
   return enginePromise;
 }
 
@@ -63,8 +87,9 @@ self.onmessage = (ev: MessageEvent<SpeechWorkerRequest>) => {
   if (req.type !== 'transcribe') return;
   void (async () => {
     try {
-      console.debug(`[legion-speech] worker: transcribe req #${req.id} — ${req.pcm.length} samples @ ${req.sampleRate}Hz; loading engine…`);
-      const engine = await getEngine();
+      const kind = req.engine ?? 'whisper';
+      console.debug(`[legion-speech] worker: transcribe req #${req.id} — ${req.pcm.length} samples @ ${req.sampleRate}Hz; loading engine (${kind})…`);
+      const engine = await getEngine(kind);
       console.debug(`[legion-speech] worker: engine ready (${engine.id}); transcribing #${req.id}…`);
       const content = await engine.transcribe({ pcm: req.pcm, sampleRate: req.sampleRate, language: req.language });
       console.debug(`[legion-speech] worker: transcribe #${req.id} done — "${content.text.slice(0, 60)}"`);

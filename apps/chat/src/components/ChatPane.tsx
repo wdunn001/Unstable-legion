@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   useMeshRoster,
+  useMoonshineTranscriber,
+  useSpeechClient,
   useTtsSpeaker,
   useVadListen,
   type CallToolFn,
@@ -197,13 +199,61 @@ export function ChatPane(props: ChatPaneProps) {
   // effect (below) rather than building a second speak path; forcing this
   // true is the entire integration point.
   const effectiveAutoSpeak = props.autoSpeak || props.conversationMode;
+
+  // LOCAL WAKE-EAR (Moonshine) — conversation mode's VAD transcribes
+  // on-device via a tiny Moonshine model instead of round-tripping to the
+  // Whisper/mesh ASR path push-to-talk and "🎙 Listen" still use. Only
+  // loaded while conversation mode is actually on (same "don't download a
+  // model nobody asked for" discipline as `speechHost`/`ttsHost`).
+  const createMoonshineWorker = useCallback(
+    () => new Worker(new URL('../workers/moonshineWorker.ts', import.meta.url), { type: 'module' }),
+    [],
+  );
+  const moonshineTranscriber = useMoonshineTranscriber({
+    enabled: props.conversationMode,
+    createWorker: createMoonshineWorker,
+  });
+  // Fallback target for the composed `conversationTranscribe` below — the
+  // SAME resolution `useVadListen` would use internally if no override were
+  // passed (local ASR host, else a roster peer advertising asr.transcribe).
+  // Constructed here (not just inside `useVadListen`) because the fallback
+  // needs to be reachable FROM the override function itself.
+  const meshSpeechClient = useSpeechClient({
+    callTool: props.callTool,
+    transcribeLocal: props.speechHost.ready ? props.speechHost.transcribeLocal : undefined,
+  });
+  // Moonshine while it's ready and healthy; otherwise fall back to the
+  // mesh/Whisper path so conversation mode still works while Moonshine is
+  // still downloading/initializing on first enable, or if it ever errors.
+  const conversationTranscribe = useCallback(
+    async (clip: { bytes: ArrayBuffer; mimeType: string }) => {
+      if (moonshineTranscriber.ready && !moonshineTranscriber.error) {
+        try {
+          return await moonshineTranscriber.transcribe(clip);
+        } catch (err) {
+          console.warn('[legion-speech] conversation: moonshine transcribe failed, falling back to mesh ASR', err);
+        }
+      }
+      return meshSpeechClient.transcribe(clip);
+    },
+    [moonshineTranscriber, meshSpeechClient],
+  );
   // Only actually open the mic when conversation mode is on AND there's
   // somewhere to send a transcript — mirrors Composer's own
   // `listenEnabled && asrReachable` gating for the manual "🎙 Listen" toggle.
   const conversationVad = useVadListen({
     enabled: props.conversationMode && asrReachable,
     callTool: props.callTool,
+    // `transcribeLocal` (and `callTool` above) are unused while `transcribe`
+    // is supplied below — kept only because `callTool` is a required prop
+    // and this stays the harmless "no override" fallback shape if
+    // `transcribe` were ever omitted.
     transcribeLocal: props.speechHost.ready ? props.speechHost.transcribeLocal : undefined,
+    // The wake-ear swap: conversation mode's utterances go through
+    // Moonshine (with a mesh/Whisper fallback) instead of `useVadListen`'s
+    // own internal `useSpeechClient` path — see `conversationTranscribe`
+    // above and `useVadListen.ts`'s "Local wake-ear override" doc.
+    transcribe: conversationTranscribe,
     onTranscript: handleConversationTranscript,
     onSpeechStart: handleConversationSpeechStart,
     assets: VAD_ASSETS,
@@ -330,6 +380,20 @@ export function ChatPane(props: ChatPaneProps) {
             ⚠
           </span>
           <span className="chat-notice-message">Speak failed: {speakError}</span>
+        </div>
+      )}
+      {props.conversationMode && (
+        <div className="chat-notice chat-notice-wake-ear" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            🎙
+          </span>
+          <span className="chat-notice-message">
+            {moonshineTranscriber.error
+              ? 'wake-ear: mesh ASR (Moonshine failed to load)'
+              : moonshineTranscriber.ready
+                ? 'wake-ear: Moonshine (local)'
+                : 'wake-ear: mesh ASR (Moonshine loading…)'}
+          </span>
         </div>
       )}
       {props.conversationMode && props.requireWakeWord && (

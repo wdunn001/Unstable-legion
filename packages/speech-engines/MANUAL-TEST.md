@@ -359,6 +359,22 @@ speech path: continuous VAD (section 6) drives auto-send instead of
 appending to the composer, and the EXISTING auto-speak effect (section 5)
 is what actually speaks replies — conversation mode just forces it on.
 
+**Wake-ear engine note**: as of this increment, conversation mode's VAD
+transcribes through a LOCAL Moonshine-tiny model
+(`onnx-community/moonshine-tiny-ONNX`, a 5.8M-param model built for fast
+voice-command transcription) instead of section 6's Whisper/mesh ASR path
+— purely on-device, no mesh round-trip. This is a SEPARATE lazy model
+download from Whisper's, triggered the first time conversation mode is
+switched on (watch for a `wake-ear: Moonshine loading…` status line under
+the composer, flipping to `wake-ear: Moonshine (local)` once ready — see
+step 4a below). Manual push-to-talk (🎤) and the manual **🎙 Listen**
+toggle (section 6) are UNCHANGED — they still transcribe through Whisper,
+locally-hosted or mesh, exactly as before. If Moonshine fails to load (or
+errors on a transcribe call), conversation mode automatically falls back
+to the same mesh/Whisper path section 6 uses — the status line should read
+`wake-ear: mesh ASR (Moonshine failed to load)` in that case, and the
+hands-free loop below should keep working, just via Whisper instead.
+
 ### 7a. Turning it on — needs BOTH ASR and TTS reachable
 
 1. From the repo root: `npm run dev -w @unstable-legion/chat`. Open the dev
@@ -376,6 +392,13 @@ is what actually speaks replies — conversation mode just forces it on.
    separate from section 6's — expect the browser to ask again even if you
    already granted it for the manual **🎙 Listen** toggle earlier in this
    tab).
+4a. Watch for the **wake-ear** status line under the composer (see the
+   note above this section): `wake-ear: Moonshine loading…` right after
+   toggling conversation mode on, then `wake-ear: Moonshine (local)` once
+   the model finishes downloading/initializing (first run: a few MB from
+   the HF Hub CDN — much smaller than Whisper's download). Utterances
+   spoken before it flips to ready still work — they just fall back to the
+   mesh/Whisper path (section 6) until Moonshine is warm.
 
 ### 7b. The hands-free loop
 
@@ -481,12 +504,18 @@ while it's on) — it ignores everything except a configured wake phrase
 (default `hey legion`) until woken, then stays "awake" for a short window so
 a real back-and-forth doesn't need the phrase repeated every turn.
 
-This is NOT a new ASR/wake-word model (no openWakeWord, no Moonshine) — it's
-a plain phrase match (`matchWakePhrase.ts`) over the SAME transcript
-section 6/7's continuous VAD→Whisper path already produces. Wake-phrase
-mishearing (Whisper transcribing "legion" as something else) is a
-browser/model-tuning matter, not something this increment tries to solve —
-the gate is only as reliable as the transcript it's given.
+This is NOT a dedicated wake-word model (no openWakeWord) — it's a plain
+phrase match (`matchWakePhrase.ts`) over whatever transcript conversation
+mode's continuous VAD produces, ENGINE-AGNOSTIC: the gate was built and
+proven against Whisper's transcripts, and now that conversation mode
+transcribes locally via Moonshine-tiny (see section 7's wake-ear note)
+the same phrase-match logic runs unchanged over Moonshine's transcripts
+instead — the gate never knows or cares which ASR engine produced the
+text. Wake-phrase mishearing (either engine transcribing "legion" as
+something else) is a browser/model-tuning matter, not something this
+increment tries to solve — the gate is only as reliable as the transcript
+it's given, from whichever engine (Moonshine, or Whisper during a
+mesh/Whisper fallback) actually produced it.
 
 ### 8a. Setup
 
@@ -619,6 +648,15 @@ the gate is only as reliable as the transcript it's given.
   mic-in-use indicator event) the first time you turn conversation mode on,
   even if you already granted the mic to **🎙 Listen** earlier in the same
   session.
+- **Moonshine (the wake-ear engine)** is LOCAL ONLY — it is never advertised
+  as a mesh capability/skill and never serves a remote peer's
+  `asr.transcribe` call, unlike Whisper. It backs conversation mode's VAD
+  exclusively; manual push-to-talk/**🎙 Listen** never use it. Because it
+  runs in its OWN Worker (`moonshineWorker.ts`, separate from
+  `speechWorker.ts`), if you enable BOTH conversation mode AND the manual
+  ASR host toggle in the same tab, `@huggingface/transformers`' ~800KB+
+  chunk downloads/loads twice (once per worker) rather than being shared —
+  a known byte-cost of the two-worker-entry split, not a bug.
 - **🔴 Require wake word** (section 8) is a plain substring match over
   whatever Whisper transcribes — it does not run a dedicated wake-word
   model. Whisper mishearing "legion" (or the rest of the phrase) as

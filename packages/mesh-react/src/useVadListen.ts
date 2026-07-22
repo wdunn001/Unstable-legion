@@ -43,6 +43,17 @@
  * previous one's promise so they run strictly one at a time, in order,
  * never overlapping.
  *
+ * Local wake-ear override (Moonshine): a caller may pass `transcribe` to
+ * replace the internal `useSpeechClient` path entirely for THIS hook
+ * instance — conversation mode's `useVadListen` call passes a Moonshine-
+ * backed transcriber (see `useMoonshineTranscriber` + `ChatPane.tsx`) so
+ * wake-listening never needs a mesh round-trip, while manual push-to-talk
+ * / "🎙 Listen" (which don't pass `transcribe`) keep using Whisper via
+ * `useSpeechClient` exactly as before. The serialized queue (below) and
+ * WAV-encode step are unchanged either way — only WHERE the encoded clip
+ * gets sent differs. Omitting `transcribe` is fully back-compatible: it's
+ * `undefined` by default, so every existing caller is unaffected.
+ *
  * Increment 3c (conversation mode + barge-in) extends this hook two ways,
  * both back-compatible additions — nothing above changes for 3a's plain
  * "listen and drop transcript" callers:
@@ -75,10 +86,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { encodeWav } from '@unstable-legion/speech';
 
-import { useSpeechClient, type CallToolFn, type UseSpeechClientOptions } from './useSpeechClient.js';
+import {
+  useSpeechClient,
+  type CallToolFn,
+  type SpeechClientClip,
+  type UseSpeechClientOptions,
+} from './useSpeechClient.js';
 
 /** VAD utterances come off `onSpeechEnd` as 16kHz mono Float32 PCM — see `@ricky0123/vad-web`'s docs. */
 const VAD_SAMPLE_RATE = 16000;
+
+/** Shape of the `transcribe` override — a strict subset of
+ * `useSpeechClient`'s own `transcribe` signature (same clip shape, and
+ * only the `text` field is read), so both `useSpeechClient().transcribe`
+ * and `useMoonshineTranscriber().transcribe` satisfy it as-is. */
+export type VadTranscribeOverride = (clip: SpeechClientClip) => Promise<{ text: string }>;
 
 export interface UseVadListenAssets {
   /** Directory (trailing slash) serving `vad.worklet.bundle.min.js` + `silero_vad_legacy.onnx`. Default: vad-web's own jsdelivr CDN. */
@@ -94,6 +116,14 @@ export interface UseVadListenOptions {
   callTool: CallToolFn;
   /** `useSpeechHost().transcribeLocal`, when this peer hosts ASR itself. Omit = always route to a remote peer. */
   transcribeLocal?: UseSpeechClientOptions['transcribeLocal'];
+  /** Overrides which ASR engine transcribes each VAD utterance. Omit
+   * (default) to use the SAME `useSpeechClient` path push-to-talk uses
+   * (local ASR host, else a mesh peer advertising `asr.transcribe` —
+   * Whisper). Conversation mode passes a LOCAL Moonshine-tiny transcriber
+   * instead (see `useMoonshineTranscriber` + `ChatPane.tsx`'s wiring) so
+   * wake-listening never needs a mesh round-trip — see module doc's
+   * "Local wake-ear override" section. */
+  transcribe?: VadTranscribeOverride;
   /** Called once per non-empty transcript, in utterance order. */
   onTranscript: (text: string) => void;
   /** Called the instant VAD detects the user has started speaking — BEFORE
@@ -127,6 +157,7 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
     enabled,
     callTool,
     transcribeLocal,
+    transcribe,
     onTranscript,
     onSpeechStart,
     assets,
@@ -134,6 +165,9 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
     echoCancellation = true,
     noiseSuppression = true,
   } = opts;
+  // Always constructed (hooks can't be conditional) but only READ when
+  // `transcribe` (the override) is omitted — see `transcribeOverrideRef`
+  // below and module doc's "Local wake-ear override" section.
   const client = useSpeechClient({ callTool, transcribeLocal });
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +178,8 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
   // just because a callback prop's identity changed).
   const clientRef = useRef(client);
   clientRef.current = client;
+  const transcribeOverrideRef = useRef(transcribe);
+  transcribeOverrideRef.current = transcribe;
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
   const onSpeechStartRef = useRef(onSpeechStart);
@@ -212,7 +248,10 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
               .then(async () => {
                 if (cancelled) return;
                 const wav = encodeWav(audio, VAD_SAMPLE_RATE);
-                const result = await clientRef.current.transcribe({ bytes: wav, mimeType: 'audio/wav' }, languageRef.current);
+                const clip = { bytes: wav, mimeType: 'audio/wav' };
+                const result = transcribeOverrideRef.current
+                  ? await transcribeOverrideRef.current(clip)
+                  : await clientRef.current.transcribe(clip, languageRef.current);
                 if (cancelled) return;
                 const text = result.text?.trim();
                 if (!text) {

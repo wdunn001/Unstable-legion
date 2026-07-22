@@ -117,7 +117,13 @@ export {
   type UseVadListenOptions,
   type UseVadListenHandle,
   type UseVadListenAssets,
+  type VadTranscribeOverride,
 } from './useVadListen.js';
+export {
+  useMoonshineTranscriber,
+  type UseMoonshineTranscriberOptions,
+  type UseMoonshineTranscriberHandle,
+} from './useMoonshineTranscriber.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {

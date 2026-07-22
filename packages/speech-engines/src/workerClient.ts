@@ -8,10 +8,25 @@
  * build it via
  * `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })`
  * so Vite's bundler sees a static worker entry point).
+ *
+ * `engine` (constructor option, default `'whisper'`) picks which
+ * `SpeechEngine` kind every request from THIS client asks the worker for
+ * — see `worker.ts`'s module doc. A caller wanting the local Moonshine
+ * "wake-ear" (conversation mode's VAD — see `@unstable-legion/react`'s
+ * `useMoonshineTranscriber`) constructs its OWN worker + client with
+ * `{ engine: 'moonshine' }`; the manual push-to-talk / mesh ASR path
+ * keeps constructing a plain `new SpeechWorkerClient(worker)` (Whisper,
+ * unchanged).
  */
 import type { AsrTranscribeArgs, AsrTranscribeContent } from '@unstable-legion/core';
-import type { SpeechWorkerRequest, SpeechWorkerResponse } from './worker.js';
+import type { SpeechWorkerEngineKind, SpeechWorkerRequest, SpeechWorkerResponse } from './worker.js';
 import { decodeToPcm } from './audioDecode.js';
+
+export interface SpeechWorkerClientOptions {
+  /** Which `SpeechEngine` kind the worker should use for every request
+   * from this client. Default `'whisper'` (back-compatible). */
+  engine?: SpeechWorkerEngineKind;
+}
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -22,12 +37,17 @@ function base64ToBytes(b64: string): Uint8Array {
 
 export class SpeechWorkerClient {
   private nextId = 1;
+  private readonly engine: SpeechWorkerEngineKind;
   private readonly pending = new Map<
     number,
     { resolve: (v: AsrTranscribeContent) => void; reject: (e: Error) => void }
   >();
 
-  constructor(private readonly worker: Worker) {
+  constructor(
+    private readonly worker: Worker,
+    opts: SpeechWorkerClientOptions = {},
+  ) {
+    this.engine = opts.engine ?? 'whisper';
     this.worker.addEventListener('message', (ev: MessageEvent<SpeechWorkerResponse>) => this.onMessage(ev.data));
     this.worker.addEventListener('error', (ev: ErrorEvent) => {
       const message = `speech worker error: ${ev.message}`;
@@ -64,6 +84,7 @@ export class SpeechWorkerClient {
         pcm,
         sampleRate,
         language: args.language,
+        engine: this.engine,
       };
       return await new Promise<AsrTranscribeContent>((resolve, reject) => {
         this.pending.set(id, { resolve, reject });
