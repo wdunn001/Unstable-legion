@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
+    "@ricky0123/vad-web": "^0.0.24",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.3.0",

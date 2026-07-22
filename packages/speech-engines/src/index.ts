@@ -52,7 +52,7 @@ export {
   HF_MODEL_HOST as TTS_HF_MODEL_HOST,
   LEGION_MODEL_FALLBACK_HOST as TTS_LEGION_MODEL_FALLBACK_HOST,
 } from './kokoroEngine.js';
-export { encodeWavBase64 } from './wavEncode.js';
+export { encodeWav, encodeWavBase64 } from './wavEncode.js';
 export {
   type TtsWorkerRequest,
   type TtsWorkerSynthesizeRequest,

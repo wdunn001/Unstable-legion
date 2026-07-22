@@ -249,6 +249,102 @@ reachable, not gated on this tab's own `🔊 Host text-to-speech` toggle).
     finish streaming. Expect: silence — no automatic playback — while the
     manual 🔊 button on that same reply still works when clicked.
 
+## 6. Chat app (apps/chat) — VAD "open mic": hands-free continuous listening
+
+Increment 3a of the voice-conversation layer: the **🎙 Listen** toggle next
+to the composer's push-to-talk mic button. When on, a Silero VAD model
+(`@ricky0123/vad-web`, running fully client-side — see
+`useVadListen.ts`'s module doc for the worklet/model/wasm asset-hosting
+story) continuously watches the mic, segments each utterance on its own
+(no button hold needed), and transcribes it through the SAME ASR path
+push-to-talk uses (local host first, else a roster peer advertising
+`asr.transcribe`). Text is APPENDED into the composer textarea as each
+utterance resolves — no auto-send (that's increment 3c), no wake word
+(3b): this is pure continuous-listening-to-text.
+
+### 6a. Local (host-own) path — one tab
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`.
+2. Open the dev URL, pick a nick, join.
+3. In the **Tool contributions** card, toggle **🎤 Host speech-to-text**
+   on and wait for it to finish initializing (same as section 3a).
+4. In the composer, the **🎙 Listen** button (next to the 🎤 push-to-talk
+   button) should now be enabled — hover it to confirm the tooltip reads
+   "Start hands-free listening…" rather than the disabled-reachability
+   tooltip.
+5. Click **🎙 Listen**. Grant mic permission if prompted. Expect the
+   button to switch to a pulsing **📡 listening…** state — this is a
+   CONTINUOUS stream, not a single recording; nothing else needs clicking.
+6. Speak one short sentence, then pause for a beat. Expect: shortly after
+   you stop talking, the transcript appears in the composer textarea by
+   itself (no button press) and the textarea gets focus. Check the
+   browser console for `[legion-speech] vad:` lines: `speech-start`, then
+   `speech-end (N samples)`, then `transcript "…"`.
+7. Speak a SECOND sentence after a pause (with **🎙 Listen** still on).
+   Expect: a second, separate transcript segment gets APPENDED after the
+   first (space-joined), not replacing it, and not merged into one run-on
+   blob — confirms each VAD-detected utterance produces its own
+   transcribe call and append, in order.
+8. **Rapid-fire test (the serialization fix)**: speak two short sentences
+   back-to-back with only a brief pause between them (short enough that
+   the first utterance's transcribe call may still be in flight when the
+   second `speech-end` fires). Expect BOTH transcripts to eventually
+   appear, in the correct order, with no dropped/garbled/interleaved text
+   — confirms `useVadListen`'s transcribe queue serializes calls onto the
+   single ASR engine instead of overlapping them.
+9. **Misfire check**: make a very short, quiet sound (a cough, a quick
+   "uh") — short enough that Silero VAD may treat it as a misfire rather
+   than a real utterance. Expect either nothing to happen, or (if it was
+   long enough to count as an utterance) a short/garbage transcript — not
+   a crash or a stuck "listening" state. Console may show a `vad: misfire`
+   line for the discarded case.
+10. Click **🎙 Listen** again to toggle it off. Expect the button to
+    return to its idle **🎙 Listen** state and the mic to actually be
+    released (browser's mic-in-use indicator, if your OS/browser shows
+    one, should turn off) — confirms `MicVAD.pause()` + `.destroy()` ran,
+    not just a UI state flip.
+11. Toggle **🎤 Host speech-to-text** off (with **🎙 Listen** still
+    logically "on" if you didn't click it off in step 10). Expect
+    **🎙 Listen** to automatically flip back to its idle/disabled state
+    once no ASR target is reachable, rather than being stuck spinning
+    with an open mic stream and nowhere to send transcripts.
+
+### 6b. Mesh path — two tabs
+
+1. Tab A: enable **🎤 Host speech-to-text**, leave it ready.
+2. Tab B: open the same chat URL/room with a different nick, leave its
+   ASR host toggle **off**.
+3. In Tab B, the composer's **🎙 Listen** button should become enabled
+   once Tab A's peer roster entry shows up (advertising `asr.transcribe`)
+   — same reachability gate the push-to-talk mic button uses.
+4. Click **🎙 Listen** in Tab B, speak a sentence. Expect the transcript
+   to land in Tab B's composer after a brief mesh round trip (slower than
+   the local path in 6a, but not multi-second under normal conditions) —
+   each utterance's WAV clip travels Tab B → Tab A over `tc` as base64,
+   one `asr.transcribe` call per utterance, same framing the push-to-talk
+   mic path already uses.
+5. Turn Tab A's host toggle off while Tab B's **🎙 Listen** is still on.
+   Expect **🎙 Listen** in Tab B to turn itself off once the roster drops
+   Tab A's `asr.transcribe` advertisement (same auto-off behavior as 6a
+   step 11), rather than silently swallowing utterances into a dead
+   target.
+6. Mic-permission-denied check: in either tab (fresh permission state),
+   click **🎙 Listen**. Expect a visible "Listen failed: …" line under
+   the composer, not a silent no-op or a button stuck showing
+   **📡 listening…** with no working mic behind it.
+
+### 6c. Push-to-talk + Listen coexistence
+
+1. With **🎙 Listen** on and actively listening, click the push-to-talk
+   🎤 button and record a short clip the normal way, then let it
+   transcribe. Expect both paths to work independently — the
+   push-to-talk clip's transcript appends into the composer via its own
+   `useSpeechClient` instance, and **🎙 Listen** keeps running
+   uninterrupted (still shows **📡 listening…**, still segments and
+   appends any speech that happens around the push-to-talk recording).
+   This is expected/documented behavior, not a bug: the two features
+   intentionally do not disable each other.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -270,3 +366,21 @@ reachable, not gated on this tab's own `🔊 Host text-to-speech` toggle).
   `vite build` (see this package's README for the matching ASR-side
   `transformers.web`/onnxruntime-web numbers) — code-split so it only
   loads when the TTS host toggle is switched on.
+- **🎙 Listen (VAD)** self-hosts its worklet + Silero ONNX model +
+  onnxruntime-web wasm binaries at `apps/chat/public/vad/` (gitignored,
+  staged from `node_modules/@ricky0123/vad-web` by the `copyVadAssets`
+  Vite plugin — see `vite.config.ts`'s doc comment and
+  `useVadListen.ts`'s module doc for why a directory copy instead of
+  bundler `?url` imports). If `npm install` hasn't run since this
+  increment landed, `public/vad/` won't exist yet — it's populated
+  automatically the next time `npm run dev`/`build -w
+  @unstable-legion/chat` evaluates `vite.config.ts`, no separate manual
+  fetch step needed (unlike the Phase-C stage-runtime wasm/gguf assets).
+- The onnxruntime-web wasm binaries vad-web needs (~38MB across four
+  variants) are a SEPARATE, older, privately-vendored copy
+  (onnxruntime-web@1.14.0, nested under
+  `node_modules/@ricky0123/vad-web/node_modules/`) from the newer one
+  `@huggingface/transformers`/Whisper uses — the two never collide
+  because vad-web resolves its own `require("onnxruntime-web")` to its
+  nested copy, and the `copyVadAssets` plugin copies from that exact
+  nested path, not the hoisted top-level one.

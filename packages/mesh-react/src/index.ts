@@ -112,6 +112,12 @@ export {
   type UseTtsSpeakerOptions,
   type UseTtsSpeakerHandle,
 } from './useTtsSpeaker.js';
+export {
+  useVadListen,
+  type UseVadListenOptions,
+  type UseVadListenHandle,
+  type UseVadListenAssets,
+} from './useVadListen.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {

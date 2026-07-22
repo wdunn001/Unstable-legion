@@ -40,6 +40,12 @@ apps/chat/public/webllm/
 apps/chat/test-results/
 apps/chat/playwright-report/
 
+# @ricky0123/vad-web's worklet/model/onnxruntime-web-wasm assets, staged
+# from node_modules into public/vad/ by the `copyVadAssets` Vite plugin
+# in apps/chat/vite.config.ts (see its doc comment) — reproducible from
+# node_modules on every `npm install`, never committed.
+apps/chat/public/vad/
+
 # scripts/prepare-deploy-context.sh output — real copies of sibling-repo
 # file: deps, materialized fresh before each `docker compose build`.
 .deploy-context/

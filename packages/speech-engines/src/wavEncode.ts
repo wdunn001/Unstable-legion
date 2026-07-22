@@ -1,5 +1,6 @@
 /**
- * `encodeWavBase64` — minimal 16-bit PCM WAV container + base64 encode.
+ * `encodeWav`/`encodeWavBase64` — minimal 16-bit PCM WAV container, raw
+ * bytes and base64-encoded respectively.
  *
  * Kokoro's `generate()` (via `kokoroEngine.ts`) hands back raw Float32
  * PCM samples with no container — good for a worker (no WebAudio
@@ -9,11 +10,20 @@
  * engine's native sample rate out of band. A 44-byte canonical WAV
  * header does exactly that.
  *
- * Main-thread utility: used by `ttsWorkerClient.ts` after receiving raw
- * PCM back from the worker (encoding happens on the main thread same as
+ * `encodeWav` builds the container (shared by both exports below);
+ * `encodeWavBase64` is just `encodeWav` + a base64 pass, kept for
+ * existing `tc`-framed callers (`ttsWorkerClient.ts`, after receiving raw
+ * PCM back from the TTS worker). `encodeWav`'s raw-`ArrayBuffer` form
+ * exists for `useVadListen.ts` (mesh-react): a Silero VAD utterance is
+ * already Float32 PCM @16kHz same as Kokoro's output, and
+ * `useSpeechClient.transcribe()` takes a `{ bytes: ArrayBuffer; mimeType
+ * }` clip directly — no need to round-trip through base64 just to hand
+ * it to `fetch`/`tc` framing that only happens later, one layer up.
+ *
+ * Main-thread utility: encoding happens on the main thread same as
  * `audioDecode.ts`'s decode does, though WAV-writing itself needs no
  * WebAudio API — it's kept alongside the other main-thread audio glue
- * for symmetry with the ASR decode step).
+ * for symmetry with the ASR decode step.
  */
 
 const BYTES_PER_SAMPLE = 2; // 16-bit PCM
@@ -32,8 +42,8 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** Encode mono Float32 PCM in [-1, 1] as a 16-bit PCM WAV file, base64-encoded. */
-export function encodeWavBase64(pcm: Float32Array, sampleRate: number): string {
+/** Encode mono Float32 PCM in [-1, 1] as a 16-bit PCM WAV file — raw container bytes. */
+export function encodeWav(pcm: Float32Array, sampleRate: number): ArrayBuffer {
   const dataSize = pcm.length * BYTES_PER_SAMPLE;
   const blockAlign = NUM_CHANNELS * BYTES_PER_SAMPLE;
   const byteRate = sampleRate * blockAlign;
@@ -61,5 +71,10 @@ export function encodeWavBase64(pcm: Float32Array, sampleRate: number): string {
     view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
   }
 
-  return bytesToBase64(new Uint8Array(buffer));
+  return buffer;
+}
+
+/** `encodeWav` + base64 — the `tc`-framed-clip form existing callers use. */
+export function encodeWavBase64(pcm: Float32Array, sampleRate: number): string {
+  return bytesToBase64(new Uint8Array(encodeWav(pcm, sampleRate)));
 }

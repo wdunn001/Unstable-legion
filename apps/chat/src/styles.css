@@ -624,6 +624,24 @@ code {
   background: var(--warn);
   color: #fff;
 }
+.composer-listen {
+  flex: none;
+  min-width: 44px;
+}
+.composer-listen-active {
+  background: var(--accent);
+  color: #fff;
+  animation: composer-listen-pulse 1.6s ease-in-out infinite;
+}
+@keyframes composer-listen-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.composer-listen-error {
+  color: var(--warn);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
 
 /* ── Mesh sidebar ─────────────────────────────────────────────────── */
 .mesh-sidebar {
