@@ -17,11 +17,7 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# NB: package-lock.json is intentionally NOT copied — it may be generated on a
-# non-musl platform, and npm (#4828) then fails to install rollup's musl binary
-# (@rollup/rollup-linux-x64-musl) on this node:20-alpine base. Letting `npm
-# install` resolve fresh on the build platform installs the right optional deps.
-COPY package.json ./
+COPY package.json package-lock.json* ./
 COPY packages/mesh-core/package.json packages/mesh-core/
 COPY packages/mesh-react/package.json packages/mesh-react/
 COPY packages/speech-engines/package.json packages/speech-engines/
@@ -36,7 +32,12 @@ COPY apps/demo/package.json apps/demo/
 COPY codec-local/ ./codec-local/
 COPY .deploy-context/legion-stage-runtime/ /legion-stage-runtime/
 
-RUN npm install --no-audit --no-fund --workspaces --include-workspace-root
+RUN npm install --no-audit --no-fund --workspaces --include-workspace-root \
+ # The committed package-lock can be generated off-musl, so npm (#4828) skips
+ # rollup's musl native binary and the vite build dies with "Cannot find module
+ # @rollup/rollup-linux-x64-musl". Install the version-matched binary explicitly.
+ && ROLLUP_VER="$(node -p "require('/app/node_modules/rollup/package.json').version")" \
+ && npm install --no-save --no-audit --no-fund "@rollup/rollup-linux-x64-musl@${ROLLUP_VER}"
 
 COPY packages/ packages/
 COPY apps/chat/ apps/chat/
