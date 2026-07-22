@@ -42,6 +42,35 @@
  * transcribe resolves — `queueRef` chains each transcribe onto the
  * previous one's promise so they run strictly one at a time, in order,
  * never overlapping.
+ *
+ * Increment 3c (conversation mode + barge-in) extends this hook two ways,
+ * both back-compatible additions — nothing above changes for 3a's plain
+ * "listen and drop transcript" callers:
+ *
+ *   - `onSpeechStart` — vad-web's `onSpeechStart` fires the instant speech
+ *     is detected, well before the utterance ends and gets transcribed.
+ *     That's the ONLY signal fast enough for barge-in: a caller (the
+ *     conversation-mode state machine in `ChatPane.tsx`) uses it to cut TTS
+ *     playback the moment the user starts talking over it, without waiting
+ *     for the utterance to finish.
+ *
+ *   - self-echo prevention (`echoCancellation`/`noiseSuppression`) —
+ *     conversation mode plays the assistant's OWN reply out loud through
+ *     this same device's speakers while the mic is still live, so without
+ *     echo cancellation the mic re-hears the TTS audio and VAD mistakes it
+ *     for the next user utterance. vad-web's own `additionalAudioConstraints`
+ *     type explicitly EXCLUDES `echoCancellation`/`noiseSuppression` (along
+ *     with `autoGainControl`/`channelCount`) from override — its internal
+ *     `getUserMedia` call hardcodes both to `true` regardless of what's
+ *     passed. To make them genuinely controllable, this hook acquires the
+ *     `MediaStream` itself (with its OWN constraints) and hands it to
+ *     `MicVAD.new({ stream })` instead of letting vad-web call
+ *     `getUserMedia` internally — vad-web's `stream`-supplied path skips its
+ *     own getUserMedia call entirely (see its `RealTimeVADOptionsWithStream`
+ *     variant). One consequence: when a stream is supplied, vad-web's own
+ *     `destroy()` does NOT stop its tracks (it only does that for a stream
+ *     it created itself) — so this hook's cleanup stops the tracks itself,
+ *     right after `vad.destroy()`, or the mic indicator would stay lit.
  */
 import { useEffect, useRef, useState } from 'react';
 import { encodeWav } from '@unstable-legion/speech';
@@ -67,10 +96,23 @@ export interface UseVadListenOptions {
   transcribeLocal?: UseSpeechClientOptions['transcribeLocal'];
   /** Called once per non-empty transcript, in utterance order. */
   onTranscript: (text: string) => void;
+  /** Called the instant VAD detects the user has started speaking — BEFORE
+   * the utterance ends or is transcribed. Optional/back-compatible; 3a
+   * callers that only care about finished transcripts can omit it. The
+   * barge-in hook: see module doc. */
+  onSpeechStart?: () => void;
   /** Self-hosted asset locations — see module doc. Omit to use vad-web's CDN defaults. */
   assets?: UseVadListenAssets;
   /** Forwarded to `transcribe()`, same as the push-to-talk path. */
   language?: string;
+  /** Mic constraints this hook requests via its OWN `getUserMedia` call —
+   * see module doc's self-echo section for why these can't be set through
+   * vad-web's own options. Default `true` for both (matches vad-web's own
+   * hardcoded default), so omitting them changes nothing; conversation mode
+   * passes both explicitly `true` since it's the caller that actually needs
+   * the mic not to re-hear this same tab's TTS output. */
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
 }
 
 export interface UseVadListenHandle {
@@ -81,7 +123,17 @@ export interface UseVadListenHandle {
 }
 
 export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
-  const { enabled, callTool, transcribeLocal, onTranscript, assets, language } = opts;
+  const {
+    enabled,
+    callTool,
+    transcribeLocal,
+    onTranscript,
+    onSpeechStart,
+    assets,
+    language,
+    echoCancellation = true,
+    noiseSuppression = true,
+  } = opts;
   const client = useSpeechClient({ callTool, transcribeLocal });
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +146,14 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
   clientRef.current = client;
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
+  const onSpeechStartRef = useRef(onSpeechStart);
+  onSpeechStartRef.current = onSpeechStart;
   const languageRef = useRef(language);
   languageRef.current = language;
+  const echoCancellationRef = useRef(echoCancellation);
+  echoCancellationRef.current = echoCancellation;
+  const noiseSuppressionRef = useRef(noiseSuppression);
+  noiseSuppressionRef.current = noiseSuppression;
 
   // Chains each utterance's transcribe onto the previous one — see the
   // module doc's "Serialization" section. A no-op `.catch` keeps a failed
@@ -107,6 +165,10 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
 
     let cancelled = false;
     let vad: { pause: () => void; destroy: () => void; start: () => void } | null = null;
+    // Owned only when THIS hook acquired the stream itself (see module
+    // doc's self-echo section) — stopped in cleanup since a caller-supplied
+    // `stream` means vad-web's own `destroy()` won't stop its tracks.
+    let ownedStream: MediaStream | null = null;
 
     void (async () => {
       try {
@@ -114,11 +176,31 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
         const { MicVAD } = await import('@ricky0123/vad-web');
         if (cancelled) return;
 
+        // Acquired here (not left to vad-web's internal getUserMedia) so
+        // echoCancellation/noiseSuppression are actually controllable — see
+        // module doc's self-echo section for why vad-web's own
+        // `additionalAudioConstraints` can't express this.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: echoCancellationRef.current,
+            autoGainControl: true,
+            noiseSuppression: noiseSuppressionRef.current,
+          },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        ownedStream = stream;
+
         const instance = await MicVAD.new({
+          stream,
           ...(assets?.baseAssetPath ? { baseAssetPath: assets.baseAssetPath } : {}),
           ...(assets?.onnxWASMBasePath ? { onnxWASMBasePath: assets.onnxWASMBasePath } : {}),
           onSpeechStart: () => {
             console.debug('[legion-speech] vad: speech-start');
+            onSpeechStartRef.current?.();
           },
           onVADMisfire: () => {
             console.debug('[legion-speech] vad: misfire (segment too short, discarded)');
@@ -148,7 +230,10 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
         });
 
         if (cancelled) {
+          // `instance.destroy()` won't stop the tracks itself here (we
+          // supplied the stream — see module doc), so stop them explicitly.
           instance.destroy();
+          stream.getTracks().forEach((track) => track.stop());
           return;
         }
         vad = instance;
@@ -172,6 +257,13 @@ export function useVadListen(opts: UseVadListenOptions): UseVadListenHandle {
         vad.pause();
         vad.destroy();
         vad = null;
+      }
+      // vad-web's own `destroy()` only stops tracks for a stream it created
+      // itself — since this hook always supplies its own `stream` (see
+      // module doc), it's always this hook's job to stop them.
+      if (ownedStream) {
+        ownedStream.getTracks().forEach((track) => track.stop());
+        ownedStream = null;
       }
       setListening(false);
     };

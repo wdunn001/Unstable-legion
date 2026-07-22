@@ -2,14 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   useMeshRoster,
   useTtsSpeaker,
+  useVadListen,
   type CallToolFn,
   type UseSpeechHostHandle,
   type UseTtsHostHandle,
 } from '@unstable-legion/react';
-import { TTS_SKILL } from '@unstable-legion/core';
+import { ASR_SKILL, TTS_SKILL } from '@unstable-legion/core';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import { toSpeakableText } from '../speakableText.js';
+import { VAD_ASSETS } from '../vadAssets.js';
 import type { ChatMessage } from '../db/threadStore.js';
 import type { CapacityView, ChatNoticeView } from '../viewmodels/meshViewModels.js';
 
@@ -38,6 +40,16 @@ export interface ChatPaneProps {
    * it's independent of `ttsHost` (which is about THIS tab hosting TTS for
    * others) — it works off whatever `ttsReachable` resolves to below. */
   autoSpeak: boolean;
+  /** 💬 Conversation mode (increment 3c) — hands-free continuous
+   * back-and-forth: continuous VAD auto-sends each utterance, the reply is
+   * auto-spoken, and talking while it's speaking (barge-in) cuts the TTS
+   * short and the resulting utterance becomes the next turn. See the state
+   * machine built from `conversationMode`/`busy`/`speaker.speaking` below —
+   * it FORCES auto-speak on (see `effectiveAutoSpeak`) rather than
+   * duplicating the speak path, and disables Composer's own "🎙 Listen"
+   * toggle (see `Composer`'s `conversationMode` prop) since both would
+   * otherwise fight over the mic. */
+  conversationMode: boolean;
   callTool: CallToolFn;
 }
 
@@ -57,12 +69,81 @@ export function ChatPane(props: ChatPaneProps) {
   // checked here just to decide whether any speak button is clickable.
   const roster = useMeshRoster();
   const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
+  // Same resolution, ASR direction — conversation mode's own VAD instance
+  // (below) needs this to know whether it's safe to actually turn the mic
+  // on, independent of whatever the toggle in ToolContributionPanel says
+  // (that toggle is gated on reachability too, but reachability can change
+  // out from under an already-on toggle — e.g. the only ASR host peer
+  // leaves — and this hook has no way to flip the PERSISTED toggle off
+  // itself, so it just stops actually listening instead).
+  const asrReachable = props.speechHost.ready || roster.some((r) => r.skills.includes(ASR_SKILL));
   const speaker = useTtsSpeaker({
     callTool: props.callTool,
     synthesizeLocal: props.ttsHost.ready ? props.ttsHost.synthesizeLocal : undefined,
   });
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [speakError, setSpeakError] = useState<string | null>(null);
+
+  // 💬 CONVERSATION MODE (increment 3c) — hands-free back-and-forth. Small
+  // state machine, three states, all DERIVED from signals that already
+  // exist rather than tracked separately (so there's no separate state to
+  // drift out of sync with the real thing):
+  //
+  //   - GENERATING: `props.busy` (the LLM is streaming a reply). VAD
+  //     utterances that resolve while this is true are DROPPED, not
+  //     queued — see `handleConversationTranscript` below. This is the
+  //     "never send a second message mid-generation" guard.
+  //   - SPEAKING: `speaker.speaking` (the finished reply is being read
+  //     aloud — via the SAME auto-speak effect increment 2 already built;
+  //     see `effectiveAutoSpeak` below, no second speak path). Talking
+  //     during this state is a BARGE-IN: `onSpeechStart` fires the instant
+  //     VAD detects speech (well before the utterance ends/transcribes) and
+  //     immediately calls `speaker.stop()` — see `handleConversationSpeechStart`.
+  //   - LISTENING: neither of the above. A resolved utterance here — or one
+  //     that resolves AFTER a barge-in has already stopped speaking, since
+  //     by the time `onTranscript` fires the state has already moved back
+  //     to LISTENING — is auto-sent via `props.onSend`.
+  //
+  // Both handlers read `props.busy`/`speaker.speaking` fresh from the
+  // closure captured at the render that's current when the VAD event
+  // actually fires (`useVadListen` re-points its internal callback ref
+  // every render — see that hook's doc — so a plain function here, not a
+  // `useCallback`, is enough; no stale-closure risk).
+  const handleConversationTranscript = (text: string) => {
+    if (props.busy) {
+      console.debug('[legion-speech] conversation: dropped utterance — assistant is generating');
+      return;
+    }
+    console.debug('[legion-speech] conversation: auto-send');
+    props.onSend(text);
+  };
+  const handleConversationSpeechStart = () => {
+    if (speaker.speaking) {
+      console.debug('[legion-speech] conversation: barge-in — stopping TTS');
+      speaker.stop();
+    }
+  };
+  // Conversation mode implies auto-speak — reuse the EXISTING auto-speak
+  // effect (below) rather than building a second speak path; forcing this
+  // true is the entire integration point.
+  const effectiveAutoSpeak = props.autoSpeak || props.conversationMode;
+  // Only actually open the mic when conversation mode is on AND there's
+  // somewhere to send a transcript — mirrors Composer's own
+  // `listenEnabled && asrReachable` gating for the manual "🎙 Listen" toggle.
+  const conversationVad = useVadListen({
+    enabled: props.conversationMode && asrReachable,
+    callTool: props.callTool,
+    transcribeLocal: props.speechHost.ready ? props.speechHost.transcribeLocal : undefined,
+    onTranscript: handleConversationTranscript,
+    onSpeechStart: handleConversationSpeechStart,
+    assets: VAD_ASSETS,
+    // Both true: this device is about to hear its OWN TTS reply out of the
+    // speakers while the mic stays open for the next turn — without this,
+    // VAD mistakes the assistant's own voice for the user talking. See
+    // `useVadListen.ts`'s module doc, "self-echo prevention" section.
+    echoCancellation: true,
+    noiseSuppression: true,
+  });
 
   const handleSpeak = useCallback(
     (id: string, text: string) => {
@@ -91,7 +172,8 @@ export function ChatPane(props: ChatPaneProps) {
     [speaker, speakingId],
   );
 
-  // AUTO-SPEAK (increment 2) — speak the COMPLETED reply the instant
+  // AUTO-SPEAK (increment 2, forced on by 💬 conversation mode — increment
+  // 3c's `effectiveAutoSpeak`) — speak the COMPLETED reply the instant
   // `streamingMessageId` transitions away from it, never on mount and never
   // a second time for the same message. `prevStreamingRef` remembers the
   // PREVIOUS render's streaming id; when this render's id differs from it,
@@ -103,7 +185,7 @@ export function ChatPane(props: ChatPaneProps) {
   useEffect(() => {
     const prev = prevStreamingRef.current;
     prevStreamingRef.current = props.streamingMessageId;
-    if (!props.autoSpeak || !prev || prev === props.streamingMessageId) return;
+    if (!effectiveAutoSpeak || !prev || prev === props.streamingMessageId) return;
     if (!ttsReachable) return;
     const finished = props.messages.find((m) => m.id === prev);
     if (!finished || finished.role !== 'assistant') return;
@@ -172,6 +254,14 @@ export function ChatPane(props: ChatPaneProps) {
           <span className="chat-notice-message">Speak failed: {speakError}</span>
         </div>
       )}
+      {props.conversationMode && conversationVad.error && (
+        <div className="chat-notice chat-notice-error" role="alert" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            ⚠
+          </span>
+          <span className="chat-notice-message">Conversation mode failed: {conversationVad.error}</span>
+        </div>
+      )}
       {props.notice && (
         <div
           className={`chat-notice ${props.notice.kind === 'retrying' ? 'chat-notice-retrying' : 'chat-notice-error'}`}
@@ -198,6 +288,7 @@ export function ChatPane(props: ChatPaneProps) {
         onStop={props.onStop}
         speechHost={props.speechHost}
         callTool={props.callTool}
+        conversationMode={props.conversationMode}
       />
     </div>
   );

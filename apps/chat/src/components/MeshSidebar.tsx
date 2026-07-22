@@ -11,6 +11,7 @@ import {
   type ToolContributionSpeechProps,
   type ToolContributionTtsProps,
   type ToolContributionAutoSpeakProps,
+  type ToolContributionConversationModeProps,
 } from './ToolContributionPanel.js';
 import { ModelFolderPanel } from './ModelFolderPanel.js';
 import { useMobileCollapse } from '../hooks/useMobileCollapse.js';
@@ -32,6 +33,7 @@ export interface MeshSidebarProps {
   speechHost: ToolContributionSpeechProps;
   ttsHost: ToolContributionTtsProps;
   autoSpeak: ToolContributionAutoSpeakProps;
+  conversationMode: ToolContributionConversationModeProps;
   pipelineHandoff: PipelineHandoffProps;
   /** "Load layers from a local folder" — applies to this driver's OWN
    * stage-0 load regardless of hosting consent, so it's rendered
@@ -77,6 +79,7 @@ export function MeshSidebar(props: MeshSidebarProps) {
         speechHost={props.speechHost}
         ttsHost={props.ttsHost}
         autoSpeak={props.autoSpeak}
+        conversationMode={props.conversationMode}
       />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />

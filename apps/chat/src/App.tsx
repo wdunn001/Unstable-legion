@@ -221,6 +221,34 @@ function saveAutoSpeakEnabled(enabled: boolean): void {
   }
 }
 
+// Sticky "💬 conversation mode" opt-in (increment 3c) — mirrors
+// AUTO_SPEAK_STORAGE_KEY exactly: a CONSUMPTION preference, not a hosting
+// one, so it doesn't touch `cap`. Turning it on FORCES auto-speak on too
+// (see ChatPane's `effectiveAutoSpeak`) and continuously opens the mic
+// (`useVadListen`, gated on reachability the same way the toggle itself
+// is) — a bigger "hands-free audio + mic" surprise than either ASR/TTS
+// hosting or plain auto-speak, so default off follows the same discipline.
+const CONVERSATION_MODE_STORAGE_KEY = 'unstable-legion-chat:conversation-mode-v1';
+
+function loadConversationModeEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(CONVERSATION_MODE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveConversationModeEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(CONVERSATION_MODE_STORAGE_KEY, '1');
+    else localStorage.removeItem(CONVERSATION_MODE_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 // Generation budget. maxDecodeTokens is a CAP, not a target — short answers
 // stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
 // run further; it doesn't slow short chats. Was 256, which truncated real
@@ -289,6 +317,15 @@ export function App() {
   const setAutoSpeakEnabledPersisted = useCallback((enabled: boolean) => {
     setAutoSpeakEnabled(enabled);
     saveAutoSpeakEnabled(enabled);
+  }, []);
+
+  // 💬 Conversation mode (increment 3c) — same persisted-preference shape as
+  // autoSpeakEnabled immediately above; see CONVERSATION_MODE_STORAGE_KEY's
+  // doc comment for why it's not part of `cap`.
+  const [conversationModeEnabled, setConversationModeEnabled] = useState(() => loadConversationModeEnabled());
+  const setConversationModeEnabledPersisted = useCallback((enabled: boolean) => {
+    setConversationModeEnabled(enabled);
+    saveConversationModeEnabled(enabled);
   }, []);
 
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
@@ -363,6 +400,8 @@ export function App() {
         onToggleTtsHost={setTtsHostEnabledPersisted}
         autoSpeakEnabled={autoSpeakEnabled}
         onToggleAutoSpeak={setAutoSpeakEnabledPersisted}
+        conversationModeEnabled={conversationModeEnabled}
+        onToggleConversationMode={setConversationModeEnabledPersisted}
       />
     </MeshProvider>
   );
@@ -383,6 +422,8 @@ function Dashboard(props: {
   onToggleTtsHost: (enabled: boolean) => void;
   autoSpeakEnabled: boolean;
   onToggleAutoSpeak: (enabled: boolean) => void;
+  conversationModeEnabled: boolean;
+  onToggleConversationMode: (enabled: boolean) => void;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
@@ -393,6 +434,10 @@ function Dashboard(props: {
   // Computed here (not just inside ChatPane) because the toggle itself
   // lives in the sidebar's ToolContributionPanel, not ChatPane.
   const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
+  // Same resolution, ASR direction — needed alongside `ttsReachable` for
+  // the "💬 Conversation mode" toggle's reachability hint (it needs BOTH
+  // directions; see ToolContributionConversationModeProps' doc comment).
+  const asrReachable = props.speechHost.ready || roster.some((r) => r.skills.includes(ASR_SKILL));
 
   // Trim the assembled prompt to leave room for the model's own generation
   // within the KV window — see MAX_DECODE_TOKENS. Floored so a small ctx never
@@ -1032,6 +1077,7 @@ function Dashboard(props: {
           speechHost={speechHost}
           ttsHost={ttsHost}
           autoSpeak={props.autoSpeakEnabled}
+          conversationMode={props.conversationModeEnabled}
           callTool={meshToolsHandle.callTool}
         />
         <MeshSidebar
@@ -1098,6 +1144,11 @@ function Dashboard(props: {
             enabled: props.autoSpeakEnabled,
             onToggleEnabled: props.onToggleAutoSpeak,
             reachable: ttsReachable,
+          }}
+          conversationMode={{
+            enabled: props.conversationModeEnabled,
+            onToggleEnabled: props.onToggleConversationMode,
+            reachable: asrReachable && ttsReachable,
           }}
           modelFolder={modelFolder}
           modelFolderDownloadUrl={modelConfig.downloadUrl}

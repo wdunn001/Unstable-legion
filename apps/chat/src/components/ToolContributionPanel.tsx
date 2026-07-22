@@ -64,13 +64,29 @@ export interface ToolContributionAutoSpeakProps {
   reachable: boolean;
 }
 
+/**
+ * "💬 Conversation mode (hands-free)" — increment 3c. Needs BOTH directions
+ * reachable at once (an utterance has nowhere useful to go if either ASR or
+ * TTS is missing), unlike `ToolContributionAutoSpeakProps`/the ASR mic
+ * button above, which each only need their own single direction.
+ */
+export interface ToolContributionConversationModeProps {
+  enabled: boolean;
+  onToggleEnabled: (enabled: boolean) => void;
+  /** True when BOTH an ASR target and a TTS target are reachable (this tab
+   * hosts them, or a roster peer advertises `asr.transcribe`/
+   * `tts.synthesize` respectively). */
+  reachable: boolean;
+}
+
 export function ToolContributionPanel(props: {
   tools: UseToolContributionHandle;
   speechHost: ToolContributionSpeechProps;
   ttsHost: ToolContributionTtsProps;
   autoSpeak: ToolContributionAutoSpeakProps;
+  conversationMode: ToolContributionConversationModeProps;
 }) {
-  const { tools, speechHost, ttsHost, autoSpeak } = props;
+  const { tools, speechHost, ttsHost, autoSpeak, conversationMode } = props;
   const [mcpUrl, setMcpUrl] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
@@ -190,6 +206,26 @@ export function ToolContributionPanel(props: {
         <p className="tool-contrib-sub">Hands-free listening: every reply is read aloud as soon as it's done.</p>
         {autoSpeak.enabled && !autoSpeak.reachable && (
           <span className="tool-contrib-speech-status">needs a TTS host on the mesh</span>
+        )}
+      </div>
+      <div className="tool-contrib-speech tool-contrib-conversation-mode">
+        <label
+          className="tool-contrib-row"
+          title="Hands-free back-and-forth: talk, it auto-sends and the reply auto-speaks, then it's listening again. Talk while it's speaking to interrupt (barge-in)."
+        >
+          <input
+            type="checkbox"
+            checked={conversationMode.enabled}
+            onChange={(e) => conversationMode.onToggleEnabled(e.target.checked)}
+          />
+          <span className="tool-contrib-name">💬 Conversation mode (hands-free)</span>
+        </label>
+        <p className="tool-contrib-sub">
+          Continuous mic + auto-send + auto-speak + barge-in — no buttons once it's on. Turns off the manual 🎙 Listen
+          toggle while active (they'd otherwise fight over the mic).
+        </p>
+        {conversationMode.enabled && !conversationMode.reachable && (
+          <span className="tool-contrib-speech-status">needs both an ASR host and a TTS host on the mesh</span>
         )}
       </div>
     </section>

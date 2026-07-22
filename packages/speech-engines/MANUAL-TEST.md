@@ -345,6 +345,133 @@ utterance resolves — no auto-send (that's increment 3c), no wake word
    This is expected/documented behavior, not a bug: the two features
    intentionally do not disable each other.
 
+## 7. Chat app (apps/chat) — Conversation mode: hands-free back-and-forth + barge-in
+
+Increment 3c of the voice-conversation layer: **💬 Conversation mode
+(hands-free)**. Turns the mesh chat into an actual spoken conversation —
+talk, it captures your utterance and auto-sends it (no Send click, no
+Enter), the mesh replies, the reply auto-speaks, and the mic is listening
+again the instant it's done — and you can interrupt (**barge-in**): talking
+while it's speaking cuts the TTS short and your words become the next turn.
+
+This is orchestration over pieces already proven in sections 3–6, not a new
+speech path: continuous VAD (section 6) drives auto-send instead of
+appending to the composer, and the EXISTING auto-speak effect (section 5)
+is what actually speaks replies — conversation mode just forces it on.
+
+### 7a. Turning it on — needs BOTH ASR and TTS reachable
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`. Open the dev
+   URL, pick a nick, join.
+2. In the **Tool contributions** card, toggle **🎤 Host speech-to-text** and
+   **🔊 Host text-to-speech** both on in this same tab (wait for both to
+   finish initializing) — the simplest single-tab setup. (A two-tab mesh
+   setup works too, same reachability rule as sections 3/4/6: this tab
+   hosting is not required, a roster peer advertising either skill counts.)
+3. Toggle **💬 Conversation mode (hands-free)** on.
+   - If either ASR or TTS isn't reachable yet, expect a "needs both an ASR
+     host and a TTS host on the mesh" hint under the toggle — it should
+     clear once both are ready/visible in the roster.
+4. Grant mic permission if prompted (this is a NEW `getUserMedia` call,
+   separate from section 6's — expect the browser to ask again even if you
+   already granted it for the manual **🎙 Listen** toggle earlier in this
+   tab).
+
+### 7b. The hands-free loop
+
+5. Speak a short question, then pause. Expect: shortly after you stop
+   talking, your message appears in the thread AND SENDS ITSELF — no Send
+   click, no Enter, no text sitting in the composer waiting for you. Watch
+   the console for `[legion-speech] conversation: auto-send` right before
+   it.
+6. While the reply streams in, expect NOTHING to happen if you stay quiet —
+   this is the GENERATING state; conversation mode is just waiting.
+7. The instant the reply finishes streaming, expect it to auto-speak on its
+   own (same as section 5's auto-speak, ⏹ showing on the bubble) — this is
+   forced on by conversation mode even if **🗣 Auto-speak replies** itself is
+   off; you should NOT need to also toggle that switch separately.
+8. Once the reply finishes speaking, expect the mic to already be
+   listening again (no need to click anything) — speak your NEXT question.
+   Expect the same loop: auto-send → reply → auto-speak → listening. Do
+   this for at least 2-3 turns to confirm the loop actually repeats, not
+   just fires once.
+
+### 7c. Barge-in — interrupting mid-speech
+
+9. Let a reply start auto-speaking (⏹ showing). While it's still talking,
+   start speaking over it. Expect: the TTS audio cuts off PROMPTLY — not a
+   graceful fade-out, not waiting for the current chunk/sentence to
+   finish — the console should show `[legion-speech] conversation:
+   barge-in — stopping TTS` right as you start talking (this fires on VAD's
+   `onSpeechStart`, before your utterance even finishes, let alone
+   transcribes).
+10. Keep talking after the barge-in cuts the audio, then pause. Expect your
+    words to be transcribed and auto-sent as the NEXT turn (same as step 5)
+    — a barge-in doesn't just silence the assistant, what you said next
+    still becomes your next message.
+11. **No accidental drop**: confirm the bubble that got interrupted still
+    shows its full text (barge-in stops the AUDIO, not the reply itself —
+    nothing about the message content changes, only playback stops).
+
+### 7d. Self-trigger caveat — the reason echoCancellation matters
+
+Conversation mode plays the assistant's reply out of your speakers while
+the mic is still open for the next turn. Without echo cancellation, the mic
+would re-hear the TTS audio and VAD would mistake the assistant's OWN voice
+for you talking — either firing a false barge-in on every reply, or
+auto-sending a nonsense "transcript" of the assistant's own speech back to
+itself.
+
+12. With headphones OFF and speaker volume up (the actual self-trigger risk
+    scenario), let several replies auto-speak in a row WITHOUT you talking
+    over them. Expect: no false barge-ins, no phantom auto-sent messages —
+    `useVadListen`'s `echoCancellation: true`/`noiseSuppression: true`
+    (conversation mode always passes both, see `useVadListen.ts`'s "self-echo
+    prevention" doc) should keep the mic from re-triggering on this same
+    tab's own TTS output. If you DO see a phantom send/barge-in here, that's
+    the bug this design point exists to prevent — note your browser/OS
+    (echo cancellation quality varies) and whether headphones instead of
+    speakers avoids it (a clean way to isolate mic-hears-speaker vs. a real
+    regression).
+13. For comparison, wearing headphones (so the mic genuinely can't hear the
+    TTS output at all) should behave identically to steps 9-11 — confirms
+    the loop itself works regardless of echo-cancellation's real-world
+    imperfection.
+
+### 7e. Coexistence with manual controls
+
+14. With **💬 Conversation mode** ON, check the composer's **🎙 Listen**
+    button (section 6's manual toggle): expect it to be disabled, showing
+    (on hover) "Conversation mode owns the mic right now — turn it off to
+    use manual Listen" — confirms the two don't fight over the mic
+    simultaneously. If **🎙 Listen** was already ON when you switched
+    conversation mode on, expect it to turn itself off (not stay on
+    silently overridden).
+15. Toggle **💬 Conversation mode** back OFF. Expect: the mic stream
+    releases (browser's mic-in-use indicator, if shown, turns off), no more
+    auto-send/auto-speak/barge-in happens, and **🎙 Listen** becomes
+    clickable again.
+16. With conversation mode off, confirm a normal manual Send still works
+    exactly as before (this increment changes nothing about the
+    non-hands-free path).
+17. Push-to-talk (🎤): while conversation mode is ON, click the ordinary
+    push-to-talk mic button. This is NOT disabled by conversation mode
+    (documented, not a bug — see `Composer.tsx`'s `conversationMode` prop
+    doc) — expect it to still work independently, dropping its transcript
+    into the composer textarea same as always, without interfering with
+    conversation mode's own loop.
+
+### 7f. Mid-generation utterance — the drop, not queue, case
+
+18. Send a question that will take a few seconds to answer (something that
+    yields a long reply). While it's still GENERATING (before the reply
+    starts auto-speaking), say something. Expect: the console shows
+    `[legion-speech] conversation: dropped utterance — assistant is
+    generating` and NOTHING gets sent — your words are silently dropped,
+    not queued for after the reply finishes. This is intentional (documented
+    in `ChatPane.tsx`): conversation mode never auto-sends a second message
+    while one is still being generated.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -384,3 +511,13 @@ utterance resolves — no auto-send (that's increment 3c), no wake word
   because vad-web resolves its own `require("onnxruntime-web")` to its
   nested copy, and the `copyVadAssets` plugin copies from that exact
   nested path, not the hoisted top-level one.
+- **💬 Conversation mode** owns its OWN `getUserMedia` call (see
+  `useVadListen.ts`'s module doc's "self-echo prevention" section — it's
+  the ONLY way to actually control `echoCancellation`/`noiseSuppression`,
+  since vad-web's own `additionalAudioConstraints` type excludes both and
+  hardcodes them `true` internally regardless). This means it's a SEPARATE
+  mic grant from section 6's manual **🎙 Listen** toggle even in the same
+  tab/profile — expect a fresh permission prompt (or a fresh browser
+  mic-in-use indicator event) the first time you turn conversation mode on,
+  even if you already granted the mic to **🎙 Listen** earlier in the same
+  session.

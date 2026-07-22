@@ -9,21 +9,7 @@ import {
   type UseSpeechHostHandle,
 } from '@unstable-legion/react';
 import { ASR_SKILL } from '@unstable-legion/core';
-
-// `@ricky0123/vad-web` assets, split by what each loader needs:
-//   - baseAssetPath (worklet + Silero model): SAME-ORIGIN `/vad/`, staged by
-//     the `copyVadAssets` plugin in `vite.config.ts`. The worklet loads via
-//     `AudioWorklet.addModule()` which demands a JS MIME type — HF serves .js
-//     as text/plain (rejected by Chrome for worklets) — so it must be local;
-//     vad-web couples the model to the same dir, so the ~1.8MB model rides
-//     along. (vad-web concatenates a shared dir + fixed filenames internally,
-//     which is also why per-file `?url` imports can't be threaded through.)
-//   - onnxWASMBasePath (the ~40MB onnxruntime-web wasm — the real deploy
-//     bloat): served from Hugging Face (wdunn001/legion-vad). wasm loads via
-//     fetch()+instantiate (MIME-tolerant) and HF is CORS-clean + serves
-//     application/wasm, so cross-origin is fine here.
-const VAD_HF_BASE = 'https://huggingface.co/wdunn001/legion-vad/resolve/main/';
-const VAD_ASSETS = { baseAssetPath: '/vad/', onnxWASMBasePath: VAD_HF_BASE };
+import { VAD_ASSETS } from '../vadAssets.js';
 
 export interface ComposerProps {
   disabled: boolean;
@@ -36,6 +22,13 @@ export interface ComposerProps {
    * `asr.transcribe` via `callTool` (see `useSpeechClient`). */
   speechHost: UseSpeechHostHandle;
   callTool: CallToolFn;
+  /** 💬 Conversation mode (increment 3c) owns its OWN `useVadListen`
+   * instance up in `ChatPane` — a second, independent continuous mic
+   * stream would be redundant (and needlessly hold the mic open twice) on
+   * top of this one. While it's on, the "🎙 Listen" toggle here is forced
+   * off and disabled — the two are NOT meant to run concurrently, unlike
+   * push-to-talk (🎤) which stays independent of both. */
+  conversationMode: boolean;
 }
 
 export function Composer(props: ComposerProps) {
@@ -99,8 +92,14 @@ export function Composer(props: ComposerProps) {
     el.style.height = `${Math.min(200, el.scrollHeight)}px`;
     el.focus();
   };
+  // Conversation mode (3c) owns the mic via its OWN `useVadListen` instance
+  // in ChatPane — never run both continuous-listen streams at once. Gating
+  // `enabled` on `!props.conversationMode` here (rather than relying solely
+  // on the effect below forcing `listenEnabled` false) closes a one-render
+  // race: state updates land on the NEXT render, but this computed value is
+  // correct on the SAME render conversation mode flips on.
   const vad = useVadListen({
-    enabled: listenEnabled,
+    enabled: listenEnabled && !props.conversationMode,
     callTool: props.callTool,
     transcribeLocal: speechHost.ready ? speechHost.transcribeLocal : undefined,
     onTranscript: handleTranscript,
@@ -109,10 +108,12 @@ export function Composer(props: ComposerProps) {
 
   // If the ASR target disappears mid-listen (host toggled off, mesh peer
   // left) turn Listen back off instead of leaving it stuck spinning with a
-  // continuous mic stream open and no way to serve a transcript.
+  // continuous mic stream open and no way to serve a transcript. Same
+  // treatment when conversation mode takes over the mic — reset the toggle
+  // rather than leave it "on" but silently overridden.
   useEffect(() => {
-    if (listenEnabled && !asrReachable) setListenEnabled(false);
-  }, [asrReachable, listenEnabled]);
+    if (listenEnabled && (!asrReachable || props.conversationMode)) setListenEnabled(false);
+  }, [asrReachable, listenEnabled, props.conversationMode]);
 
   function send() {
     const el = ref.current;
@@ -154,12 +155,14 @@ export function Composer(props: ComposerProps) {
       ? 'Stop recording'
       : 'Speak your message';
 
-  const listenDisabled = props.disabled || !asrReachable;
-  const listenTitle = !asrReachable
-    ? 'Enable Host speech-to-text, or wait for a peer that offers it'
-    : listenEnabled
-      ? 'Stop hands-free listening'
-      : 'Start hands-free listening — speech is transcribed into the composer as you talk';
+  const listenDisabled = props.disabled || !asrReachable || props.conversationMode;
+  const listenTitle = props.conversationMode
+    ? 'Conversation mode owns the mic right now — turn it off to use manual Listen'
+    : !asrReachable
+      ? 'Enable Host speech-to-text, or wait for a peer that offers it'
+      : listenEnabled
+        ? 'Stop hands-free listening'
+        : 'Start hands-free listening — speech is transcribed into the composer as you talk';
 
   return (
     <div className="composer">
