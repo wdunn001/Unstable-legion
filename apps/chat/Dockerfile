@@ -20,6 +20,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY packages/mesh-core/package.json packages/mesh-core/
 COPY packages/mesh-react/package.json packages/mesh-react/
+COPY packages/speech-engines/package.json packages/speech-engines/
 COPY apps/chat/package.json apps/chat/
 COPY apps/demo/package.json apps/demo/
 
