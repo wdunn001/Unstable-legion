@@ -10,14 +10,20 @@ import {
 } from '@unstable-legion/react';
 import { ASR_SKILL } from '@unstable-legion/core';
 
-// Self-hosted `@ricky0123/vad-web` assets — see useVadListen.ts's module
-// doc for why these are a fixed local `/vad/` directory rather than
-// per-file `?url` imports (the library concatenates a shared
-// `baseAssetPath`/`onnxWASMBasePath` directory + fixed filenames
-// internally, so per-asset hashed URLs can't be threaded through it).
-// Populated at dev/build time by the `copyVadAssets` plugin in
-// `vite.config.ts`.
-const VAD_ASSETS = { baseAssetPath: '/vad/', onnxWASMBasePath: '/vad/' };
+// `@ricky0123/vad-web` assets, split by what each loader needs:
+//   - baseAssetPath (worklet + Silero model): SAME-ORIGIN `/vad/`, staged by
+//     the `copyVadAssets` plugin in `vite.config.ts`. The worklet loads via
+//     `AudioWorklet.addModule()` which demands a JS MIME type — HF serves .js
+//     as text/plain (rejected by Chrome for worklets) — so it must be local;
+//     vad-web couples the model to the same dir, so the ~1.8MB model rides
+//     along. (vad-web concatenates a shared dir + fixed filenames internally,
+//     which is also why per-file `?url` imports can't be threaded through.)
+//   - onnxWASMBasePath (the ~40MB onnxruntime-web wasm — the real deploy
+//     bloat): served from Hugging Face (wdunn001/legion-vad). wasm loads via
+//     fetch()+instantiate (MIME-tolerant) and HF is CORS-clean + serves
+//     application/wasm, so cross-origin is fine here.
+const VAD_HF_BASE = 'https://huggingface.co/wdunn001/legion-vad/resolve/main/';
+const VAD_ASSETS = { baseAssetPath: '/vad/', onnxWASMBasePath: VAD_HF_BASE };
 
 export interface ComposerProps {
   disabled: boolean;

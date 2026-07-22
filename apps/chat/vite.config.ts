@@ -53,27 +53,25 @@ function copyVadAssets(): Plugin {
       try {
         const vadPkgPath = require.resolve('@ricky0123/vad-web/package.json');
         const vadDist = join(dirname(vadPkgPath), 'dist');
-        const ortPkgPath = require.resolve('onnxruntime-web/package.json', { paths: [dirname(vadPkgPath)] });
-        const ortDist = join(dirname(ortPkgPath), 'dist');
 
         const destDir = join(__dirname, 'public', 'vad');
         mkdirSync(destDir, { recursive: true });
 
-        // Worklet + the default ("legacy") Silero model — the ONLY model
-        // file vad-web's default `model: "legacy"` option will ever
-        // request; not shipping `silero_vad_v5.onnx` too since we don't
-        // override `model` (see useVadListen.ts).
+        // ONLY the worklet + the default ("legacy") Silero model are staged
+        // locally. Two reasons they can't come from HF like the wasm does:
+        //   1. `vad.worklet.bundle.min.js` is loaded via `AudioWorklet.
+        //      addModule()`, which requires a JavaScript MIME type — HF serves
+        //      .js as `text/plain`, which Chrome rejects for worklets. So the
+        //      worklet MUST be same-origin (Vite serves it as text/javascript).
+        //   2. vad-web couples worklet + model under one `baseAssetPath`, so
+        //      the model rides along locally too (it's only ~1.8MB).
+        // The ~40MB onnxruntime-web wasm binaries — the actual deploy bloat —
+        // are NOT copied here; they're served from HF via `onnxWASMBasePath`
+        // (see Composer.tsx's VAD_ASSETS). wasm loads via fetch()+instantiate,
+        // which is MIME-tolerant and CORS-clean from HF.
         const filesToCopy = [
           join(vadDist, 'vad.worklet.bundle.min.js'),
           join(vadDist, 'silero_vad_legacy.onnx'),
-          // Every onnxruntime-web@1.14.0 wasm variant it might feature-detect
-          // and request at runtime (threaded/simd/plain) — cheap to ship all
-          // four rather than guess which the visiting browser will pick.
-          join(ortDist, 'ort-wasm.wasm'),
-          join(ortDist, 'ort-wasm-simd.wasm'),
-          join(ortDist, 'ort-wasm-threaded.wasm'),
-          join(ortDist, 'ort-wasm-threaded.worker.js'),
-          join(ortDist, 'ort-wasm-simd-threaded.wasm'),
         ];
 
         let copied = 0;
