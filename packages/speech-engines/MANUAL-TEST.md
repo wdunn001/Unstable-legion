@@ -108,8 +108,8 @@ LLM-loop change — the user still hits Send/Enter themselves.
 ## 4. Chat app (apps/chat) — voice OUTPUT: 🔊 speak an assistant reply
 
 TTS is the reverse-direction twin of section 3 — text → Kokoro → audio,
-manual "speak" button on each assistant bubble only (no auto-speak; that's
-a later conversation-loop phase, out of scope here).
+manual "speak" button on each assistant bubble. Auto-speak (replies read
+aloud with no button click) is covered separately in section 5.
 
 As of the rolling/chunked-TTS increment, `useTtsSpeaker` (not a bare
 `useTtsClient` + `useAudioPlayback` pair) drives the 🔊 button: it splits
@@ -193,6 +193,61 @@ latency-to-first-audio versus synthesizing the whole reply in one call.
    visible "Speak failed: …" notice instead of a silent hang — confirms
    `useTtsClient`'s no-target error path still surfaces through
    `useTtsSpeaker`.
+
+## 5. Chat app (apps/chat) — auto-speak: hands-free reply playback
+
+Increment 2 of the voice-conversation layer: when **🗣 Auto-speak replies**
+is on, each assistant reply is spoken automatically the moment it finishes
+streaming — no 🔊 click. This is a CONSUMPTION preference, independent of
+whether this tab hosts TTS (`useTtsSpeaker` resolves local-vs-mesh the same
+way either way; `🗣 Auto-speak replies` is usable whenever ANY TTS target is
+reachable, not gated on this tab's own `🔊 Host text-to-speech` toggle).
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`.
+2. Open the dev URL, pick a nick, join.
+3. Get a TTS target reachable — either toggle **🔊 Host text-to-speech** on
+   in this same tab (wait for it to finish initializing), or open a second
+   tab/nick in the same room and enable its host toggle instead (leave this
+   tab's host toggle off, to specifically exercise the mesh-routed case).
+4. In the **Tool contributions** card, toggle **🗣 Auto-speak replies** on.
+   - If no TTS target is reachable yet, expect a "needs a TTS host on the
+     mesh" hint under the toggle; it should disappear once step 3's host
+     becomes ready/visible in the roster.
+5. Send a message. Expect: once the reply finishes streaming (composer
+   re-enables / the ⏹ spinner clears), the assistant bubble's 🔊 button
+   flips to its ⏹ (speaking) state ON ITS OWN — no click — and audio plays.
+   Console should show the same `[legion-speech] speak: N chunk(s)` /
+   `synth start`/`synth done` / `speak: done` lines as the manual path.
+6. **No re-speak / no history replay**: reload the page (or switch to a
+   different thread and back). Confirm OLD replies do NOT speak on load —
+   auto-speak fires only on a genuine streaming→done transition, never on
+   mount.
+7. **No speak on user messages**: confirm sending a message doesn't trigger
+   any auto-speech until the ASSISTANT's reply comes back (the user's own
+   bubble should never get an auto-🔊).
+8. **Supersede test (the concurrency fix)**: send a message, and the moment
+   its reply starts auto-speaking, send a SECOND message before the first
+   finishes talking. Expect: the first reply's audio stops promptly (not a
+   graceful fade, not finishing its current chunk) the instant the second
+   reply finishes streaming and takes over — the first bubble's 🔊 flips
+   back to idle, the second bubble's flips to ⏹, and only the second
+   reply's audio plays (no overlap/garble of the two). This exercises
+   `useTtsSpeaker`'s generation-counter fix: a NEW `speak()` call safely
+   cancels an in-flight one instead of the two racing on the same Kokoro
+   engine.
+9. **Manual stop still works**: with auto-speak on, let a reply start
+   auto-speaking, then click its 🔊 (now showing ⏹) to stop it manually.
+   Expect playback to stop immediately and the button to return to idle —
+   same as the manual-only behavior in section 4.
+10. **Manual 🔊 on a DIFFERENT (older) message while auto-speak is on**:
+    click 🔊 on an earlier reply while a fresh reply is auto-speaking.
+    Expect the same supersede behavior as step 8 (older/auto audio stops,
+    clicked message's audio plays) — manual and auto-speak share the one
+    `useTtsSpeaker` instance, so they supersede each other exactly like two
+    auto-speaks would.
+11. Toggle **🗣 Auto-speak replies** off. Send another message and let it
+    finish streaming. Expect: silence — no automatic playback — while the
+    manual 🔊 button on that same reply still works when clicked.
 
 ## Known limitations to note while testing (not bugs)
 

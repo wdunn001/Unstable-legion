@@ -32,6 +32,12 @@ export interface ChatPaneProps {
    * target, mirroring Composer's single `useSpeechClient` instance for
    * the mic button. */
   ttsHost: UseTtsHostHandle;
+  /** Auto-speak preference (increment 2) — when true, the assistant's reply
+   * is spoken automatically the instant it finishes streaming (see the
+   * streaming→done detection effect below). A CONSUMPTION preference, so
+   * it's independent of `ttsHost` (which is about THIS tab hosting TTS for
+   * others) — it works off whatever `ttsReachable` resolves to below. */
+  autoSpeak: boolean;
   callTool: CallToolFn;
 }
 
@@ -84,6 +90,49 @@ export function ChatPane(props: ChatPaneProps) {
     },
     [speaker, speakingId],
   );
+
+  // AUTO-SPEAK (increment 2) — speak the COMPLETED reply the instant
+  // `streamingMessageId` transitions away from it, never on mount and never
+  // a second time for the same message. `prevStreamingRef` remembers the
+  // PREVIOUS render's streaming id; when this render's id differs from it,
+  // whatever id was previously streaming just finished (or was aborted).
+  // First transition ever has `prev === undefined` (nothing was streaming
+  // before), so the very first reply's mount-time render never fires this —
+  // only a genuine streaming→settled transition does.
+  const prevStreamingRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevStreamingRef.current;
+    prevStreamingRef.current = props.streamingMessageId;
+    if (!props.autoSpeak || !prev || prev === props.streamingMessageId) return;
+    if (!ttsReachable) return;
+    const finished = props.messages.find((m) => m.id === prev);
+    if (!finished || finished.role !== 'assistant') return;
+    // Same sanitize-before-speak + code-only fallback as the manual 🔊
+    // path (handleSpeak above) — auto-speak must read the same thing a
+    // manual click would.
+    const speakable =
+      toSpeakableText(finished.content) || 'This reply is code only, so there is nothing to read aloud.';
+    setSpeakError(null);
+    setSpeakingId(finished.id);
+    // A reply that finishes while a PREVIOUS auto-spoken (or manually
+    // spoken) reply is still talking is safe to just call speak() on —
+    // useTtsSpeaker's generation counter supersedes the earlier call and
+    // flushes its queued audio (see useTtsSpeaker.ts), no coordination
+    // needed here.
+    void speaker
+      .speak(speakable)
+      .catch((err) => {
+        setSpeakError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        setSpeakingId((cur) => (cur === finished.id ? null : cur));
+      });
+    // Keyed ONLY on the streaming-id transition — `messages`/`speaker`/
+    // `ttsReachable` are read fresh inside but must not themselves
+    // re-trigger this effect (that would re-speak on every unrelated
+    // message-list update, e.g. tool-trace edits on the SAME id).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.streamingMessageId]);
 
   return (
     <div className="chat-pane">

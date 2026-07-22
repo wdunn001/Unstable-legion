@@ -192,6 +192,35 @@ function saveTtsHostEnabled(enabled: boolean): void {
   }
 }
 
+// Sticky "auto-speak assistant replies" opt-in. Unlike ASR_HOST/TTS_HOST
+// above, this is a CONSUMPTION preference ("read replies to me"), not a
+// hosting one — it doesn't spin up a worker or change what this tab
+// advertises on `cap`, it just decides whether ChatPane calls
+// `speaker.speak()` on its own once a reply finishes streaming. Default off
+// (same "opt in to a GPU/audio surprise" discipline as the host toggles,
+// even though this one is cheap — hands-free audio starting on its own is
+// still a surprise the user should choose).
+const AUTO_SPEAK_STORAGE_KEY = 'unstable-legion-chat:auto-speak-enabled-v1';
+
+function loadAutoSpeakEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(AUTO_SPEAK_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveAutoSpeakEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(AUTO_SPEAK_STORAGE_KEY, '1');
+    else localStorage.removeItem(AUTO_SPEAK_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 // Generation budget. maxDecodeTokens is a CAP, not a target — short answers
 // stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
 // run further; it doesn't slow short chats. Was 256, which truncated real
@@ -251,6 +280,16 @@ export function App() {
     enabled: ttsHostEnabled,
     createWorker: createTtsWorker,
   });
+
+  // Auto-speak replies — consumption preference, see AUTO_SPEAK_STORAGE_KEY's
+  // doc comment above. Not part of `cap` (doesn't change what this tab
+  // advertises), so it lives here just to persist + thread down, mirroring
+  // the ASR/TTS host toggles' state shape without touching the cap memo.
+  const [autoSpeakEnabled, setAutoSpeakEnabled] = useState(() => loadAutoSpeakEnabled());
+  const setAutoSpeakEnabledPersisted = useCallback((enabled: boolean) => {
+    setAutoSpeakEnabled(enabled);
+    saveAutoSpeakEnabled(enabled);
+  }, []);
 
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
@@ -322,6 +361,8 @@ export function App() {
         ttsHost={ttsHost}
         ttsHostEnabled={ttsHostEnabled}
         onToggleTtsHost={setTtsHostEnabledPersisted}
+        autoSpeakEnabled={autoSpeakEnabled}
+        onToggleAutoSpeak={setAutoSpeakEnabledPersisted}
       />
     </MeshProvider>
   );
@@ -340,10 +381,18 @@ function Dashboard(props: {
   ttsHost: UseTtsHostHandle;
   ttsHostEnabled: boolean;
   onToggleTtsHost: (enabled: boolean) => void;
+  autoSpeakEnabled: boolean;
+  onToggleAutoSpeak: (enabled: boolean) => void;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
   const roster = useMeshRoster();
+  // Consumption-side reachability for the "Auto-speak replies" toggle
+  // (ToolContributionPanel) — same resolution ChatPane's own `ttsReachable`
+  // uses: this tab hosts TTS, or some roster peer advertises `TTS_SKILL`.
+  // Computed here (not just inside ChatPane) because the toggle itself
+  // lives in the sidebar's ToolContributionPanel, not ChatPane.
+  const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
 
   // Trim the assembled prompt to leave room for the model's own generation
   // within the KV window — see MAX_DECODE_TOKENS. Floored so a small ctx never
@@ -982,6 +1031,7 @@ function Dashboard(props: {
           }}
           speechHost={speechHost}
           ttsHost={ttsHost}
+          autoSpeak={props.autoSpeakEnabled}
           callTool={meshToolsHandle.callTool}
         />
         <MeshSidebar
@@ -1043,6 +1093,11 @@ function Dashboard(props: {
             onToggleEnabled: props.onToggleTtsHost,
             ready: ttsHost.ready,
             error: ttsHost.error,
+          }}
+          autoSpeak={{
+            enabled: props.autoSpeakEnabled,
+            onToggleEnabled: props.onToggleAutoSpeak,
+            reachable: ttsReachable,
           }}
           modelFolder={modelFolder}
           modelFolderDownloadUrl={modelConfig.downloadUrl}

@@ -50,12 +50,27 @@ export interface ToolContributionTtsProps {
   error: string | null;
 }
 
+/**
+ * "Auto-speak replies" — a CONSUMPTION preference ("read replies aloud to
+ * me"), not a hosting one, so it's distinct from `ToolContributionTtsProps`
+ * above: usable whenever TTS is reachable at all (this tab hosts it, OR a
+ * roster peer advertises `TTS_SKILL`), never gated on THIS tab's own
+ * `ttsHost.enabled`.
+ */
+export interface ToolContributionAutoSpeakProps {
+  enabled: boolean;
+  onToggleEnabled: (enabled: boolean) => void;
+  /** True when some TTS target (local host or roster peer) is reachable. */
+  reachable: boolean;
+}
+
 export function ToolContributionPanel(props: {
   tools: UseToolContributionHandle;
   speechHost: ToolContributionSpeechProps;
   ttsHost: ToolContributionTtsProps;
+  autoSpeak: ToolContributionAutoSpeakProps;
 }) {
-  const { tools, speechHost, ttsHost } = props;
+  const { tools, speechHost, ttsHost, autoSpeak } = props;
   const [mcpUrl, setMcpUrl] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
@@ -159,6 +174,23 @@ export function ToolContributionPanel(props: {
           <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
         )}
         {ttsHost.error && <span className="tool-contrib-speech-error">{ttsHost.error}</span>}
+      </div>
+      <div className="tool-contrib-speech tool-contrib-auto-speak">
+        <label
+          className="tool-contrib-row"
+          title="Speaks each assistant reply aloud automatically, the moment it finishes streaming — no 🔊 click needed."
+        >
+          <input
+            type="checkbox"
+            checked={autoSpeak.enabled}
+            onChange={(e) => autoSpeak.onToggleEnabled(e.target.checked)}
+          />
+          <span className="tool-contrib-name">🗣 Auto-speak replies</span>
+        </label>
+        <p className="tool-contrib-sub">Hands-free listening: every reply is read aloud as soon as it's done.</p>
+        {autoSpeak.enabled && !autoSpeak.reachable && (
+          <span className="tool-contrib-speech-status">needs a TTS host on the mesh</span>
+        )}
       </div>
     </section>
   );
