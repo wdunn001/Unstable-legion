@@ -62,6 +62,7 @@ ENV VITE_TURN_URLS=$VITE_TURN_URLS \
     VITE_OPENPANEL_SCRIPT_URL=$VITE_OPENPANEL_SCRIPT_URL
 
 RUN npm run build -w @unstable-legion/core \
+ && npm run build -w @unstable-legion/speech \
  && npm run build -w @unstable-legion/react \
  && npm run build -w @unstable-legion/chat \
  && npm run build -w @unstable-legion/demo -- --base=/classic/
