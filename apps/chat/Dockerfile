@@ -17,7 +17,11 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+# NB: package-lock.json is intentionally NOT copied — it may be generated on a
+# non-musl platform, and npm (#4828) then fails to install rollup's musl binary
+# (@rollup/rollup-linux-x64-musl) on this node:20-alpine base. Letting `npm
+# install` resolve fresh on the build platform installs the right optional deps.
+COPY package.json ./
 COPY packages/mesh-core/package.json packages/mesh-core/
 COPY packages/mesh-react/package.json packages/mesh-react/
 COPY packages/speech-engines/package.json packages/speech-engines/
