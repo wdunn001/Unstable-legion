@@ -13,6 +13,28 @@
  */
 import type { AsrTranscribeContent } from '@unstable-legion/core';
 
+/**
+ * Model-load progress, shared by every engine factory's optional
+ * `onProgress` — a deliberately loose shape (every field optional) so it
+ * can carry transformers.js' `ProgressCallback` payload (`initiate` /
+ * `download` / `progress` / `done` / `ready` stages, see
+ * `@huggingface/transformers`' `utils/core.js`) AND kokoro-js'
+ * `from_pretrained` progress callback (the same transformers.js type
+ * under the hood) without importing either's internal type. Consumers
+ * (the workers' `warmup` handlers) forward this straight through to the
+ * main thread as a `progress` response — see `worker.ts`/`ttsWorker.ts`.
+ */
+export interface EngineLoadProgress {
+  /** e.g. `'initiate'`, `'download'`, `'progress'`, `'done'`, `'ready'`. */
+  status?: string;
+  /** The file currently being fetched, when the engine reports one. */
+  file?: string;
+  /** 0-100. */
+  progress?: number;
+  loaded?: number;
+  total?: number;
+}
+
 /** Decoded, mono, ready-to-transcribe audio. */
 export interface SpeechEngineInput {
   /** Mono PCM samples in [-1, 1]. */

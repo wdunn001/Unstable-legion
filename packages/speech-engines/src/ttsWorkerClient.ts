@@ -12,14 +12,26 @@
  * `audio/wav` clip a peer can ship over `tc` and any consumer can
  * `decodeAudioData` without needing to know the engine's native sample
  * rate out of band.
+ *
+ * `warmup()` mirrors `SpeechWorkerClient.warmup()` exactly — posts a
+ * `TtsWorkerWarmupRequest`, resolves once the worker replies `ready`,
+ * rejects on `error`, forwards `progress` messages to the caller. See
+ * that method's doc for the full rationale (`ready` = "model loaded").
  */
 import type { TtsSynthesizeArgs, TtsSynthesizeContent } from '@unstable-legion/core';
 import type { TtsWorkerRequest, TtsWorkerResponse } from './ttsWorker.js';
+import type { EngineLoadProgress } from './types.js';
 import { encodeWavBase64 } from './wavEncode.js';
 
 type PendingEntry =
   | { kind: 'synthesize'; resolve: (v: TtsSynthesizeContent) => void; reject: (e: Error) => void }
-  | { kind: 'voices'; resolve: (v: string[]) => void; reject: (e: Error) => void };
+  | { kind: 'voices'; resolve: (v: string[]) => void; reject: (e: Error) => void }
+  | {
+      kind: 'warmup';
+      resolve: (engine: string) => void;
+      reject: (e: Error) => void;
+      onProgress?: (p: EngineLoadProgress) => void;
+    };
 
 export class TtsWorkerClient {
   private nextId = 1;
@@ -37,10 +49,20 @@ export class TtsWorkerClient {
   private onMessage(msg: TtsWorkerResponse): void {
     const pending = this.pending.get(msg.id);
     if (!pending) return;
+    if (msg.type === 'progress') {
+      // Non-terminal: a warmup can report many of these before its
+      // matching `ready`/`error` — don't delete the pending entry.
+      if (pending.kind === 'warmup') pending.onProgress?.(msg);
+      return;
+    }
     this.pending.delete(msg.id);
 
     if (msg.type === 'error') {
       pending.reject(new Error(msg.message));
+      return;
+    }
+    if (msg.type === 'ready' && pending.kind === 'warmup') {
+      pending.resolve(msg.engine);
       return;
     }
     if (msg.type === 'voices' && pending.kind === 'voices') {
@@ -90,6 +112,30 @@ export class TtsWorkerClient {
     const req: TtsWorkerRequest = { type: 'listVoices', id };
     return new Promise<string[]>((resolve, reject) => {
       this.pending.set(id, { kind: 'voices', resolve, reject });
+      this.worker.postMessage(req);
+    });
+  }
+
+  /**
+   * Load the Kokoro engine without synthesizing anything — resolves once
+   * the worker reports `ready`, rejects on `error`. `onProgress` is
+   * called for every `progress` message in between (a Cache Storage hit
+   * may skip straight to `ready` with none). See module doc.
+   */
+  warmup(onProgress?: (p: EngineLoadProgress) => void): Promise<void> {
+    const id = this.nextId++;
+    console.debug(`[legion-speech] tts client: warmup #${id}`);
+    const req: TtsWorkerRequest = { type: 'warmup', id };
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, {
+        kind: 'warmup',
+        resolve: (engine) => {
+          console.debug(`[legion-speech] tts client: warmup #${id} ready (${engine})`);
+          resolve();
+        },
+        reject,
+        onProgress,
+      });
       this.worker.postMessage(req);
     });
   }

@@ -1183,6 +1183,9 @@ code {
 .tool-contrib-speech-error {
   color: var(--warn);
 }
+.tool-contrib-speech-ready {
+  color: var(--chip-fg);
+}
 .tool-contrib-wake-phrase-input {
   width: 100%;
   box-sizing: border-box;
@@ -1283,6 +1286,12 @@ code {
 }
 .chat-notice-wake {
   color: var(--muted);
+  font-size: 0.8rem;
+}
+.chat-notice-wake-loading {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
   font-size: 0.8rem;
 }
 .host-error-icon,

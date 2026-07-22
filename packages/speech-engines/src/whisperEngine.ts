@@ -35,7 +35,7 @@
  * CDN to self-host).
  */
 import type { AsrTranscribeContent } from '@unstable-legion/core';
-import type { SpeechEngine, SpeechEngineInput } from './types.js';
+import type { EngineLoadProgress, SpeechEngine, SpeechEngineInput } from './types.js';
 
 /** Hugging Face Hub — primary weight source (HF-layout `{model}/resolve/{rev}/`). */
 export const HF_MODEL_HOST = 'https://huggingface.co/';
@@ -68,6 +68,14 @@ export interface WhisperEngineOptions {
    * public CDN. Set to the Legion CDN wasm mirror to self-host.
    */
   wasmPaths?: string;
+  /**
+   * Forwarded to transformers.js' `pipeline(..., { progress_callback })` —
+   * lets a caller (the worker's `warmup` handler, see `worker.ts`) surface
+   * download/init progress on the FIRST load. transformers.js only invokes
+   * this on a cache miss; a warm Cache Storage hit resolves without ever
+   * calling it, which is fine — there's nothing to report.
+   */
+  onProgress?: (p: EngineLoadProgress) => void;
 }
 
 type AsrPipeline = (
@@ -123,6 +131,7 @@ export async function createWhisperEngine(opts: WhisperEngineOptions = {}): Prom
         env.remoteHost = host;
         const pipelineOpts: Record<string, unknown> = { device: candidate };
         if (opts.dtype) pipelineOpts.dtype = opts.dtype;
+        if (opts.onProgress) pipelineOpts.progress_callback = opts.onProgress;
         console.debug(`[legion-speech] whisper: loading ${modelId} device=${candidate} from ${host} … (first load downloads the model)`);
         transcriber = (await pipeline(
           'automatic-speech-recognition',

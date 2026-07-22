@@ -34,6 +34,7 @@ export type {
   TtsEngineInput,
   TtsEngineOutput,
   TtsEngineFactory,
+  EngineLoadProgress,
 } from './types.js';
 export {
   createWhisperEngine,
@@ -52,8 +53,11 @@ export {
   type SpeechWorkerEngineKind,
   type SpeechWorkerRequest,
   type SpeechWorkerTranscribeRequest,
+  type SpeechWorkerWarmupRequest,
   type SpeechWorkerResponse,
   type SpeechWorkerResultResponse,
+  type SpeechWorkerReadyResponse,
+  type SpeechWorkerProgressResponse,
   type SpeechWorkerErrorResponse,
 } from './worker.js';
 export { SpeechWorkerClient, type SpeechWorkerClientOptions } from './workerClient.js';
@@ -71,9 +75,12 @@ export {
   type TtsWorkerRequest,
   type TtsWorkerSynthesizeRequest,
   type TtsWorkerListVoicesRequest,
+  type TtsWorkerWarmupRequest,
   type TtsWorkerResponse,
   type TtsWorkerResultResponse,
   type TtsWorkerVoicesResponse,
+  type TtsWorkerReadyResponse,
+  type TtsWorkerProgressResponse,
   type TtsWorkerErrorResponse,
 } from './ttsWorker.js';
 export { TtsWorkerClient } from './ttsWorkerClient.js';

@@ -31,7 +31,7 @@
  * failover.
  */
 import type { AsrTranscribeContent } from '@unstable-legion/core';
-import type { SpeechEngine, SpeechEngineInput } from './types.js';
+import type { EngineLoadProgress, SpeechEngine, SpeechEngineInput } from './types.js';
 
 /** Hugging Face Hub — primary weight source (HF-layout `{model}/resolve/{rev}/`). */
 export const HF_MODEL_HOST = 'https://huggingface.co/';
@@ -68,6 +68,9 @@ export interface MoonshineEngineOptions {
    * public CDN. Set to the Legion CDN wasm mirror to self-host.
    */
   wasmPaths?: string;
+  /** Forwarded to transformers.js' `pipeline(..., { progress_callback })`
+   * — see `whisperEngine.ts`'s identical option for the full rationale. */
+  onProgress?: (p: EngineLoadProgress) => void;
 }
 
 type AsrPipeline = (
@@ -125,6 +128,7 @@ export async function createMoonshineEngine(opts: MoonshineEngineOptions = {}): 
         const dtype = opts.dtype ?? DEFAULT_DTYPE[candidate];
         console.debug(`[legion-speech] moonshine: loading ${modelId} device=${candidate} dtype=${dtype} from ${host} … (first load downloads the model)`);
         const pipelineOpts: Record<string, unknown> = { device: candidate, dtype };
+        if (opts.onProgress) pipelineOpts.progress_callback = opts.onProgress;
         transcriber = (await pipeline(
           'automatic-speech-recognition',
           modelId,

@@ -1,11 +1,13 @@
 /**
  * Web Worker entry that owns one `TtsEngine` instance (lazily created on
- * the first `synthesize` request) and answers `TtsWorkerRequest`
+ * the first `synthesize`/`warmup` request) and answers `TtsWorkerRequest`
  * messages. Mirrors `worker.ts` (ASR) exactly — same "host app
  * constructs this via `new Worker(new URL('./ttsWorker.ts',
  * import.meta.url), { type: 'module' })`" convention, same
- * request/response idiom — reverse direction: text in, raw Float32 PCM
- * out.
+ * request/response idiom, same `warmup`/`ready`/`progress` protocol (see
+ * `worker.ts`'s doc for the full rationale: `ready` should mean "model
+ * loaded", not "worker constructed") — reverse direction: text in, raw
+ * Float32 PCM out.
  *
  * Unlike ASR, there is NO decode step here: Kokoro's `generate()`
  * (`kokoroEngine.ts`) returns already-decoded Float32 samples directly,
@@ -22,7 +24,7 @@
  * Kept DOM-lib only (no `WebWorker` lib), same idiom as `worker.ts`.
  */
 import { createKokoroEngine } from './kokoroEngine.js';
-import type { TtsEngine } from './types.js';
+import type { EngineLoadProgress, TtsEngine } from './types.js';
 
 export interface TtsWorkerSynthesizeRequest {
   type: 'synthesize';
@@ -37,7 +39,16 @@ export interface TtsWorkerListVoicesRequest {
   id: number;
 }
 
-export type TtsWorkerRequest = TtsWorkerSynthesizeRequest | TtsWorkerListVoicesRequest;
+/** Load (or wait for the in-flight load of) the Kokoro engine and resolve
+ * once it's ready — no synthesis. `TtsWorkerClient.warmup()` uses this so
+ * `ready` means "model loaded"; see `worker.ts`'s identical request for
+ * the full rationale. */
+export interface TtsWorkerWarmupRequest {
+  type: 'warmup';
+  id: number;
+}
+
+export type TtsWorkerRequest = TtsWorkerSynthesizeRequest | TtsWorkerListVoicesRequest | TtsWorkerWarmupRequest;
 
 export interface TtsWorkerResultResponse {
   type: 'result';
@@ -65,18 +76,38 @@ export interface TtsWorkerVoicesResponse {
   voices: string[];
 }
 
+/** Reply to a `warmup` request once `getEngine` resolves. */
+export interface TtsWorkerReadyResponse {
+  type: 'ready';
+  id: number;
+  /** The loaded engine's stable id, e.g. `kokoro-82m/webgpu`. */
+  engine: string;
+}
+
+/** Forwarded from `createKokoroEngine`'s `onProgress` while a `warmup`
+ * request's model load is in flight — see `EngineLoadProgress`'s doc. */
+export interface TtsWorkerProgressResponse extends EngineLoadProgress {
+  type: 'progress';
+  id: number;
+}
+
 export interface TtsWorkerErrorResponse {
   type: 'error';
   id: number;
   message: string;
 }
 
-export type TtsWorkerResponse = TtsWorkerResultResponse | TtsWorkerVoicesResponse | TtsWorkerErrorResponse;
+export type TtsWorkerResponse =
+  | TtsWorkerResultResponse
+  | TtsWorkerVoicesResponse
+  | TtsWorkerReadyResponse
+  | TtsWorkerProgressResponse
+  | TtsWorkerErrorResponse;
 
 let enginePromise: Promise<TtsEngine> | undefined;
 
-function getEngine(): Promise<TtsEngine> {
-  if (!enginePromise) enginePromise = createKokoroEngine();
+function getEngine(onProgress?: (p: EngineLoadProgress) => void): Promise<TtsEngine> {
+  if (!enginePromise) enginePromise = createKokoroEngine({ onProgress });
   return enginePromise;
 }
 
@@ -86,6 +117,20 @@ function post(msg: TtsWorkerResponse): void {
 
 self.onmessage = (ev: MessageEvent<TtsWorkerRequest>) => {
   const req = ev.data;
+  if (req.type === 'warmup') {
+    void (async () => {
+      try {
+        console.debug(`[legion-speech] tts worker: warmup req #${req.id} — loading engine…`);
+        const engine = await getEngine((p) => post({ type: 'progress', id: req.id, ...p }));
+        console.debug(`[legion-speech] tts worker: warmup #${req.id} done — engine ready (${engine.id})`);
+        post({ type: 'ready', id: req.id, engine: engine.id });
+      } catch (err) {
+        console.error(`[legion-speech] tts worker: warmup #${req.id} FAILED`, err);
+        post({ type: 'error', id: req.id, message: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return;
+  }
   if (req.type === 'synthesize') {
     void (async () => {
       try {

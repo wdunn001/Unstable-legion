@@ -10,6 +10,7 @@
  */
 import { useState } from 'react';
 import type { McpError } from '@unstable-legion/core';
+import type { EngineLoadProgress } from '@unstable-legion/speech';
 import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
 
 function describeMcpError(err: McpError): string {
@@ -25,6 +26,22 @@ function describeMcpError(err: McpError): string {
   }
 }
 
+/**
+ * Renders a host toggle's `loading`/`progress` as one short status line —
+ * `useSpeechHost`/`useTtsHost`'s `warmup()` reports a percentage on most
+ * loads, but a warm Cache Storage hit can resolve `ready` with zero
+ * `progress` events, and even a cold load's very first tick arrives
+ * before transformers.js has a byte count yet — so this degrades through
+ * "% known" -> "status known" -> a plain fallback rather than showing
+ * nothing or a stuck "0%".
+ */
+function formatLoadProgress(p: EngineLoadProgress | null): string {
+  if (p && typeof p.progress === 'number') return `loading model… ${Math.round(p.progress)}%`;
+  if (p?.status === 'initiate') return 'loading model… starting download';
+  if (p?.status === 'done') return 'loading model… finishing up';
+  return 'loading model…';
+}
+
 const BUILTIN_HINTS: Record<string, string> = {
   current_time: 'Answer "what time is it" from your clock',
   ping: 'Echo + mesh hop latency probe',
@@ -34,9 +51,16 @@ const BUILTIN_HINTS: Record<string, string> = {
 export interface ToolContributionSpeechProps {
   enabled: boolean;
   onToggleEnabled: (enabled: boolean) => void;
-  /** True once the Whisper worker is loaded and the `transcribe` tool is
-   * registered/advertised — see `useSpeechHost`. */
+  /** True once the Whisper MODEL has finished loading (not just the
+   * worker constructed) and the `transcribe` tool is registered/
+   * advertised — see `useSpeechHost`. */
   ready: boolean;
+  /** True while the model is downloading/initializing, between `enabled`
+   * and `ready` — see `useSpeechHost`. */
+  loading: boolean;
+  /** Most recent load-progress event, for the "loading model… N%" status
+   * line — see `formatLoadProgress`. */
+  progress: EngineLoadProgress | null;
   error: string | null;
 }
 
@@ -44,9 +68,16 @@ export interface ToolContributionSpeechProps {
 export interface ToolContributionTtsProps {
   enabled: boolean;
   onToggleEnabled: (enabled: boolean) => void;
-  /** True once the Kokoro worker is loaded and the `synthesize` tool is
-   * registered/advertised — see `useTtsHost`. */
+  /** True once the Kokoro MODEL has finished loading (not just the
+   * worker constructed) and the `synthesize` tool is registered/
+   * advertised — see `useTtsHost`. */
   ready: boolean;
+  /** True while the model is downloading/initializing, between `enabled`
+   * and `ready` — see `useTtsHost`. */
+  loading: boolean;
+  /** Most recent load-progress event, for the "loading model… N%" status
+   * line — see `formatLoadProgress`. */
+  progress: EngineLoadProgress | null;
   error: string | null;
 }
 
@@ -188,8 +219,11 @@ export function ToolContributionPanel(props: {
           <span className="tool-contrib-name">🎤 Host speech-to-text (uses your GPU)</span>
         </label>
         <p className="tool-contrib-sub">Advertises asr.transcribe to the mesh so other tabs can send you their mic audio.</p>
-        {speechHost.enabled && !speechHost.ready && !speechHost.error && (
-          <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
+        {speechHost.enabled && speechHost.loading && !speechHost.error && (
+          <span className="tool-contrib-speech-status">{formatLoadProgress(speechHost.progress)}</span>
+        )}
+        {speechHost.enabled && speechHost.ready && (
+          <span className="tool-contrib-speech-status tool-contrib-speech-ready">ready</span>
         )}
         {speechHost.error && <span className="tool-contrib-speech-error">{speechHost.error}</span>}
       </div>
@@ -203,8 +237,11 @@ export function ToolContributionPanel(props: {
           <span className="tool-contrib-name">🔊 Host text-to-speech (uses your GPU)</span>
         </label>
         <p className="tool-contrib-sub">Advertises tts.synthesize to the mesh so other tabs can have you speak replies aloud.</p>
-        {ttsHost.enabled && !ttsHost.ready && !ttsHost.error && (
-          <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
+        {ttsHost.enabled && ttsHost.loading && !ttsHost.error && (
+          <span className="tool-contrib-speech-status">{formatLoadProgress(ttsHost.progress)}</span>
+        )}
+        {ttsHost.enabled && ttsHost.ready && (
+          <span className="tool-contrib-speech-status tool-contrib-speech-ready">ready</span>
         )}
         {ttsHost.error && <span className="tool-contrib-speech-error">{ttsHost.error}</span>}
       </div>

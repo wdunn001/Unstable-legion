@@ -1212,12 +1212,16 @@ function Dashboard(props: {
             enabled: asrHostEnabled,
             onToggleEnabled: props.onToggleAsrHost,
             ready: speechHost.ready,
+            loading: speechHost.loading,
+            progress: speechHost.progress,
             error: speechHost.error,
           }}
           ttsHost={{
             enabled: ttsHostEnabled,
             onToggleEnabled: props.onToggleTtsHost,
             ready: ttsHost.ready,
+            loading: ttsHost.loading,
+            progress: ttsHost.progress,
             error: ttsHost.error,
           }}
           autoSpeak={{

@@ -10,6 +10,7 @@ import {
   type UseTtsHostHandle,
 } from '@unstable-legion/react';
 import { ASR_SKILL, TTS_SKILL } from '@unstable-legion/core';
+import type { EngineLoadProgress } from '@unstable-legion/speech';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import { toSpeakableText } from '../speakableText.js';
@@ -75,6 +76,15 @@ export interface ChatPaneProps {
  * effectively becomes open-mic. */
 const WAKE_ACTIVE_WINDOW_MS = 20_000;
 
+/** Formats Moonshine's `progress` for the wake-ear status line — mirrors
+ * `ToolContributionPanel.tsx`'s `formatLoadProgress`, kept as its own
+ * tiny copy (same discipline this codebase already uses for small
+ * cross-file helpers, e.g. `useMoonshineTranscriber.ts`'s base64 helper). */
+function formatMoonshineProgress(p: EngineLoadProgress | null): string {
+  if (p && typeof p.progress === 'number') return `loading… ${Math.round(p.progress)}%`;
+  return 'loading…';
+}
+
 export function ChatPane(props: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -99,6 +109,15 @@ export function ChatPane(props: ChatPaneProps) {
   // leaves — and this hook has no way to flip the PERSISTED toggle off
   // itself, so it just stops actually listening instead).
   const asrReachable = props.speechHost.ready || roster.some((r) => r.skills.includes(ASR_SKILL));
+  // Conversation mode needs BOTH directions reachable to do anything —
+  // while THIS tab's own host(s) are still warming (see `useSpeechHost`/
+  // `useTtsHost`'s `loading`) and no mesh peer covers the gap yet, the
+  // mode is "on" but genuinely inert. Surfaced below so it reads as
+  // "loading" rather than silently appearing active (see the
+  // `chat-notice-wake-loading` block).
+  const conversationReachable = asrReachable && ttsReachable;
+  const conversationModelsLoading =
+    props.conversationMode && !conversationReachable && (props.speechHost.loading || props.ttsHost.loading);
   const speaker = useTtsSpeaker({
     callTool: props.callTool,
     synthesizeLocal: props.ttsHost.ready ? props.ttsHost.synthesizeLocal : undefined,
@@ -382,6 +401,14 @@ export function ChatPane(props: ChatPaneProps) {
           <span className="chat-notice-message">Speak failed: {speakError}</span>
         </div>
       )}
+      {conversationModelsLoading && (
+        <div className="chat-notice chat-notice-wake-loading" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            ⏳
+          </span>
+          <span className="chat-notice-message">💬 conversation mode: loading speech models…</span>
+        </div>
+      )}
       {props.conversationMode && (
         <div className="chat-notice chat-notice-wake-ear" aria-live="polite">
           <span className="chat-notice-icon" aria-hidden="true">
@@ -392,11 +419,19 @@ export function ChatPane(props: ChatPaneProps) {
               ? 'wake-ear: mesh ASR (Moonshine failed to load)'
               : moonshineTranscriber.ready
                 ? 'wake-ear: Moonshine (local)'
-                : 'wake-ear: mesh ASR (Moonshine loading…)'}
+                : moonshineTranscriber.loading
+                  ? `wake-ear: mesh ASR (Moonshine ${formatMoonshineProgress(moonshineTranscriber.progress)})`
+                  : 'wake-ear: mesh ASR (Moonshine loading…)'}
           </span>
         </div>
       )}
-      {props.conversationMode && props.requireWakeWord && (
+      {/* Suppressed while `conversationModelsLoading` — the loading notice
+          above already says why nothing is happening yet; showing this
+          block's 🟢/red "active"/"listening" copy on top of it would read
+          as contradictory (mode looks live when it can't actually hear or
+          reply). Once a host warms (or a mesh peer covers the gap) this
+          renders as usual. */}
+      {props.conversationMode && props.requireWakeWord && !conversationModelsLoading && (
         <div className="chat-notice chat-notice-wake" aria-live="polite">
           <span className="chat-notice-icon" aria-hidden="true">
             {wakeActive ? '🟢' : '🔴'}

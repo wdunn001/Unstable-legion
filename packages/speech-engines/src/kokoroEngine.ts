@@ -24,7 +24,7 @@
  * WebAudio decode step) — see `ttsWorker.ts`'s module doc for why that
  * matters for where this engine is allowed to run.
  */
-import type { TtsEngine, TtsEngineInput, TtsEngineOutput } from './types.js';
+import type { EngineLoadProgress, TtsEngine, TtsEngineInput, TtsEngineOutput } from './types.js';
 
 /** Hugging Face Hub — primary weight source (HF-layout `{model}/resolve/{rev}/`). */
 export const HF_MODEL_HOST = 'https://huggingface.co/';
@@ -64,6 +64,15 @@ export interface KokoroEngineOptions {
    * public CDN. Set to the Legion CDN wasm mirror to self-host.
    */
   wasmPaths?: string;
+  /**
+   * Forwarded to kokoro-js' `KokoroTTS.from_pretrained(..., {
+   * progress_callback })` — kokoro-js's own `.d.ts` (`node_modules/
+   * kokoro-js/types/kokoro.d.ts`) documents this as an
+   * `@huggingface/transformers` `ProgressCallback`, the SAME shape
+   * `whisperEngine.ts`'s identical option forwards to `pipeline()` — see
+   * that option's doc for the full rationale.
+   */
+  onProgress?: (p: EngineLoadProgress) => void;
 }
 
 interface KokoroGeneratedAudio {
@@ -131,7 +140,11 @@ export async function createKokoroEngine(opts: KokoroEngineOptions = {}): Promis
         env.remoteHost = host;
         const dtype = opts.dtype ?? DEFAULT_DTYPE[candidate];
         console.debug(`[legion-speech] kokoro: loading ${modelId} device=${candidate} dtype=${dtype} from ${host} … (first load downloads the model)`);
-        tts = await KokoroTTS.from_pretrained(modelId, { dtype, device: candidate });
+        tts = await KokoroTTS.from_pretrained(modelId, {
+          dtype,
+          device: candidate,
+          ...(opts.onProgress ? { progress_callback: opts.onProgress } : {}),
+        });
         device = candidate;
         console.debug(`[legion-speech] kokoro: loaded ${modelId} on ${candidate} from ${host}`);
         break outer;

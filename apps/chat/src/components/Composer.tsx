@@ -148,9 +148,16 @@ export function Composer(props: ComposerProps) {
     setListenEnabled((cur) => !cur);
   }
 
+  // "Loading…" only makes sense when THIS tab's own host is the thing
+  // we're waiting on — if a mesh peer already covers ASR, `asrReachable`
+  // is already true and this branch never applies.
+  const asrUnreachableReason = speechHost.loading
+    ? 'Loading speech model…'
+    : 'Enable Host speech-to-text, or wait for a peer that offers it';
+
   const micDisabled = props.disabled || !asrReachable || transcribing;
   const micTitle = !asrReachable
-    ? 'Enable Host speech-to-text, or wait for a peer that offers it'
+    ? asrUnreachableReason
     : mic.recording
       ? 'Stop recording'
       : 'Speak your message';
@@ -159,7 +166,7 @@ export function Composer(props: ComposerProps) {
   const listenTitle = props.conversationMode
     ? 'Conversation mode owns the mic right now — turn it off to use manual Listen'
     : !asrReachable
-      ? 'Enable Host speech-to-text, or wait for a peer that offers it'
+      ? asrUnreachableReason
       : listenEnabled
         ? 'Stop hands-free listening'
         : 'Start hands-free listening — speech is transcribed into the composer as you talk';

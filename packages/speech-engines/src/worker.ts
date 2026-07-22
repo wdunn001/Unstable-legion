@@ -1,12 +1,12 @@
 /**
  * Web Worker entry that owns one `SpeechEngine` PER KIND (lazily created
- * on the first `transcribe` request that asks for it, then memoized) and
- * answers `SpeechWorkerRequest` messages. The host app constructs this via
- * `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })`
- * (Vite static-worker convention, matching `apps/demo`'s existing
- * `stageWorker.ts` / `llmWorker.ts`) — `SpeechWorkerClient` below is the
- * request/response wrapper most callers should use instead of talking to
- * `postMessage` directly.
+ * on the first `transcribe`/`warmup` request that asks for it, then
+ * memoized) and answers `SpeechWorkerRequest` messages. The host app
+ * constructs this via `new Worker(new URL('./worker.ts', import.meta.url),
+ * { type: 'module' })` (Vite static-worker convention, matching
+ * `apps/demo`'s existing `stageWorker.ts` / `llmWorker.ts`) —
+ * `SpeechWorkerClient` below is the request/response wrapper most callers
+ * should use instead of talking to `postMessage` directly.
  *
  * Two engines share this one worker file rather than forking it: Whisper
  * (`whisperEngine.ts` — manual push-to-talk, "🎙 Listen", and mesh-hosted
@@ -20,13 +20,23 @@
  * `SpeechWorkerClient`'s constructor `engine` option) never constructs the
  * other.
  *
+ * `warmup` — added so `ready` (in `@unstable-legion/react`'s
+ * `useSpeechHost`/`useMoonshineTranscriber`) can mean "model loaded", not
+ * just "worker constructed". Hosts call `warmup` right after constructing
+ * the client instead of waiting for the first `transcribe`; this posts
+ * `progress` messages as the model downloads and `ready`/`error` once
+ * `getEngine` settles. `transcribe` itself is UNCHANGED — it still calls
+ * `getEngine` (memoized, so a transcribe that arrives before warmup
+ * finishes just piggybacks on the same in-flight load, and one that
+ * arrives after warmup gets the already-resolved engine instantly).
+ *
  * Kept DOM-lib only (no `WebWorker` lib) to match this package's shared
  * tsconfig — `self` is cast through `Worker` at the postMessage boundary,
  * same idiom as `apps/demo/src/workers/stageWorker.ts`.
  */
 import { createWhisperEngine } from './whisperEngine.js';
 import { createMoonshineEngine } from './moonshineEngine.js';
-import type { SpeechEngine } from './types.js';
+import type { EngineLoadProgress, SpeechEngine } from './types.js';
 import type { AsrTranscribeContent } from '@unstable-legion/core';
 
 /** Which `SpeechEngine` backs a request/client. See module doc. */
@@ -51,12 +61,43 @@ export interface SpeechWorkerTranscribeRequest {
   engine?: SpeechWorkerEngineKind;
 }
 
-export type SpeechWorkerRequest = SpeechWorkerTranscribeRequest;
+/**
+ * Load (or wait for the in-flight load of) the engine of the given `kind`
+ * and resolve once it's ready — no transcription. `SpeechWorkerClient.
+ * warmup()` uses this to make `ready` mean "model loaded" instead of
+ * "worker constructed"; see module doc.
+ */
+export interface SpeechWorkerWarmupRequest {
+  type: 'warmup';
+  id: number;
+  /** Which `SpeechEngine` kind to warm. Default `'whisper'`, matching
+   * `SpeechWorkerTranscribeRequest.engine`'s default. */
+  engine?: SpeechWorkerEngineKind;
+}
+
+export type SpeechWorkerRequest = SpeechWorkerTranscribeRequest | SpeechWorkerWarmupRequest;
 
 export interface SpeechWorkerResultResponse {
   type: 'result';
   id: number;
   content: AsrTranscribeContent;
+}
+
+/** Reply to a `warmup` request once `getEngine` resolves — the model is
+ * loaded and a subsequent `transcribe` for this `engine` kind won't block
+ * on a download. */
+export interface SpeechWorkerReadyResponse {
+  type: 'ready';
+  id: number;
+  /** The loaded engine's stable id, e.g. `whisper-base/webgpu`. */
+  engine: string;
+}
+
+/** Forwarded from the engine factory's `onProgress` while a `warmup`
+ * request's model load is in flight — see `EngineLoadProgress`'s doc. */
+export interface SpeechWorkerProgressResponse extends EngineLoadProgress {
+  type: 'progress';
+  id: number;
 }
 
 export interface SpeechWorkerErrorResponse {
@@ -65,14 +106,19 @@ export interface SpeechWorkerErrorResponse {
   message: string;
 }
 
-export type SpeechWorkerResponse = SpeechWorkerResultResponse | SpeechWorkerErrorResponse;
+export type SpeechWorkerResponse =
+  | SpeechWorkerResultResponse
+  | SpeechWorkerReadyResponse
+  | SpeechWorkerProgressResponse
+  | SpeechWorkerErrorResponse;
 
 const enginePromises = new Map<SpeechWorkerEngineKind, Promise<SpeechEngine>>();
 
-function getEngine(kind: SpeechWorkerEngineKind): Promise<SpeechEngine> {
+function getEngine(kind: SpeechWorkerEngineKind, onProgress?: (p: EngineLoadProgress) => void): Promise<SpeechEngine> {
   let enginePromise = enginePromises.get(kind);
   if (!enginePromise) {
-    enginePromise = kind === 'moonshine' ? createMoonshineEngine() : createWhisperEngine();
+    enginePromise =
+      kind === 'moonshine' ? createMoonshineEngine({ onProgress }) : createWhisperEngine({ onProgress });
     enginePromises.set(kind, enginePromise);
   }
   return enginePromise;
@@ -84,6 +130,21 @@ function post(msg: SpeechWorkerResponse): void {
 
 self.onmessage = (ev: MessageEvent<SpeechWorkerRequest>) => {
   const req = ev.data;
+  if (req.type === 'warmup') {
+    void (async () => {
+      try {
+        const kind = req.engine ?? 'whisper';
+        console.debug(`[legion-speech] worker: warmup req #${req.id} — loading engine (${kind})…`);
+        const engine = await getEngine(kind, (p) => post({ type: 'progress', id: req.id, ...p }));
+        console.debug(`[legion-speech] worker: warmup #${req.id} done — engine ready (${engine.id})`);
+        post({ type: 'ready', id: req.id, engine: engine.id });
+      } catch (err) {
+        console.error(`[legion-speech] worker: warmup #${req.id} FAILED`, err);
+        post({ type: 'error', id: req.id, message: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return;
+  }
   if (req.type !== 'transcribe') return;
   void (async () => {
     try {
