@@ -249,6 +249,62 @@ function saveConversationModeEnabled(enabled: boolean): void {
   }
 }
 
+// 🔴/🟢 "Require wake word" opt-in (increment 3b) — gates 💬 conversation
+// mode so it only auto-sends after a wake phrase (see ChatPane's
+// `matchWakePhrase`/`WAKE_ACTIVE_WINDOW_MS`), rather than open-mic
+// responding to anything said while the mic's open. Default ON: unlike the
+// other consumption toggles above (which each add a NEW surprise on top of
+// silence), conversation mode's open-mic default is itself the surprising
+// behavior this increment tempers — a fresh install of conversation mode
+// should NOT respond to arbitrary household chatter.
+const REQUIRE_WAKE_WORD_STORAGE_KEY = 'unstable-legion-chat:require-wake-word-v1';
+
+function loadRequireWakeWordEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  try {
+    const raw = localStorage.getItem(REQUIRE_WAKE_WORD_STORAGE_KEY);
+    return raw === null ? true : raw === '1';
+  } catch {
+    return true;
+  }
+}
+
+function saveRequireWakeWordEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    // Unlike the other toggles' "absence == off" convention, this one
+    // defaults ON, so both states need an explicit stored value — '1'/'0'
+    // rather than set/remove.
+    localStorage.setItem(REQUIRE_WAKE_WORD_STORAGE_KEY, enabled ? '1' : '0');
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
+// The configurable wake phrase itself — mirrors PERSONA_STORAGE_KEY's plain
+// string persistence (not a boolean flag like the toggles above).
+const WAKE_PHRASE_STORAGE_KEY = 'unstable-legion-chat:wake-phrase-v1';
+const DEFAULT_WAKE_PHRASE = 'hey legion';
+
+function loadWakePhrase(): string {
+  if (typeof localStorage === 'undefined') return DEFAULT_WAKE_PHRASE;
+  try {
+    const raw = localStorage.getItem(WAKE_PHRASE_STORAGE_KEY);
+    return raw && raw.trim() ? raw : DEFAULT_WAKE_PHRASE;
+  } catch {
+    return DEFAULT_WAKE_PHRASE;
+  }
+}
+
+function saveWakePhrase(phrase: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(WAKE_PHRASE_STORAGE_KEY, phrase);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 // Generation budget. maxDecodeTokens is a CAP, not a target — short answers
 // stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
 // run further; it doesn't slow short chats. Was 256, which truncated real
@@ -328,6 +384,20 @@ export function App() {
     saveConversationModeEnabled(enabled);
   }, []);
 
+  // 🔴/🟢 Wake-word gate (increment 3b) — same persisted-preference shape as
+  // conversationModeEnabled immediately above; see REQUIRE_WAKE_WORD_STORAGE_KEY's
+  // doc comment for the default-ON rationale.
+  const [requireWakeWordEnabled, setRequireWakeWordEnabled] = useState(() => loadRequireWakeWordEnabled());
+  const setRequireWakeWordEnabledPersisted = useCallback((enabled: boolean) => {
+    setRequireWakeWordEnabled(enabled);
+    saveRequireWakeWordEnabled(enabled);
+  }, []);
+  const [wakePhrase, setWakePhrase] = useState(() => loadWakePhrase());
+  const setWakePhrasePersisted = useCallback((phrase: string) => {
+    setWakePhrase(phrase);
+    saveWakePhrase(phrase);
+  }, []);
+
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
     const skills: string[] = [];
@@ -402,6 +472,10 @@ export function App() {
         onToggleAutoSpeak={setAutoSpeakEnabledPersisted}
         conversationModeEnabled={conversationModeEnabled}
         onToggleConversationMode={setConversationModeEnabledPersisted}
+        requireWakeWordEnabled={requireWakeWordEnabled}
+        onToggleRequireWakeWord={setRequireWakeWordEnabledPersisted}
+        wakePhrase={wakePhrase}
+        onChangeWakePhrase={setWakePhrasePersisted}
       />
     </MeshProvider>
   );
@@ -424,6 +498,10 @@ function Dashboard(props: {
   onToggleAutoSpeak: (enabled: boolean) => void;
   conversationModeEnabled: boolean;
   onToggleConversationMode: (enabled: boolean) => void;
+  requireWakeWordEnabled: boolean;
+  onToggleRequireWakeWord: (enabled: boolean) => void;
+  wakePhrase: string;
+  onChangeWakePhrase: (phrase: string) => void;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
@@ -1078,6 +1156,8 @@ function Dashboard(props: {
           ttsHost={ttsHost}
           autoSpeak={props.autoSpeakEnabled}
           conversationMode={props.conversationModeEnabled}
+          requireWakeWord={props.requireWakeWordEnabled}
+          wakePhrase={props.wakePhrase}
           callTool={meshToolsHandle.callTool}
         />
         <MeshSidebar
@@ -1149,6 +1229,13 @@ function Dashboard(props: {
             enabled: props.conversationModeEnabled,
             onToggleEnabled: props.onToggleConversationMode,
             reachable: asrReachable && ttsReachable,
+          }}
+          wakeWord={{
+            requireEnabled: props.requireWakeWordEnabled,
+            onToggleRequireEnabled: props.onToggleRequireWakeWord,
+            phrase: props.wakePhrase,
+            onChangePhrase: props.onChangeWakePhrase,
+            conversationModeEnabled: props.conversationModeEnabled,
           }}
           modelFolder={modelFolder}
           modelFolderDownloadUrl={modelConfig.downloadUrl}

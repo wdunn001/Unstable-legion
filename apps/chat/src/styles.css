@@ -1183,6 +1183,20 @@ code {
 .tool-contrib-speech-error {
   color: var(--warn);
 }
+.tool-contrib-wake-phrase-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.tool-contrib-wake-phrase-input:disabled {
+  opacity: 0.5;
+}
 
 /* Tool trace chips above an assistant reply. */
 .msg-tool-trace {
@@ -1266,6 +1280,10 @@ code {
   border-color: var(--warn);
   color: var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.chat-notice-wake {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 .host-error-icon,
 .chat-notice-icon {

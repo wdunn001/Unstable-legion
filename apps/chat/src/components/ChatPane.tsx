@@ -11,6 +11,7 @@ import { ASR_SKILL, TTS_SKILL } from '@unstable-legion/core';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import { toSpeakableText } from '../speakableText.js';
+import { matchWakePhrase } from '../matchWakePhrase.js';
 import { VAD_ASSETS } from '../vadAssets.js';
 import type { ChatMessage } from '../db/threadStore.js';
 import type { CapacityView, ChatNoticeView } from '../viewmodels/meshViewModels.js';
@@ -50,8 +51,27 @@ export interface ChatPaneProps {
    * toggle (see `Composer`'s `conversationMode` prop) since both would
    * otherwise fight over the mic. */
   conversationMode: boolean;
+  /** 🔴/🟢 wake-phrase gate on conversation mode (increment 3b) — when true,
+   * `handleConversationTranscript` below drops any utterance that doesn't
+   * contain `wakePhrase` while "asleep" (see `WAKE_ACTIVE_WINDOW_MS`). Reuses
+   * the SAME VAD→Whisper transcript conversation mode already produces — no
+   * second ASR/wake-word model, just a phrase match over existing text (see
+   * `matchWakePhrase.ts`). No-op when `conversationMode` is off (nothing
+   * calls `handleConversationTranscript` in that case). */
+  requireWakeWord: boolean;
+  /** The phrase to listen for while asleep — normalized (lowercase,
+   * punctuation stripped, whitespace collapsed) on both sides before
+   * matching, see `matchWakePhrase`. */
+  wakePhrase: string;
   callTool: CallToolFn;
 }
+
+/** How long a wake (or a sent/replied-to turn) keeps conversation mode
+ * "active" — a follow-up utterance inside this window is sent as-is, no
+ * need to repeat the wake phrase. Chosen to comfortably cover "listen to
+ * the reply, then ask a quick follow-up" without staying open so long it
+ * effectively becomes open-mic. */
+const WAKE_ACTIVE_WINDOW_MS = 20_000;
 
 export function ChatPane(props: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -104,6 +124,27 @@ export function ChatPane(props: ChatPaneProps) {
   //     by the time `onTranscript` fires the state has already moved back
   //     to LISTENING — is auto-sent via `props.onSend`.
   //
+  // 🔴/🟢 WAKE-PHRASE GATE (increment 3b) — `lastTurnAtRef` is the timestamp
+  // of the most recent "the conversation is still going" event (a sent turn,
+  // or a reply finishing — see the auto-speak effect below), NOT React state:
+  // it's read/written from event handlers that fire far more often than a
+  // render needs to happen, and staying a ref means neither read nor write
+  // ever triggers one. `wakeActive` (state) exists ONLY to drive the small
+  // visible indicator below — same timestamp, just mirrored into state on a
+  // timer so the UI can show it without polling every render.
+  const lastTurnAtRef = useRef<number>(0);
+  const [wakeActive, setWakeActive] = useState(false);
+  const wakeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openWakeWindow = () => {
+    lastTurnAtRef.current = Date.now();
+    setWakeActive(true);
+    if (wakeTimeoutRef.current !== undefined) clearTimeout(wakeTimeoutRef.current);
+    wakeTimeoutRef.current = setTimeout(() => setWakeActive(false), WAKE_ACTIVE_WINDOW_MS);
+  };
+  useEffect(() => () => {
+    if (wakeTimeoutRef.current !== undefined) clearTimeout(wakeTimeoutRef.current);
+  }, []);
+
   // Both handlers read `props.busy`/`speaker.speaking` fresh from the
   // closure captured at the render that's current when the VAD event
   // actually fires (`useVadListen` re-points its internal callback ref
@@ -114,8 +155,37 @@ export function ChatPane(props: ChatPaneProps) {
       console.debug('[legion-speech] conversation: dropped utterance — assistant is generating');
       return;
     }
-    console.debug('[legion-speech] conversation: auto-send');
-    props.onSend(text);
+    if (!props.requireWakeWord) {
+      console.debug('[legion-speech] conversation: auto-send');
+      props.onSend(text);
+      return;
+    }
+    // Active window: already "awake" (a recent send or a reply just
+    // finished) — treat this utterance as a follow-up, no wake phrase
+    // needed, and slide the window forward so the back-and-forth can keep
+    // going without re-waking every turn.
+    if (Date.now() - lastTurnAtRef.current < WAKE_ACTIVE_WINDOW_MS) {
+      console.debug('[legion-speech] conversation: active window — auto-send follow-up');
+      openWakeWindow();
+      props.onSend(text);
+      return;
+    }
+    // Asleep: only a transcript that CONTAINS the wake phrase (lenient —
+    // filler before it, e.g. Whisper prepending "uh", still counts) opens
+    // the window. Anything else is not addressed to it — drop it, don't
+    // queue it.
+    const { woken, command } = matchWakePhrase(text, props.wakePhrase);
+    if (!woken) {
+      console.debug('[legion-speech] conversation: asleep — dropped (no wake phrase)');
+      return;
+    }
+    openWakeWindow();
+    if (command) {
+      console.debug('[legion-speech] conversation: woken — auto-send command');
+      props.onSend(command);
+    } else {
+      console.debug('[legion-speech] conversation: woken — waiting for the next utterance');
+    }
   };
   const handleConversationSpeechStart = () => {
     if (speaker.speaking) {
@@ -185,7 +255,15 @@ export function ChatPane(props: ChatPaneProps) {
   useEffect(() => {
     const prev = prevStreamingRef.current;
     prevStreamingRef.current = props.streamingMessageId;
-    if (!effectiveAutoSpeak || !prev || prev === props.streamingMessageId) return;
+    if (!prev || prev === props.streamingMessageId) return;
+    // WAKE-GATE (increment 3b): a reply finishing counts as "the
+    // conversation is still going" exactly like sending a turn does — see
+    // `openWakeWindow`'s doc — so the active window covers the reply PLUS a
+    // follow-up gap, not just the moment of sending. Refreshed unconditionally
+    // (not just under `effectiveAutoSpeak`) since the window matters whenever
+    // conversation mode is on, autoSpeak or not.
+    openWakeWindow();
+    if (!effectiveAutoSpeak) return;
     if (!ttsReachable) return;
     const finished = props.messages.find((m) => m.id === prev);
     if (!finished || finished.role !== 'assistant') return;
@@ -252,6 +330,16 @@ export function ChatPane(props: ChatPaneProps) {
             ⚠
           </span>
           <span className="chat-notice-message">Speak failed: {speakError}</span>
+        </div>
+      )}
+      {props.conversationMode && props.requireWakeWord && (
+        <div className="chat-notice chat-notice-wake" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            {wakeActive ? '🟢' : '🔴'}
+          </span>
+          <span className="chat-notice-message">
+            {wakeActive ? 'conversation active' : `listening for "${props.wakePhrase}"`}
+          </span>
         </div>
       )}
       {props.conversationMode && conversationVad.error && (

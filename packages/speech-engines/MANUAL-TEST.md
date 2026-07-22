@@ -472,6 +472,104 @@ itself.
     in `ChatPane.tsx`): conversation mode never auto-sends a second message
     while one is still being generated.
 
+## 8. Chat app (apps/chat) — Wake word: gating conversation mode's auto-send
+
+Increment 3b of the voice-conversation layer: **🔴 Require wake word**, under
+**💬 Conversation mode** in the **Tool contributions** card. With it on,
+conversation mode stops being open-mic (section 7 responds to ANYTHING said
+while it's on) — it ignores everything except a configured wake phrase
+(default `hey legion`) until woken, then stays "awake" for a short window so
+a real back-and-forth doesn't need the phrase repeated every turn.
+
+This is NOT a new ASR/wake-word model (no openWakeWord, no Moonshine) — it's
+a plain phrase match (`matchWakePhrase.ts`) over the SAME transcript
+section 6/7's continuous VAD→Whisper path already produces. Wake-phrase
+mishearing (Whisper transcribing "legion" as something else) is a
+browser/model-tuning matter, not something this increment tries to solve —
+the gate is only as reliable as the transcript it's given.
+
+### 8a. Setup
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`. Open the dev
+   URL, pick a nick, join.
+2. As in section 7a, toggle **🎤 Host speech-to-text** and **🔊 Host
+   text-to-speech** on (or use a two-tab mesh setup), then toggle **💬
+   Conversation mode (hands-free)** on.
+3. Directly below it, **🔴 Require wake word** should now be enabled
+   (checkbox + text input no longer greyed out) — confirm it reads
+   **checked by default** (this increment's default is ON) and the phrase
+   input shows `hey legion`.
+4. Above the composer, expect a small status line: **🔴 listening for "hey
+   legion"** — this is the wake-state indicator; it should NOT show while
+   conversation mode itself is off.
+
+### 8b. Ignoring open-mic speech while asleep
+
+5. Say an unrelated sentence that does NOT contain the wake phrase (e.g.
+   "what's the capital of France"). Expect: NOTHING gets sent — no new
+   message appears in the thread, the status line stays **🔴 listening
+   for…**. Console should show `[legion-speech] conversation: asleep —
+   dropped (no wake phrase)`.
+
+### 8c. Waking it up
+
+6. Say "hey legion, what's two plus two" (a little filler before it, e.g.
+   "uh, hey legion...", is fine too — the match is a substring, not a
+   startswith). Expect: the status line flips to **🟢 conversation active**,
+   your message is auto-sent as **just the part after the phrase** (e.g.
+   "what's two plus two", not the full "hey legion what's two plus two"),
+   and the mesh replies + auto-speaks as in section 7b. Console should show
+   `[legion-speech] conversation: woken — auto-send command`.
+7. Say the wake phrase ALONE, with no question attached ("hey legion").
+   Expect: the status line flips to 🟢 immediately, but nothing is sent (no
+   empty message in the thread) — console shows `conversation: woken —
+   waiting for the next utterance`. Then speak the actual question as a
+   separate utterance; expect it to be sent as-is (the active window is
+   already open, no need to repeat the phrase) — this is the "active
+   window" path (8d), not another wake.
+
+### 8d. Active window — follow-ups don't need the phrase again
+
+8. Immediately after a wake (or after a reply finishes, per the next step),
+   ask a follow-up WITHOUT the wake phrase, within a few seconds (well under
+   20s). Expect: it's sent as-is, no wake phrase needed, console shows
+   `conversation: active window — auto-send follow-up`.
+9. Confirm the window also opens after a reply finishes speaking, not just
+   after sending: let a reply finish streaming + auto-speaking, then
+   immediately ask a follow-up with no wake phrase. Expect it to send (the
+   window was refreshed by the reply finishing, per `ChatPane.tsx`'s
+   auto-speak effect), same as step 8.
+10. Wait **more than 20 seconds** of silence after the last turn/reply, then
+    speak a question WITHOUT the wake phrase. Expect: it's dropped (asleep
+    again — the status line should have flipped back to 🔴 listening for…
+    once the window elapsed), console shows the "asleep — dropped" line
+    from 8b. Repeat with the wake phrase and confirm it wakes normally
+    again.
+
+### 8e. Turning the gate off — back to open-mic
+
+11. Toggle **🔴 Require wake word** off. Expect: the status line
+    disappears, and (per section 7b) conversation mode now responds to
+    ANY speech again, no phrase needed — confirms the toggle is a live
+    gate, not just an initial-mode pick.
+12. Toggle **💬 Conversation mode** off entirely. Expect: **🔴 Require wake
+    word** and the phrase input go back to disabled/greyed, matching the
+    "only meaningful under conversation mode" hint text under the toggle.
+
+### 8f. Changing the phrase
+
+13. With conversation mode + require-wake-word both on, change the phrase
+    input to something else (e.g. `computer`). Say the OLD phrase ("hey
+    legion ..."). Expect it to be dropped (asleep — the configured phrase no
+    longer matches). Say "computer, what time is it". Expect it to wake and
+    send "what time is it" — confirms the phrase is read live from the
+    input, not cached at toggle-on time.
+14. Reload the page. Expect **🔴 Require wake word**'s checked state AND the
+    custom phrase from step 13 to both have persisted (localStorage keys
+    `unstable-legion-chat:require-wake-word-v1` /
+    `unstable-legion-chat:wake-phrase-v1`), same persistence discipline as
+    **💬 Conversation mode** itself.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -521,3 +619,11 @@ itself.
   mic-in-use indicator event) the first time you turn conversation mode on,
   even if you already granted the mic to **🎙 Listen** earlier in the same
   session.
+- **🔴 Require wake word** (section 8) is a plain substring match over
+  whatever Whisper transcribes — it does not run a dedicated wake-word
+  model. Whisper mishearing "legion" (or the rest of the phrase) as
+  something else is a browser/model-tuning matter (mic quality, accent,
+  background noise, the base Whisper model's own accuracy), not a bug in
+  the gate logic itself; if wake-ups are unreliable in testing, try a
+  short, phonetically distinct custom phrase in the text input before
+  concluding the feature is broken.

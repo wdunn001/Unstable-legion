@@ -79,14 +79,31 @@ export interface ToolContributionConversationModeProps {
   reachable: boolean;
 }
 
+/**
+ * "Require wake word" (increment 3b) — only meaningful once 💬 Conversation
+ * mode is on (it gates THAT mode's auto-send; there's nothing to gate
+ * otherwise), so the row is disabled/hinted rather than hidden when
+ * conversation mode is off — same "visible but inert with a reason" pattern
+ * `autoSpeak`/`conversationMode`'s own reachability hints use.
+ */
+export interface ToolContributionWakeWordProps {
+  requireEnabled: boolean;
+  onToggleRequireEnabled: (enabled: boolean) => void;
+  phrase: string;
+  onChangePhrase: (phrase: string) => void;
+  /** Whether 💬 Conversation mode itself is on — see the doc comment above. */
+  conversationModeEnabled: boolean;
+}
+
 export function ToolContributionPanel(props: {
   tools: UseToolContributionHandle;
   speechHost: ToolContributionSpeechProps;
   ttsHost: ToolContributionTtsProps;
   autoSpeak: ToolContributionAutoSpeakProps;
   conversationMode: ToolContributionConversationModeProps;
+  wakeWord: ToolContributionWakeWordProps;
 }) {
-  const { tools, speechHost, ttsHost, autoSpeak, conversationMode } = props;
+  const { tools, speechHost, ttsHost, autoSpeak, conversationMode, wakeWord } = props;
   const [mcpUrl, setMcpUrl] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
@@ -227,6 +244,34 @@ export function ToolContributionPanel(props: {
         {conversationMode.enabled && !conversationMode.reachable && (
           <span className="tool-contrib-speech-status">needs both an ASR host and a TTS host on the mesh</span>
         )}
+      </div>
+      <div className="tool-contrib-speech tool-contrib-wake-word">
+        <label
+          className="tool-contrib-row"
+          title="While asleep, conversation mode ignores everything except this phrase — say it to wake it up. Without this, conversation mode is open-mic: it responds to anything said while it's on."
+        >
+          <input
+            type="checkbox"
+            checked={wakeWord.requireEnabled}
+            disabled={!wakeWord.conversationModeEnabled}
+            onChange={(e) => wakeWord.onToggleRequireEnabled(e.target.checked)}
+          />
+          <span className="tool-contrib-name">🔴 Require wake word</span>
+        </label>
+        <p className="tool-contrib-sub">
+          {wakeWord.conversationModeEnabled
+            ? 'Conversation mode only wakes up (and auto-sends) after you say the phrase below; a short window afterward lets you follow up without repeating it.'
+            : 'Only applies once 💬 Conversation mode is on.'}
+        </p>
+        <input
+          type="text"
+          className="tool-contrib-wake-phrase-input"
+          value={wakeWord.phrase}
+          disabled={!wakeWord.conversationModeEnabled || !wakeWord.requireEnabled}
+          onChange={(e) => wakeWord.onChangePhrase(e.target.value)}
+          placeholder="hey legion"
+          aria-label="Wake phrase"
+        />
       </div>
     </section>
   );
