@@ -203,6 +203,9 @@ export interface UseStageHostOptions {
     /** Per-shard manifest role — carried for the incremental loader (see
      * stage-runtime StageDescriptor.shardRoles). */
     shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+    /** Per-fragment tensor offset index (expert-streaming) — threaded to
+     * StageDescriptor.shardTensorIndex so indexed layers stream tensor-by-tensor. */
+    shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
     useMemoryShardStore?: boolean;
     /**
      * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` this host should
@@ -414,6 +417,8 @@ interface PendingOpen {
   shardBytes?: readonly number[];
   /** M3 preload only — per-shard manifest role for the incremental loader. */
   shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+  /** M3 preload only — per-fragment tensor offset index (expert-streaming). */
+  shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** M3 preload only (`opts.preloadStage.localFolderHandle`, see that
@@ -1049,6 +1054,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 shardHashes: req.shardHashes,
                 shardBytes: req.shardBytes,
                 shardRoles: req.shardRoles,
+                shardTensorIndex: req.shardTensorIndex,
                 ctxSize: req.ctxSize,
                 // +1: legion_stage_open always creates one FUSED session
                 // internally (used here only for the warm-up dispatch below) —
@@ -1190,6 +1196,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
         shardRoles: req.shardRoles,
+        shardTensorIndex: req.shardTensorIndex,
         useMemoryShardStore: req.useMemoryShardStore,
         localFolderHandle: req.localFolderHandle,
       };

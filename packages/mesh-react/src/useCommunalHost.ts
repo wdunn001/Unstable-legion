@@ -376,6 +376,11 @@ interface ShardPlan {
    * so the incremental loader can tell the metadata fragment from data shards
    * (see stage-runtime's StageDescriptor.shardRoles / loadStageIncremental). */
   shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+  /** Per-fragment tensor offset index (expert-streaming) — aligned with
+   * shardUrls, undefined per fragment without one. Threaded to
+   * StageDescriptor.shardTensorIndex so loadStageIncremental streams indexed
+   * layers tensor-by-tensor instead of whole-fragment. */
+  shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
   useMemoryShardStore: boolean;
 }
 
@@ -470,6 +475,11 @@ export async function resolveCommunalShardPlan(
       shardHashes: fragments.map((f) => f.sha256),
       shardBytes: fragments.map((f) => f.bytes),
       shardRoles: fragments.map((f) => f.role),
+      // Per-tensor offset index (expert-streaming): present on layer fragments
+      // whose manifest carries `tensors`, undefined otherwise. Threaded to the
+      // descriptor as shardTensorIndex so loadStageIncremental streams those
+      // layers tensor-by-tensor instead of staging the whole ~1.5 GB fragment.
+      shardTensorIndex: fragments.map((f) => f.tensors),
       useMemoryShardStore,
     },
     manifestCache: cache,
@@ -996,6 +1006,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
           shardRoles: plan.shardRoles,
+          shardTensorIndex: plan.shardTensorIndex,
           useMemoryShardStore: plan.useMemoryShardStore,
           localFolderHandle: localFolderHandleRef.current,
         });
