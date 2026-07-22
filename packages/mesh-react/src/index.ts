@@ -107,6 +107,11 @@ export {
   type AudioPlaybackContent,
   type UseAudioPlaybackHandle,
 } from './useAudioPlayback.js';
+export {
+  useTtsSpeaker,
+  type UseTtsSpeakerOptions,
+  type UseTtsSpeakerHandle,
+} from './useTtsSpeaker.js';
 
 // ── Model catalog (which web-llm models are available) ─────────────
 export {

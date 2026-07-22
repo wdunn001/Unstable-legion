@@ -64,3 +64,4 @@ export {
 } from './ttsWorker.js';
 export { TtsWorkerClient } from './ttsWorkerClient.js';
 export { createTtsSynthesizeTool, type TtsSynthesizeClient } from './ttsTool.js';
+export { splitForTts } from './splitForTts.js';

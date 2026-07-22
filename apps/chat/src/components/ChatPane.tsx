@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  useAudioPlayback,
   useMeshRoster,
-  useTtsClient,
+  useTtsSpeaker,
   type CallToolFn,
   type UseSpeechHostHandle,
   type UseTtsHostHandle,
@@ -27,10 +26,11 @@ export interface ChatPaneProps {
   /** Voice-input wiring for the Composer's mic button — see Composer.tsx. */
   speechHost: UseSpeechHostHandle;
   /** Voice-OUTPUT wiring for each assistant bubble's 🔊 button — see
-   * MessageBubble.tsx. `useTtsClient`/`useAudioPlayback` are instantiated
-   * ONCE here (not per-bubble) so every message in the pane shares one
-   * `AudioContext` and resolves the same local-vs-mesh target, mirroring
-   * Composer's single `useSpeechClient` instance for the mic button. */
+   * MessageBubble.tsx. `useTtsSpeaker` is instantiated ONCE here (not
+   * per-bubble) so every message in the pane shares one `AudioContext`,
+   * one gapless playback queue, and resolves the same local-vs-mesh
+   * target, mirroring Composer's single `useSpeechClient` instance for
+   * the mic button. */
   ttsHost: UseTtsHostHandle;
   callTool: CallToolFn;
 }
@@ -51,16 +51,21 @@ export function ChatPane(props: ChatPaneProps) {
   // checked here just to decide whether any speak button is clickable.
   const roster = useMeshRoster();
   const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
-  const ttsClient = useTtsClient({
+  const speaker = useTtsSpeaker({
     callTool: props.callTool,
     synthesizeLocal: props.ttsHost.ready ? props.ttsHost.synthesizeLocal : undefined,
   });
-  const audioPlayback = useAudioPlayback();
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [speakError, setSpeakError] = useState<string | null>(null);
 
   const handleSpeak = useCallback(
     (id: string, text: string) => {
+      // Clicking 🔊 on the message currently speaking is a toggle: stop it.
+      if (speakingId === id) {
+        speaker.stop();
+        setSpeakingId(null);
+        return;
+      }
       setSpeakError(null);
       setSpeakingId(id);
       // Read the explanation, not the markup: strip code blocks, markdown,
@@ -68,9 +73,8 @@ export function ChatPane(props: ChatPaneProps) {
       // short spoken note when a reply is code-only (nothing to read).
       const speakable =
         toSpeakableText(text) || 'This reply is code only, so there is nothing to read aloud.';
-      void ttsClient
-        .synthesize(speakable)
-        .then((content) => audioPlayback.play(content))
+      void speaker
+        .speak(speakable)
         .catch((err) => {
           setSpeakError(err instanceof Error ? err.message : String(err));
         })
@@ -78,7 +82,7 @@ export function ChatPane(props: ChatPaneProps) {
           setSpeakingId((cur) => (cur === id ? null : cur));
         });
     },
-    [ttsClient, audioPlayback],
+    [speaker, speakingId],
   );
 
   return (

@@ -111,6 +111,16 @@ TTS is the reverse-direction twin of section 3 — text → Kokoro → audio,
 manual "speak" button on each assistant bubble only (no auto-speak; that's
 a later conversation-loop phase, out of scope here).
 
+As of the rolling/chunked-TTS increment, `useTtsSpeaker` (not a bare
+`useTtsClient` + `useAudioPlayback` pair) drives the 🔊 button: it splits
+the speakable text into sentence-sized chunks via `splitForTts` (each
+safely under Kokoro-82M's ~510-phoneme-token context limit), synthesizes
+them ONE AT A TIME (the Kokoro worker isn't re-entrant), but does NOT wait
+for a chunk to finish PLAYING before starting the NEXT chunk's synth — so
+the first chunk starts playing while later chunks are still being
+synthesized. This fixes long replies overflowing Kokoro's context and cuts
+latency-to-first-audio versus synthesizing the whole reply in one call.
+
 ### 4a. Local (host-own) path — one tab
 
 1. From the repo root: `npm run dev -w @unstable-legion/chat`.
@@ -124,18 +134,44 @@ a later conversation-loop phase, out of scope here).
 5. On the assistant's message bubble, a 🔊 button should now be enabled
    (hover: tooltip reads "Speak this reply aloud" rather than the
    disabled-reachability tooltip).
-6. Click it. Expect the button to switch to an ⏳ state while
-   synthesizing, then audio plays back through your speakers/headphones
-   once ready. Check the browser console for `[legion-speech]` lines
-   tracing host construct → worker synth start/done+timing → client →
-   playback, matching the ASR path's logging discipline.
-7. Click 🔊 on a second assistant reply while the first clip is still
-   playing (or immediately after). Expect the second clip to play
-   gaplessly after the first finishes — not overlapping/garbled audio —
-   confirming `useAudioPlayback`'s serial queue.
-8. Toggle TTS host back off and confirm the 🔊 buttons go back to
-   disabled (tooltip: "Enable Host text-to-speech, or wait for a peer
-   that offers it") once no peer advertises `tts.synthesize` either.
+6. Click it. Expect the button to switch to an ⏹ state while
+   synthesizing/speaking, then audio plays back through your
+   speakers/headphones once the first chunk is ready. Check the browser
+   console for `[legion-speech]` lines: `speak: N chunk(s)`, then per-chunk
+   `synth start`/`synth done` pairs, then a final `speak: done`. For a
+   multi-chunk reply, chunk 2's `synth start` should log almost
+   immediately after chunk 1's `synth done` — i.e. chunk 2 starts
+   synthesizing while chunk 1 is still audibly playing, not after chunk
+   1's audio finishes. That overlap is the latency-to-first-audio win.
+7. **Long-reply test (the actual bug fix)**: ask a question that yields a
+   long, multi-paragraph reply (e.g. "explain how TCP congestion control
+   works in detail, with examples" or similar). Click 🔊.
+   - Expect the WHOLE reply to be read aloud, not truncated partway
+     through and not erroring out — this is the overflow Kokoro's
+     ~510-token context previously hit on a single big `synthesize()`
+     call. A slight gap between chunk boundaries (sentence/clause breaks)
+     is fine and expected; garbled audio, a cut-off reply, or a console
+     error is not.
+   - Check the console log's chunk count (`speak: N chunk(s)`) is > 1 for
+     a genuinely long reply, confirming `splitForTts` actually split it.
+8. **Stop-toggle test**: click 🔊 again while it's mid-speech (⏹ showing).
+   Expect playback to stop promptly (not finish the current chunk, and
+   definitely not keep going through the remaining queued chunks) and the
+   button to return to its idle 🔊 state. Click 🔊 once more afterward and
+   confirm it starts a fresh read from the beginning (not from where it
+   left off — this is a stop, not a pause).
+9. Click 🔊 on a second assistant reply while the first is still speaking
+   (without using the stop toggle first). Expect the first message's
+   speech to keep going uninterrupted and an independent listen to start
+   for whichever is clicked — actually: this pane shares ONE
+   `useTtsSpeaker` instance, so starting a second `speak()` call reuses the
+   same synth/playback pipeline; expect the second message's audio to
+   queue in gaplessly after the first's chunks finish, not overlap/garble
+   — confirming `useAudioPlayback`'s serial queue still holds across
+   messages, not just across one message's chunks.
+10. Toggle TTS host back off and confirm the 🔊 buttons go back to
+    disabled (tooltip: "Enable Host text-to-speech, or wait for a peer
+    that offers it") once no peer advertises `tts.synthesize` either.
 
 ### 4b. Mesh path — two tabs
 
@@ -145,15 +181,18 @@ a later conversation-loop phase, out of scope here).
    Tab B so it has a message to speak.
 3. In Tab B, an assistant message's 🔊 button should become enabled once
    Tab A's peer roster entry shows up (advertising `tts.synthesize`) —
-   Tab B has no local host, so `useTtsClient` resolves to Tab A's peer
-   via `callTool`.
+   Tab B has no local host, so `useTtsSpeaker`'s internal `useTtsClient`
+   resolves to Tab A's peer via `callTool`, once per chunk.
 4. Click 🔊 in Tab B. Expect audio to play back in Tab B after a brief
-   mesh round trip (slower than the local path in 4a, but not
-   multi-second under normal conditions) — the synthesized WAV traveled
-   Tab A → Tab B over `tc` as base64, then Tab B decoded + played it.
+   mesh round trip per chunk (slower than the local path in 4a, but not
+   multi-second under normal conditions) — each chunk's synthesized WAV
+   travels Tab A → Tab B over `tc` as base64, one `tts.synthesize` call per
+   chunk, then Tab B decodes + plays it. A long reply in Tab B should still
+   read in full, same as the local-path long-reply test in 4a step 7.
 5. Turn Tab A's host toggle off, then click 🔊 in Tab B again. Expect a
    visible "Speak failed: …" notice instead of a silent hang — confirms
-   `useTtsClient`'s no-target error path.
+   `useTtsClient`'s no-target error path still surfaces through
+   `useTtsSpeaker`.
 
 ## Known limitations to note while testing (not bugs)
 

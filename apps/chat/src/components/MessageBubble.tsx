@@ -3,15 +3,15 @@ import type { ChatMessage } from '../db/threadStore.js';
 
 /**
  * TTS "speak" affordance for an assistant bubble. Purely presentational —
- * `ChatPane` owns the actual `useTtsClient`/`useAudioPlayback` hooks (ONE
- * instance shared across every bubble in the pane, not one per message;
- * see `ChatPane.tsx`'s module doc) and passes down just enough state +
- * a callback for this bubble to render a button.
+ * `ChatPane` owns the actual `useTtsSpeaker` hook (ONE instance shared
+ * across every bubble in the pane, not one per message; see
+ * `ChatPane.tsx`'s module doc) and passes down just enough state + a
+ * callback for this bubble to render a button.
  */
 export interface MessageBubbleTtsProps {
   /** This tab hosts TTS itself, or a roster peer advertises `tts.synthesize`. */
   reachable: boolean;
-  /** True while THIS message's audio is synthesizing/playing. */
+  /** True while THIS message's audio is synthesizing/playing — clicking 🔊 again while true STOPS it (toggle). */
   speaking: boolean;
   onSpeak: () => void;
 }
@@ -66,17 +66,17 @@ export function MessageBubble(props: MessageBubbleProps) {
           <button
             type="button"
             className={`btn-link msg-speak ${tts.speaking ? 'msg-speak-active' : ''}`}
-            disabled={!tts.reachable || tts.speaking}
+            disabled={!tts.reachable}
             title={
               !tts.reachable
                 ? "Enable Host text-to-speech, or wait for a peer that offers it"
                 : tts.speaking
-                  ? 'Speaking…'
+                  ? 'Stop speaking'
                   : 'Speak this reply aloud'
             }
             onClick={tts.onSpeak}
           >
-            {tts.speaking ? '⏳' : '🔊'}
+            {tts.speaking ? '⏹' : '🔊'}
           </button>
         )}
       </div>
