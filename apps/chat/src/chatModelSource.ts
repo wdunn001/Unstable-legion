@@ -158,6 +158,28 @@ export const CHAT_CHANNELS: readonly ChatModelChannelSpec[] = [
     avgLayerBytes: 320_000_000,
     hfManifestUrl: 'https://huggingface.co/wdunn001/legion-model-qwen3-32b/resolve/main/model-package.json',
   },
+  {
+    // Qwen3-235B-A22B — MoE (128 experts, 8 active/token). config.json:
+    // num_hidden_layers=94, hidden_size=4096, num_key_value_heads=4,
+    // head_dim=128 → KV = 2*4*128*1 = 1024 (int8-KV). Q4_K_M GGUF ~133GB /
+    // 94 layers ≈ ~1.45GB/layer — the MoE expert tensors dominate, but each
+    // is its OWN VRAM buffer (largest gate/up_exps ~450MB), so a desktop's
+    // ~2GB storage-buffer cap holds them fine; a phone's 128MB cap does NOT,
+    // so phones DRIVE here while desktop-class peers HOST. At ~133GB this
+    // never fits one tab — it's split across several hosts, each claiming a
+    // VRAM-sized layer range (stagePlanner) while the mesh unions coverage.
+    // Manifest + 94 layer fragments published + CORS-verified on HF
+    // (activation_width=4096, layer_count=94, relative fragment paths).
+    id: 'qwen3-235b-a22b-q4',
+    displayName: 'Qwen3-235B-A22B',
+    quant: 'Q4_K_M',
+    totalLayers: 94,
+    driverLayers: 2,
+    ctxSize: 4096,
+    nEmbd: 4096,
+    avgLayerBytes: 1_450_000_000,
+    hfManifestUrl: 'https://huggingface.co/wdunn001/legion-qwen3-235b-layer-package/resolve/main/model-package.json',
+  },
 ];
 
 export const DEFAULT_CHANNEL_ID = CHAT_MODEL_ID;
