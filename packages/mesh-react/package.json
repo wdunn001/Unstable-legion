@@ -24,6 +24,7 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
+    "@ricky0123/vad-web": "^0.0.24",
     "@unstable-legion/core": "0.0.1",
     "@unstable-legion/speech": "0.0.1",
     "@unstable-legion/stage-runtime": "file:../../../legion-stage-runtime/packages/stage-runtime"

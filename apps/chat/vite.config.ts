@@ -1,6 +1,106 @@
-import { defineConfig } from 'vite';
+import { existsSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+
+const require = createRequire(import.meta.url);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * copyVadAssets — self-hosts `@ricky0123/vad-web`'s worklet bundle,
+ * Silero ONNX model, and onnxruntime-web wasm binaries into
+ * `public/vad/`, the same "don't depend on a CDN we don't control"
+ * policy as the Whisper/Kokoro model-source lists (`whisperEngine.ts`'s
+ * `wasmPaths`, `kokoroEngine.ts`'s HF-vs-Legion-CDN fallback).
+ *
+ * Why a copy instead of `?url` imports (the first thing tried): vad-web's
+ * `MicVAD.new({ baseAssetPath, onnxWASMBasePath })` does NOT take a
+ * per-file URL — it concatenates a shared directory prefix with FIXED
+ * filenames internally (`baseAssetPath + 'vad.worklet.bundle.min.js'`,
+ * `baseAssetPath + 'silero_vad_legacy.onnx'`; `onnxWASMBasePath +
+ * '<detected-ort-wasm-variant>.wasm'`). A bundler-hashed `?url` import
+ * gives each asset its own unique filename, which this concatenation
+ * scheme can't consume. So the files are copied VERBATIM (unhashed,
+ * original names) into a fixed `public/vad/` directory instead — plain
+ * static files Vite serves as-is in both `vite` (dev) and `vite build`,
+ * no bundler resolution involved.
+ *
+ * Runs synchronously at config-eval time (once per `vite`/`vite build`/
+ * `vite preview` invocation) rather than as a `buildStart` hook, so the
+ * dev server's initial page load already has `/vad/*` available — no
+ * separate "fetch assets first" step for a human dev to forget (unlike
+ * `apps/chat/public/wasm/`'s `scripts/fetch-stage-assets.sh`, which
+ * pulls multi-hundred-MB weights from a SIBLING REPO and can't
+ * reasonably run implicitly; these are a few tens of MB already sitting
+ * in `node_modules` right after `npm install`, so an implicit copy here
+ * is safe and removes a manual step instead of adding one).
+ *
+ * `onnxruntime-web` wasm binaries come from vad-web's own NESTED
+ * `node_modules/@ricky0123/vad-web/node_modules/onnxruntime-web` copy
+ * (pinned to 1.14.0), not the newer top-level onnxruntime-web
+ * `@huggingface/transformers`/Whisper uses — vad-web's bundle resolves
+ * `require("onnxruntime-web")` to its own nested copy (version conflict
+ * with the newer one keeps it un-hoisted), so ONLY that copy's wasm
+ * filenames match what vad-web's `ort` instance will actually request.
+ */
+function copyVadAssets(): Plugin {
+  return {
+    name: 'legion-copy-vad-assets',
+    config() {
+      try {
+        const vadPkgPath = require.resolve('@ricky0123/vad-web/package.json');
+        const vadDist = join(dirname(vadPkgPath), 'dist');
+
+        const destDir = join(__dirname, 'public', 'vad');
+        mkdirSync(destDir, { recursive: true });
+
+        // ONLY the worklet + the default ("legacy") Silero model are staged
+        // locally. Two reasons they can't come from HF like the wasm does:
+        //   1. `vad.worklet.bundle.min.js` is loaded via `AudioWorklet.
+        //      addModule()`, which requires a JavaScript MIME type — HF serves
+        //      .js as `text/plain`, which Chrome rejects for worklets. So the
+        //      worklet MUST be same-origin (Vite serves it as text/javascript).
+        //   2. vad-web couples worklet + model under one `baseAssetPath`, so
+        //      the model rides along locally too (it's only ~1.8MB).
+        // The ~40MB onnxruntime-web wasm binaries — the actual deploy bloat —
+        // are NOT copied here; they're served from HF via `onnxWASMBasePath`
+        // (see Composer.tsx's VAD_ASSETS). wasm loads via fetch()+instantiate,
+        // which is MIME-tolerant and CORS-clean from HF.
+        const filesToCopy = [
+          join(vadDist, 'vad.worklet.bundle.min.js'),
+          join(vadDist, 'silero_vad_legacy.onnx'),
+        ];
+
+        let copied = 0;
+        for (const src of filesToCopy) {
+          if (!existsSync(src)) {
+            console.warn(`[legion-copy-vad-assets] missing expected asset, skipping: ${src}`);
+            continue;
+          }
+          const dest = join(destDir, src.slice(Math.max(src.lastIndexOf('/'), src.lastIndexOf('\\')) + 1));
+          // Skip re-copying an already-up-to-date file (same size) — cheap
+          // idempotence check so repeated `vite`/`vite build` runs in the
+          // same checkout don't re-copy ~38MB every time.
+          if (existsSync(dest) && statSync(dest).size === statSync(src).size) continue;
+          copyFileSync(src, dest);
+          copied++;
+        }
+        console.log(`[legion-copy-vad-assets] public/vad/ ready (${filesToCopy.length} assets, ${copied} copied this run)`);
+      } catch (err) {
+        // Non-fatal: surfaces as a broken Listen toggle at runtime (`vad.error`
+        // in Composer.tsx), not a build/dev-server crash — same posture as
+        // the model-source fallbacks elsewhere in this app.
+        console.warn(
+          '[legion-copy-vad-assets] failed to stage vad-web assets into public/vad/ — the Listen (VAD) toggle will fail at runtime:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    },
+  };
+}
 
 // Vite config for the Unstable Legion chat app — the flagship product
 // (apps/demo is the workstream showcase/debug surface; this is the thing
@@ -21,6 +121,10 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig({
   plugins: [
     react(),
+    // Stages `@ricky0123/vad-web`'s worklet/model/wasm assets into
+    // public/vad/ before either dev or build serves anything — see
+    // `copyVadAssets`'s doc comment above for why a copy, not `?url`.
+    copyVadAssets(),
     // PWA app-shell caching ONLY. This app's real payload is the WebGPU
     // stage runtime's model shard bytes — multi-hundred-MB `.gguf`
     // fragments fetched via HTTP range requests from HF/the webllm-mirror,
@@ -147,6 +251,11 @@ export default defineConfig({
       // separate module graph entry point Vite doesn't crawl from the
       // main thread until the ASR-host toggle actually constructs one.
       '@unstable-legion/speech',
+      // Same lazy-discovery gotcha again: `useVadListen.ts` (mesh-react)
+      // only `await import('@ricky0123/vad-web')`s once the Composer's
+      // "🎙 Listen" toggle is switched on, so Vite's crawler never sees it
+      // from the main entry graph either.
+      '@ricky0123/vad-web',
       '@codecai/web',
       '@codecai/web-llm',
       '@codecai/web-safety',

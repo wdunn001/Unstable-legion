@@ -624,6 +624,24 @@ code {
   background: var(--warn);
   color: #fff;
 }
+.composer-listen {
+  flex: none;
+  min-width: 44px;
+}
+.composer-listen-active {
+  background: var(--accent);
+  color: #fff;
+  animation: composer-listen-pulse 1.6s ease-in-out infinite;
+}
+@keyframes composer-listen-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.composer-listen-error {
+  color: var(--warn);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
 
 /* ── Mesh sidebar ─────────────────────────────────────────────────── */
 .mesh-sidebar {
@@ -1165,6 +1183,23 @@ code {
 .tool-contrib-speech-error {
   color: var(--warn);
 }
+.tool-contrib-speech-ready {
+  color: var(--chip-fg);
+}
+.tool-contrib-wake-phrase-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.tool-contrib-wake-phrase-input:disabled {
+  opacity: 0.5;
+}
 
 /* Tool trace chips above an assistant reply. */
 .msg-tool-trace {
@@ -1248,6 +1283,16 @@ code {
   border-color: var(--warn);
   color: var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.chat-notice-wake {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.chat-notice-wake-loading {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  font-size: 0.8rem;
 }
 .host-error-icon,
 .chat-notice-icon {

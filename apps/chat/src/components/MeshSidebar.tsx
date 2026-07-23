@@ -6,7 +6,14 @@ import { PipelineHandoff, type PipelineHandoffProps } from './PipelineHandoff.js
 import { StandingPanel } from './StandingPanel.js';
 import { Leaderboard } from './Leaderboard.js';
 import { HostingConsentBanner, type HostingConsentBannerProps } from './HostingConsentBanner.js';
-import { ToolContributionPanel, type ToolContributionSpeechProps, type ToolContributionTtsProps } from './ToolContributionPanel.js';
+import {
+  ToolContributionPanel,
+  type ToolContributionSpeechProps,
+  type ToolContributionTtsProps,
+  type ToolContributionAutoSpeakProps,
+  type ToolContributionConversationModeProps,
+  type ToolContributionWakeWordProps,
+} from './ToolContributionPanel.js';
 import { ModelFolderPanel } from './ModelFolderPanel.js';
 import { useMobileCollapse } from '../hooks/useMobileCollapse.js';
 import type { UseToolContributionHandle } from '../hooks/useToolContribution.js';
@@ -26,6 +33,9 @@ export interface MeshSidebarProps {
   toolContribution: UseToolContributionHandle;
   speechHost: ToolContributionSpeechProps;
   ttsHost: ToolContributionTtsProps;
+  autoSpeak: ToolContributionAutoSpeakProps;
+  conversationMode: ToolContributionConversationModeProps;
+  wakeWord: ToolContributionWakeWordProps;
   pipelineHandoff: PipelineHandoffProps;
   /** "Load layers from a local folder" — applies to this driver's OWN
    * stage-0 load regardless of hosting consent, so it's rendered
@@ -66,7 +76,14 @@ export function MeshSidebar(props: MeshSidebarProps) {
       {props.capacity.occupancy && <OccupancyMeter occupancy={props.capacity.occupancy} />}
       <TopologyMap segments={props.segments} totalLayers={props.totalLayers} modelLabel={props.capacity.modelLabel} scale={props.crewScale} />
       <PipelineHandoff {...props.pipelineHandoff} />
-      <ToolContributionPanel tools={props.toolContribution} speechHost={props.speechHost} ttsHost={props.ttsHost} />
+      <ToolContributionPanel
+        tools={props.toolContribution}
+        speechHost={props.speechHost}
+        ttsHost={props.ttsHost}
+        autoSpeak={props.autoSpeak}
+        conversationMode={props.conversationMode}
+        wakeWord={props.wakeWord}
+      />
       <StandingPanel standing={props.standing} />
       <Leaderboard entries={props.leaderboard} />
     </aside>

@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  useAudioPlayback,
   useMeshRoster,
-  useTtsClient,
+  useMoonshineTranscriber,
+  useSpeechClient,
+  useTtsSpeaker,
+  useVadListen,
   type CallToolFn,
   type UseSpeechHostHandle,
   type UseTtsHostHandle,
 } from '@unstable-legion/react';
-import { TTS_SKILL } from '@unstable-legion/core';
+import { ASR_SKILL, TTS_SKILL } from '@unstable-legion/core';
+import type { EngineLoadProgress } from '@unstable-legion/speech';
 import { MessageBubble } from './MessageBubble.js';
 import { Composer } from './Composer.js';
 import { toSpeakableText } from '../speakableText.js';
+import { matchWakePhrase } from '../matchWakePhrase.js';
+import { VAD_ASSETS } from '../vadAssets.js';
 import type { ChatMessage } from '../db/threadStore.js';
 import type { CapacityView, ChatNoticeView } from '../viewmodels/meshViewModels.js';
 
@@ -27,12 +32,57 @@ export interface ChatPaneProps {
   /** Voice-input wiring for the Composer's mic button — see Composer.tsx. */
   speechHost: UseSpeechHostHandle;
   /** Voice-OUTPUT wiring for each assistant bubble's 🔊 button — see
-   * MessageBubble.tsx. `useTtsClient`/`useAudioPlayback` are instantiated
-   * ONCE here (not per-bubble) so every message in the pane shares one
-   * `AudioContext` and resolves the same local-vs-mesh target, mirroring
-   * Composer's single `useSpeechClient` instance for the mic button. */
+   * MessageBubble.tsx. `useTtsSpeaker` is instantiated ONCE here (not
+   * per-bubble) so every message in the pane shares one `AudioContext`,
+   * one gapless playback queue, and resolves the same local-vs-mesh
+   * target, mirroring Composer's single `useSpeechClient` instance for
+   * the mic button. */
   ttsHost: UseTtsHostHandle;
+  /** Auto-speak preference (increment 2) — when true, the assistant's reply
+   * is spoken automatically the instant it finishes streaming (see the
+   * streaming→done detection effect below). A CONSUMPTION preference, so
+   * it's independent of `ttsHost` (which is about THIS tab hosting TTS for
+   * others) — it works off whatever `ttsReachable` resolves to below. */
+  autoSpeak: boolean;
+  /** 💬 Conversation mode (increment 3c) — hands-free continuous
+   * back-and-forth: continuous VAD auto-sends each utterance, the reply is
+   * auto-spoken, and talking while it's speaking (barge-in) cuts the TTS
+   * short and the resulting utterance becomes the next turn. See the state
+   * machine built from `conversationMode`/`busy`/`speaker.speaking` below —
+   * it FORCES auto-speak on (see `effectiveAutoSpeak`) rather than
+   * duplicating the speak path, and disables Composer's own "🎙 Listen"
+   * toggle (see `Composer`'s `conversationMode` prop) since both would
+   * otherwise fight over the mic. */
+  conversationMode: boolean;
+  /** 🔴/🟢 wake-phrase gate on conversation mode (increment 3b) — when true,
+   * `handleConversationTranscript` below drops any utterance that doesn't
+   * contain `wakePhrase` while "asleep" (see `WAKE_ACTIVE_WINDOW_MS`). Reuses
+   * the SAME VAD→Whisper transcript conversation mode already produces — no
+   * second ASR/wake-word model, just a phrase match over existing text (see
+   * `matchWakePhrase.ts`). No-op when `conversationMode` is off (nothing
+   * calls `handleConversationTranscript` in that case). */
+  requireWakeWord: boolean;
+  /** The phrase to listen for while asleep — normalized (lowercase,
+   * punctuation stripped, whitespace collapsed) on both sides before
+   * matching, see `matchWakePhrase`. */
+  wakePhrase: string;
   callTool: CallToolFn;
+}
+
+/** How long a wake (or a sent/replied-to turn) keeps conversation mode
+ * "active" — a follow-up utterance inside this window is sent as-is, no
+ * need to repeat the wake phrase. Chosen to comfortably cover "listen to
+ * the reply, then ask a quick follow-up" without staying open so long it
+ * effectively becomes open-mic. */
+const WAKE_ACTIVE_WINDOW_MS = 20_000;
+
+/** Formats Moonshine's `progress` for the wake-ear status line — mirrors
+ * `ToolContributionPanel.tsx`'s `formatLoadProgress`, kept as its own
+ * tiny copy (same discipline this codebase already uses for small
+ * cross-file helpers, e.g. `useMoonshineTranscriber.ts`'s base64 helper). */
+function formatMoonshineProgress(p: EngineLoadProgress | null): string {
+  if (p && typeof p.progress === 'number') return `loading… ${Math.round(p.progress)}%`;
+  return 'loading…';
 }
 
 export function ChatPane(props: ChatPaneProps) {
@@ -51,16 +101,197 @@ export function ChatPane(props: ChatPaneProps) {
   // checked here just to decide whether any speak button is clickable.
   const roster = useMeshRoster();
   const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
-  const ttsClient = useTtsClient({
+  // Same resolution, ASR direction — conversation mode's own VAD instance
+  // (below) needs this to know whether it's safe to actually turn the mic
+  // on, independent of whatever the toggle in ToolContributionPanel says
+  // (that toggle is gated on reachability too, but reachability can change
+  // out from under an already-on toggle — e.g. the only ASR host peer
+  // leaves — and this hook has no way to flip the PERSISTED toggle off
+  // itself, so it just stops actually listening instead).
+  const asrReachable = props.speechHost.ready || roster.some((r) => r.skills.includes(ASR_SKILL));
+  // Conversation mode needs BOTH directions reachable to do anything —
+  // while THIS tab's own host(s) are still warming (see `useSpeechHost`/
+  // `useTtsHost`'s `loading`) and no mesh peer covers the gap yet, the
+  // mode is "on" but genuinely inert. Surfaced below so it reads as
+  // "loading" rather than silently appearing active (see the
+  // `chat-notice-wake-loading` block).
+  const conversationReachable = asrReachable && ttsReachable;
+  const conversationModelsLoading =
+    props.conversationMode && !conversationReachable && (props.speechHost.loading || props.ttsHost.loading);
+  const speaker = useTtsSpeaker({
     callTool: props.callTool,
     synthesizeLocal: props.ttsHost.ready ? props.ttsHost.synthesizeLocal : undefined,
   });
-  const audioPlayback = useAudioPlayback();
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [speakError, setSpeakError] = useState<string | null>(null);
 
+  // 💬 CONVERSATION MODE (increment 3c) — hands-free back-and-forth. Small
+  // state machine, three states, all DERIVED from signals that already
+  // exist rather than tracked separately (so there's no separate state to
+  // drift out of sync with the real thing):
+  //
+  //   - GENERATING: `props.busy` (the LLM is streaming a reply). VAD
+  //     utterances that resolve while this is true are DROPPED, not
+  //     queued — see `handleConversationTranscript` below. This is the
+  //     "never send a second message mid-generation" guard.
+  //   - SPEAKING: `speaker.speaking` (the finished reply is being read
+  //     aloud — via the SAME auto-speak effect increment 2 already built;
+  //     see `effectiveAutoSpeak` below, no second speak path). Talking
+  //     during this state is a BARGE-IN: `onSpeechStart` fires the instant
+  //     VAD detects speech (well before the utterance ends/transcribes) and
+  //     immediately calls `speaker.stop()` — see `handleConversationSpeechStart`.
+  //   - LISTENING: neither of the above. A resolved utterance here — or one
+  //     that resolves AFTER a barge-in has already stopped speaking, since
+  //     by the time `onTranscript` fires the state has already moved back
+  //     to LISTENING — is auto-sent via `props.onSend`.
+  //
+  // 🔴/🟢 WAKE-PHRASE GATE (increment 3b) — `lastTurnAtRef` is the timestamp
+  // of the most recent "the conversation is still going" event (a sent turn,
+  // or a reply finishing — see the auto-speak effect below), NOT React state:
+  // it's read/written from event handlers that fire far more often than a
+  // render needs to happen, and staying a ref means neither read nor write
+  // ever triggers one. `wakeActive` (state) exists ONLY to drive the small
+  // visible indicator below — same timestamp, just mirrored into state on a
+  // timer so the UI can show it without polling every render.
+  const lastTurnAtRef = useRef<number>(0);
+  const [wakeActive, setWakeActive] = useState(false);
+  const wakeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openWakeWindow = () => {
+    lastTurnAtRef.current = Date.now();
+    setWakeActive(true);
+    if (wakeTimeoutRef.current !== undefined) clearTimeout(wakeTimeoutRef.current);
+    wakeTimeoutRef.current = setTimeout(() => setWakeActive(false), WAKE_ACTIVE_WINDOW_MS);
+  };
+  useEffect(() => () => {
+    if (wakeTimeoutRef.current !== undefined) clearTimeout(wakeTimeoutRef.current);
+  }, []);
+
+  // Both handlers read `props.busy`/`speaker.speaking` fresh from the
+  // closure captured at the render that's current when the VAD event
+  // actually fires (`useVadListen` re-points its internal callback ref
+  // every render — see that hook's doc — so a plain function here, not a
+  // `useCallback`, is enough; no stale-closure risk).
+  const handleConversationTranscript = (text: string) => {
+    if (props.busy) {
+      console.debug('[legion-speech] conversation: dropped utterance — assistant is generating');
+      return;
+    }
+    if (!props.requireWakeWord) {
+      console.debug('[legion-speech] conversation: auto-send');
+      props.onSend(text);
+      return;
+    }
+    // Active window: already "awake" (a recent send or a reply just
+    // finished) — treat this utterance as a follow-up, no wake phrase
+    // needed, and slide the window forward so the back-and-forth can keep
+    // going without re-waking every turn.
+    if (Date.now() - lastTurnAtRef.current < WAKE_ACTIVE_WINDOW_MS) {
+      console.debug('[legion-speech] conversation: active window — auto-send follow-up');
+      openWakeWindow();
+      props.onSend(text);
+      return;
+    }
+    // Asleep: only a transcript that CONTAINS the wake phrase (lenient —
+    // filler before it, e.g. Whisper prepending "uh", still counts) opens
+    // the window. Anything else is not addressed to it — drop it, don't
+    // queue it.
+    const { woken, command } = matchWakePhrase(text, props.wakePhrase);
+    if (!woken) {
+      console.debug('[legion-speech] conversation: asleep — dropped (no wake phrase)');
+      return;
+    }
+    openWakeWindow();
+    if (command) {
+      console.debug('[legion-speech] conversation: woken — auto-send command');
+      props.onSend(command);
+    } else {
+      console.debug('[legion-speech] conversation: woken — waiting for the next utterance');
+    }
+  };
+  const handleConversationSpeechStart = () => {
+    if (speaker.speaking) {
+      console.debug('[legion-speech] conversation: barge-in — stopping TTS');
+      speaker.stop();
+    }
+  };
+  // Conversation mode implies auto-speak — reuse the EXISTING auto-speak
+  // effect (below) rather than building a second speak path; forcing this
+  // true is the entire integration point.
+  const effectiveAutoSpeak = props.autoSpeak || props.conversationMode;
+
+  // LOCAL WAKE-EAR (Moonshine) — conversation mode's VAD transcribes
+  // on-device via a tiny Moonshine model instead of round-tripping to the
+  // Whisper/mesh ASR path push-to-talk and "🎙 Listen" still use. Only
+  // loaded while conversation mode is actually on (same "don't download a
+  // model nobody asked for" discipline as `speechHost`/`ttsHost`).
+  const createMoonshineWorker = useCallback(
+    () => new Worker(new URL('../workers/moonshineWorker.ts', import.meta.url), { type: 'module' }),
+    [],
+  );
+  const moonshineTranscriber = useMoonshineTranscriber({
+    enabled: props.conversationMode,
+    createWorker: createMoonshineWorker,
+  });
+  // Fallback target for the composed `conversationTranscribe` below — the
+  // SAME resolution `useVadListen` would use internally if no override were
+  // passed (local ASR host, else a roster peer advertising asr.transcribe).
+  // Constructed here (not just inside `useVadListen`) because the fallback
+  // needs to be reachable FROM the override function itself.
+  const meshSpeechClient = useSpeechClient({
+    callTool: props.callTool,
+    transcribeLocal: props.speechHost.ready ? props.speechHost.transcribeLocal : undefined,
+  });
+  // Moonshine while it's ready and healthy; otherwise fall back to the
+  // mesh/Whisper path so conversation mode still works while Moonshine is
+  // still downloading/initializing on first enable, or if it ever errors.
+  const conversationTranscribe = useCallback(
+    async (clip: { bytes: ArrayBuffer; mimeType: string }) => {
+      if (moonshineTranscriber.ready && !moonshineTranscriber.error) {
+        try {
+          return await moonshineTranscriber.transcribe(clip);
+        } catch (err) {
+          console.warn('[legion-speech] conversation: moonshine transcribe failed, falling back to mesh ASR', err);
+        }
+      }
+      return meshSpeechClient.transcribe(clip);
+    },
+    [moonshineTranscriber, meshSpeechClient],
+  );
+  // Only actually open the mic when conversation mode is on AND there's
+  // somewhere to send a transcript — mirrors Composer's own
+  // `listenEnabled && asrReachable` gating for the manual "🎙 Listen" toggle.
+  const conversationVad = useVadListen({
+    enabled: props.conversationMode && asrReachable,
+    callTool: props.callTool,
+    // `transcribeLocal` (and `callTool` above) are unused while `transcribe`
+    // is supplied below — kept only because `callTool` is a required prop
+    // and this stays the harmless "no override" fallback shape if
+    // `transcribe` were ever omitted.
+    transcribeLocal: props.speechHost.ready ? props.speechHost.transcribeLocal : undefined,
+    // The wake-ear swap: conversation mode's utterances go through
+    // Moonshine (with a mesh/Whisper fallback) instead of `useVadListen`'s
+    // own internal `useSpeechClient` path — see `conversationTranscribe`
+    // above and `useVadListen.ts`'s "Local wake-ear override" doc.
+    transcribe: conversationTranscribe,
+    onTranscript: handleConversationTranscript,
+    onSpeechStart: handleConversationSpeechStart,
+    assets: VAD_ASSETS,
+    // Both true: this device is about to hear its OWN TTS reply out of the
+    // speakers while the mic stays open for the next turn — without this,
+    // VAD mistakes the assistant's own voice for the user talking. See
+    // `useVadListen.ts`'s module doc, "self-echo prevention" section.
+    echoCancellation: true,
+    noiseSuppression: true,
+  });
+
   const handleSpeak = useCallback(
     (id: string, text: string) => {
+      // Clicking 🔊 on the message currently speaking is a toggle: stop it.
+      if (speakingId === id) {
+        speaker.stop();
+        setSpeakingId(null);
+        return;
+      }
       setSpeakError(null);
       setSpeakingId(id);
       // Read the explanation, not the markup: strip code blocks, markdown,
@@ -68,9 +299,8 @@ export function ChatPane(props: ChatPaneProps) {
       // short spoken note when a reply is code-only (nothing to read).
       const speakable =
         toSpeakableText(text) || 'This reply is code only, so there is nothing to read aloud.';
-      void ttsClient
-        .synthesize(speakable)
-        .then((content) => audioPlayback.play(content))
+      void speaker
+        .speak(speakable)
         .catch((err) => {
           setSpeakError(err instanceof Error ? err.message : String(err));
         })
@@ -78,8 +308,60 @@ export function ChatPane(props: ChatPaneProps) {
           setSpeakingId((cur) => (cur === id ? null : cur));
         });
     },
-    [ttsClient, audioPlayback],
+    [speaker, speakingId],
   );
+
+  // AUTO-SPEAK (increment 2, forced on by 💬 conversation mode — increment
+  // 3c's `effectiveAutoSpeak`) — speak the COMPLETED reply the instant
+  // `streamingMessageId` transitions away from it, never on mount and never
+  // a second time for the same message. `prevStreamingRef` remembers the
+  // PREVIOUS render's streaming id; when this render's id differs from it,
+  // whatever id was previously streaming just finished (or was aborted).
+  // First transition ever has `prev === undefined` (nothing was streaming
+  // before), so the very first reply's mount-time render never fires this —
+  // only a genuine streaming→settled transition does.
+  const prevStreamingRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevStreamingRef.current;
+    prevStreamingRef.current = props.streamingMessageId;
+    if (!prev || prev === props.streamingMessageId) return;
+    // WAKE-GATE (increment 3b): a reply finishing counts as "the
+    // conversation is still going" exactly like sending a turn does — see
+    // `openWakeWindow`'s doc — so the active window covers the reply PLUS a
+    // follow-up gap, not just the moment of sending. Refreshed unconditionally
+    // (not just under `effectiveAutoSpeak`) since the window matters whenever
+    // conversation mode is on, autoSpeak or not.
+    openWakeWindow();
+    if (!effectiveAutoSpeak) return;
+    if (!ttsReachable) return;
+    const finished = props.messages.find((m) => m.id === prev);
+    if (!finished || finished.role !== 'assistant') return;
+    // Same sanitize-before-speak + code-only fallback as the manual 🔊
+    // path (handleSpeak above) — auto-speak must read the same thing a
+    // manual click would.
+    const speakable =
+      toSpeakableText(finished.content) || 'This reply is code only, so there is nothing to read aloud.';
+    setSpeakError(null);
+    setSpeakingId(finished.id);
+    // A reply that finishes while a PREVIOUS auto-spoken (or manually
+    // spoken) reply is still talking is safe to just call speak() on —
+    // useTtsSpeaker's generation counter supersedes the earlier call and
+    // flushes its queued audio (see useTtsSpeaker.ts), no coordination
+    // needed here.
+    void speaker
+      .speak(speakable)
+      .catch((err) => {
+        setSpeakError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        setSpeakingId((cur) => (cur === finished.id ? null : cur));
+      });
+    // Keyed ONLY on the streaming-id transition — `messages`/`speaker`/
+    // `ttsReachable` are read fresh inside but must not themselves
+    // re-trigger this effect (that would re-speak on every unrelated
+    // message-list update, e.g. tool-trace edits on the SAME id).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.streamingMessageId]);
 
   return (
     <div className="chat-pane">
@@ -119,6 +401,54 @@ export function ChatPane(props: ChatPaneProps) {
           <span className="chat-notice-message">Speak failed: {speakError}</span>
         </div>
       )}
+      {conversationModelsLoading && (
+        <div className="chat-notice chat-notice-wake-loading" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            ⏳
+          </span>
+          <span className="chat-notice-message">💬 conversation mode: loading speech models…</span>
+        </div>
+      )}
+      {props.conversationMode && (
+        <div className="chat-notice chat-notice-wake-ear" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            🎙
+          </span>
+          <span className="chat-notice-message">
+            {moonshineTranscriber.error
+              ? 'wake-ear: mesh ASR (Moonshine failed to load)'
+              : moonshineTranscriber.ready
+                ? 'wake-ear: Moonshine (local)'
+                : moonshineTranscriber.loading
+                  ? `wake-ear: mesh ASR (Moonshine ${formatMoonshineProgress(moonshineTranscriber.progress)})`
+                  : 'wake-ear: mesh ASR (Moonshine loading…)'}
+          </span>
+        </div>
+      )}
+      {/* Suppressed while `conversationModelsLoading` — the loading notice
+          above already says why nothing is happening yet; showing this
+          block's 🟢/red "active"/"listening" copy on top of it would read
+          as contradictory (mode looks live when it can't actually hear or
+          reply). Once a host warms (or a mesh peer covers the gap) this
+          renders as usual. */}
+      {props.conversationMode && props.requireWakeWord && !conversationModelsLoading && (
+        <div className="chat-notice chat-notice-wake" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            {wakeActive ? '🟢' : '🔴'}
+          </span>
+          <span className="chat-notice-message">
+            {wakeActive ? 'conversation active' : `listening for "${props.wakePhrase}"`}
+          </span>
+        </div>
+      )}
+      {props.conversationMode && conversationVad.error && (
+        <div className="chat-notice chat-notice-error" role="alert" aria-live="polite">
+          <span className="chat-notice-icon" aria-hidden="true">
+            ⚠
+          </span>
+          <span className="chat-notice-message">Conversation mode failed: {conversationVad.error}</span>
+        </div>
+      )}
       {props.notice && (
         <div
           className={`chat-notice ${props.notice.kind === 'retrying' ? 'chat-notice-retrying' : 'chat-notice-error'}`}
@@ -145,6 +475,7 @@ export function ChatPane(props: ChatPaneProps) {
         onStop={props.onStop}
         speechHost={props.speechHost}
         callTool={props.callTool}
+        conversationMode={props.conversationMode}
       />
     </div>
   );

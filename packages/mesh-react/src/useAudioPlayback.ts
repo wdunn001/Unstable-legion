@@ -34,6 +34,14 @@ export interface UseAudioPlaybackHandle {
   play: (content: AudioPlaybackContent) => Promise<void>;
   /** Stop whatever is currently playing (queued clips still play after). */
   stop: () => void;
+  /**
+   * Stop whatever is currently playing AND flush the queue — any `play()`
+   * calls already chained but not yet started are skipped instead of
+   * starting once the current clip's `stop()` resolves it. Use this (not
+   * plain `stop()`) when a caller (e.g. `useTtsSpeaker`) has queued several
+   * chunks ahead and the user cancels mid-stream.
+   */
+  stopAndClear: () => void;
   /** True while a clip decoded by this hook instance is actively playing. */
   playing: boolean;
   /** Non-null if the last `play()` failed (decode error, playback error). */
@@ -53,6 +61,12 @@ export function useAudioPlayback(): UseAudioPlaybackHandle {
   const ctxRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
+  // Bumped by `stopAndClear()`. Each `play()` call captures the generation
+  // it was queued under; a queued clip whose generation is stale by the
+  // time its turn in `chainRef` comes up skips decoding/playing entirely —
+  // that's what makes a mid-stream cancel actually flush the queue instead
+  // of just silencing the current clip and letting the rest play out.
+  const generationRef = useRef(0);
 
   const getCtx = useCallback((): AudioContext => {
     if (!ctxRef.current) {
@@ -67,7 +81,12 @@ export function useAudioPlayback(): UseAudioPlaybackHandle {
 
   const play = useCallback(
     (content: AudioPlaybackContent): Promise<void> => {
+      const generation = generationRef.current;
       const next = chainRef.current.then(async () => {
+        // Cancelled (via `stopAndClear`) before this clip's turn came up —
+        // skip it entirely rather than decoding/playing a clip the user
+        // already asked to stop.
+        if (generation !== generationRef.current) return;
         try {
           setError(null);
           const ctx = getCtx();
@@ -75,6 +94,7 @@ export function useAudioPlayback(): UseAudioPlaybackHandle {
           console.debug(`[legion-speech] playback: decoding clip (${content.mimeType})…`);
           const arrayBuffer = base64ToArrayBuffer(content.audioBase64);
           const buffer = await ctx.decodeAudioData(arrayBuffer);
+          if (generation !== generationRef.current) return;
           console.debug(`[legion-speech] playback: playing ${buffer.duration.toFixed(2)}s clip`);
           setPlaying(true);
           await new Promise<void>((resolve) => {
@@ -107,5 +127,13 @@ export function useAudioPlayback(): UseAudioPlaybackHandle {
     sourceRef.current?.stop();
   }, []);
 
-  return { play, stop, playing, error };
+  const stopAndClear = useCallback(() => {
+    // Bump the generation FIRST so every clip already chained (but not yet
+    // started) sees itself as stale and skips when its turn comes up, then
+    // stop whatever's actively playing right now.
+    generationRef.current += 1;
+    sourceRef.current?.stop();
+  }, []);
+
+  return { play, stop, stopAndClear, playing, error };
 }

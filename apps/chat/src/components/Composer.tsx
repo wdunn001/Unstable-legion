@@ -3,11 +3,13 @@ import {
   useMeshRoster,
   useMicCapture,
   useSpeechClient,
+  useVadListen,
   type CallToolFn,
   type MicClip,
   type UseSpeechHostHandle,
 } from '@unstable-legion/react';
 import { ASR_SKILL } from '@unstable-legion/core';
+import { VAD_ASSETS } from '../vadAssets.js';
 
 export interface ComposerProps {
   disabled: boolean;
@@ -20,6 +22,13 @@ export interface ComposerProps {
    * `asr.transcribe` via `callTool` (see `useSpeechClient`). */
   speechHost: UseSpeechHostHandle;
   callTool: CallToolFn;
+  /** 💬 Conversation mode (increment 3c) owns its OWN `useVadListen`
+   * instance up in `ChatPane` — a second, independent continuous mic
+   * stream would be redundant (and needlessly hold the mic open twice) on
+   * top of this one. While it's on, the "🎙 Listen" toggle here is forced
+   * off and disabled — the two are NOT meant to run concurrently, unlike
+   * push-to-talk (🎤) which stays independent of both. */
+  conversationMode: boolean;
 }
 
 export function Composer(props: ComposerProps) {
@@ -68,6 +77,44 @@ export function Composer(props: ComposerProps) {
       .finally(() => setTranscribing(false));
   }, [mic.lastClip, client]);
 
+  // "🎙 Listen" — continuous, hands-free VAD open mic (increment 3a of the
+  // voice-conversation layer). Independent of push-to-talk above: it owns
+  // its own continuous mic stream while toggled on, segments speech
+  // locally via Silero VAD, and appends each utterance's transcript into
+  // the composer as it arrives. No auto-send here — that's increment 3c.
+  const [listenEnabled, setListenEnabled] = useState(false);
+  const handleTranscript = (text: string) => {
+    const el = ref.current;
+    if (!el) return;
+    const existing = el.value.trim();
+    el.value = existing ? `${existing} ${text}` : text;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(200, el.scrollHeight)}px`;
+    el.focus();
+  };
+  // Conversation mode (3c) owns the mic via its OWN `useVadListen` instance
+  // in ChatPane — never run both continuous-listen streams at once. Gating
+  // `enabled` on `!props.conversationMode` here (rather than relying solely
+  // on the effect below forcing `listenEnabled` false) closes a one-render
+  // race: state updates land on the NEXT render, but this computed value is
+  // correct on the SAME render conversation mode flips on.
+  const vad = useVadListen({
+    enabled: listenEnabled && !props.conversationMode,
+    callTool: props.callTool,
+    transcribeLocal: speechHost.ready ? speechHost.transcribeLocal : undefined,
+    onTranscript: handleTranscript,
+    assets: VAD_ASSETS,
+  });
+
+  // If the ASR target disappears mid-listen (host toggled off, mesh peer
+  // left) turn Listen back off instead of leaving it stuck spinning with a
+  // continuous mic stream open and no way to serve a transcript. Same
+  // treatment when conversation mode takes over the mic — reset the toggle
+  // rather than leave it "on" but silently overridden.
+  useEffect(() => {
+    if (listenEnabled && (!asrReachable || props.conversationMode)) setListenEnabled(false);
+  }, [asrReachable, listenEnabled, props.conversationMode]);
+
   function send() {
     const el = ref.current;
     if (!el) return;
@@ -97,18 +144,39 @@ export function Composer(props: ComposerProps) {
     else mic.start();
   }
 
+  function handleListenClick() {
+    setListenEnabled((cur) => !cur);
+  }
+
+  // "Loading…" only makes sense when THIS tab's own host is the thing
+  // we're waiting on — if a mesh peer already covers ASR, `asrReachable`
+  // is already true and this branch never applies.
+  const asrUnreachableReason = speechHost.loading
+    ? 'Loading speech model…'
+    : 'Enable Host speech-to-text, or wait for a peer that offers it';
+
   const micDisabled = props.disabled || !asrReachable || transcribing;
   const micTitle = !asrReachable
-    ? 'Enable Host speech-to-text, or wait for a peer that offers it'
+    ? asrUnreachableReason
     : mic.recording
       ? 'Stop recording'
       : 'Speak your message';
+
+  const listenDisabled = props.disabled || !asrReachable || props.conversationMode;
+  const listenTitle = props.conversationMode
+    ? 'Conversation mode owns the mic right now — turn it off to use manual Listen'
+    : !asrReachable
+      ? asrUnreachableReason
+      : listenEnabled
+        ? 'Stop hands-free listening'
+        : 'Start hands-free listening — speech is transcribed into the composer as you talk';
 
   return (
     <div className="composer">
       {props.disabled && props.disabledReason && <div className="composer-disabled-reason">{props.disabledReason}</div>}
       {mic.error && <div className="composer-mic-error">Mic error: {mic.error}</div>}
       {transcribeError && <div className="composer-mic-error">Transcription failed: {transcribeError}</div>}
+      {vad.error && <div className="composer-listen-error">Listen failed: {vad.error}</div>}
       <div className="composer-row">
         <button
           type="button"
@@ -119,6 +187,16 @@ export function Composer(props: ComposerProps) {
           onClick={handleMicClick}
         >
           {transcribing ? 'transcribing…' : mic.recording ? '● recording…' : '🎤'}
+        </button>
+        <button
+          type="button"
+          className={`btn btn-secondary composer-listen ${vad.listening ? 'composer-listen-active' : ''}`}
+          disabled={listenDisabled}
+          title={listenTitle}
+          aria-pressed={listenEnabled}
+          onClick={handleListenClick}
+        >
+          {vad.listening ? '📡 listening…' : '🎙 Listen'}
         </button>
         <textarea
           ref={ref}

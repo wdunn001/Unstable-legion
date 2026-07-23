@@ -192,6 +192,119 @@ function saveTtsHostEnabled(enabled: boolean): void {
   }
 }
 
+// Sticky "auto-speak assistant replies" opt-in. Unlike ASR_HOST/TTS_HOST
+// above, this is a CONSUMPTION preference ("read replies to me"), not a
+// hosting one — it doesn't spin up a worker or change what this tab
+// advertises on `cap`, it just decides whether ChatPane calls
+// `speaker.speak()` on its own once a reply finishes streaming. Default off
+// (same "opt in to a GPU/audio surprise" discipline as the host toggles,
+// even though this one is cheap — hands-free audio starting on its own is
+// still a surprise the user should choose).
+const AUTO_SPEAK_STORAGE_KEY = 'unstable-legion-chat:auto-speak-enabled-v1';
+
+function loadAutoSpeakEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(AUTO_SPEAK_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveAutoSpeakEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(AUTO_SPEAK_STORAGE_KEY, '1');
+    else localStorage.removeItem(AUTO_SPEAK_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
+// Sticky "💬 conversation mode" opt-in (increment 3c) — mirrors
+// AUTO_SPEAK_STORAGE_KEY exactly: a CONSUMPTION preference, not a hosting
+// one, so it doesn't touch `cap`. Turning it on FORCES auto-speak on too
+// (see ChatPane's `effectiveAutoSpeak`) and continuously opens the mic
+// (`useVadListen`, gated on reachability the same way the toggle itself
+// is) — a bigger "hands-free audio + mic" surprise than either ASR/TTS
+// hosting or plain auto-speak, so default off follows the same discipline.
+const CONVERSATION_MODE_STORAGE_KEY = 'unstable-legion-chat:conversation-mode-v1';
+
+function loadConversationModeEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(CONVERSATION_MODE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveConversationModeEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(CONVERSATION_MODE_STORAGE_KEY, '1');
+    else localStorage.removeItem(CONVERSATION_MODE_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
+// 🔴/🟢 "Require wake word" opt-in (increment 3b) — gates 💬 conversation
+// mode so it only auto-sends after a wake phrase (see ChatPane's
+// `matchWakePhrase`/`WAKE_ACTIVE_WINDOW_MS`), rather than open-mic
+// responding to anything said while the mic's open. Default ON: unlike the
+// other consumption toggles above (which each add a NEW surprise on top of
+// silence), conversation mode's open-mic default is itself the surprising
+// behavior this increment tempers — a fresh install of conversation mode
+// should NOT respond to arbitrary household chatter.
+const REQUIRE_WAKE_WORD_STORAGE_KEY = 'unstable-legion-chat:require-wake-word-v1';
+
+function loadRequireWakeWordEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  try {
+    const raw = localStorage.getItem(REQUIRE_WAKE_WORD_STORAGE_KEY);
+    return raw === null ? true : raw === '1';
+  } catch {
+    return true;
+  }
+}
+
+function saveRequireWakeWordEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    // Unlike the other toggles' "absence == off" convention, this one
+    // defaults ON, so both states need an explicit stored value — '1'/'0'
+    // rather than set/remove.
+    localStorage.setItem(REQUIRE_WAKE_WORD_STORAGE_KEY, enabled ? '1' : '0');
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
+// The configurable wake phrase itself — mirrors PERSONA_STORAGE_KEY's plain
+// string persistence (not a boolean flag like the toggles above).
+const WAKE_PHRASE_STORAGE_KEY = 'unstable-legion-chat:wake-phrase-v1';
+const DEFAULT_WAKE_PHRASE = 'hey legion';
+
+function loadWakePhrase(): string {
+  if (typeof localStorage === 'undefined') return DEFAULT_WAKE_PHRASE;
+  try {
+    const raw = localStorage.getItem(WAKE_PHRASE_STORAGE_KEY);
+    return raw && raw.trim() ? raw : DEFAULT_WAKE_PHRASE;
+  } catch {
+    return DEFAULT_WAKE_PHRASE;
+  }
+}
+
+function saveWakePhrase(phrase: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(WAKE_PHRASE_STORAGE_KEY, phrase);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 // Generation budget. maxDecodeTokens is a CAP, not a target — short answers
 // stop at EOS well before it, so raising it only lets LONG answers (code, etc.)
 // run further; it doesn't slow short chats. Was 256, which truncated real
@@ -251,6 +364,39 @@ export function App() {
     enabled: ttsHostEnabled,
     createWorker: createTtsWorker,
   });
+
+  // Auto-speak replies — consumption preference, see AUTO_SPEAK_STORAGE_KEY's
+  // doc comment above. Not part of `cap` (doesn't change what this tab
+  // advertises), so it lives here just to persist + thread down, mirroring
+  // the ASR/TTS host toggles' state shape without touching the cap memo.
+  const [autoSpeakEnabled, setAutoSpeakEnabled] = useState(() => loadAutoSpeakEnabled());
+  const setAutoSpeakEnabledPersisted = useCallback((enabled: boolean) => {
+    setAutoSpeakEnabled(enabled);
+    saveAutoSpeakEnabled(enabled);
+  }, []);
+
+  // 💬 Conversation mode (increment 3c) — same persisted-preference shape as
+  // autoSpeakEnabled immediately above; see CONVERSATION_MODE_STORAGE_KEY's
+  // doc comment for why it's not part of `cap`.
+  const [conversationModeEnabled, setConversationModeEnabled] = useState(() => loadConversationModeEnabled());
+  const setConversationModeEnabledPersisted = useCallback((enabled: boolean) => {
+    setConversationModeEnabled(enabled);
+    saveConversationModeEnabled(enabled);
+  }, []);
+
+  // 🔴/🟢 Wake-word gate (increment 3b) — same persisted-preference shape as
+  // conversationModeEnabled immediately above; see REQUIRE_WAKE_WORD_STORAGE_KEY's
+  // doc comment for the default-ON rationale.
+  const [requireWakeWordEnabled, setRequireWakeWordEnabled] = useState(() => loadRequireWakeWordEnabled());
+  const setRequireWakeWordEnabledPersisted = useCallback((enabled: boolean) => {
+    setRequireWakeWordEnabled(enabled);
+    saveRequireWakeWordEnabled(enabled);
+  }, []);
+  const [wakePhrase, setWakePhrase] = useState(() => loadWakePhrase());
+  const setWakePhrasePersisted = useCallback((phrase: string) => {
+    setWakePhrase(phrase);
+    saveWakePhrase(phrase);
+  }, []);
 
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
@@ -322,6 +468,14 @@ export function App() {
         ttsHost={ttsHost}
         ttsHostEnabled={ttsHostEnabled}
         onToggleTtsHost={setTtsHostEnabledPersisted}
+        autoSpeakEnabled={autoSpeakEnabled}
+        onToggleAutoSpeak={setAutoSpeakEnabledPersisted}
+        conversationModeEnabled={conversationModeEnabled}
+        onToggleConversationMode={setConversationModeEnabledPersisted}
+        requireWakeWordEnabled={requireWakeWordEnabled}
+        onToggleRequireWakeWord={setRequireWakeWordEnabledPersisted}
+        wakePhrase={wakePhrase}
+        onChangeWakePhrase={setWakePhrasePersisted}
       />
     </MeshProvider>
   );
@@ -340,10 +494,28 @@ function Dashboard(props: {
   ttsHost: UseTtsHostHandle;
   ttsHostEnabled: boolean;
   onToggleTtsHost: (enabled: boolean) => void;
+  autoSpeakEnabled: boolean;
+  onToggleAutoSpeak: (enabled: boolean) => void;
+  conversationModeEnabled: boolean;
+  onToggleConversationMode: (enabled: boolean) => void;
+  requireWakeWordEnabled: boolean;
+  onToggleRequireWakeWord: (enabled: boolean) => void;
+  wakePhrase: string;
+  onChangeWakePhrase: (phrase: string) => void;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
   const roster = useMeshRoster();
+  // Consumption-side reachability for the "Auto-speak replies" toggle
+  // (ToolContributionPanel) — same resolution ChatPane's own `ttsReachable`
+  // uses: this tab hosts TTS, or some roster peer advertises `TTS_SKILL`.
+  // Computed here (not just inside ChatPane) because the toggle itself
+  // lives in the sidebar's ToolContributionPanel, not ChatPane.
+  const ttsReachable = props.ttsHost.ready || roster.some((r) => r.skills.includes(TTS_SKILL));
+  // Same resolution, ASR direction — needed alongside `ttsReachable` for
+  // the "💬 Conversation mode" toggle's reachability hint (it needs BOTH
+  // directions; see ToolContributionConversationModeProps' doc comment).
+  const asrReachable = props.speechHost.ready || roster.some((r) => r.skills.includes(ASR_SKILL));
 
   // Trim the assembled prompt to leave room for the model's own generation
   // within the KV window — see MAX_DECODE_TOKENS. Floored so a small ctx never
@@ -982,6 +1154,10 @@ function Dashboard(props: {
           }}
           speechHost={speechHost}
           ttsHost={ttsHost}
+          autoSpeak={props.autoSpeakEnabled}
+          conversationMode={props.conversationModeEnabled}
+          requireWakeWord={props.requireWakeWordEnabled}
+          wakePhrase={props.wakePhrase}
           callTool={meshToolsHandle.callTool}
         />
         <MeshSidebar
@@ -1036,13 +1212,34 @@ function Dashboard(props: {
             enabled: asrHostEnabled,
             onToggleEnabled: props.onToggleAsrHost,
             ready: speechHost.ready,
+            loading: speechHost.loading,
+            progress: speechHost.progress,
             error: speechHost.error,
           }}
           ttsHost={{
             enabled: ttsHostEnabled,
             onToggleEnabled: props.onToggleTtsHost,
             ready: ttsHost.ready,
+            loading: ttsHost.loading,
+            progress: ttsHost.progress,
             error: ttsHost.error,
+          }}
+          autoSpeak={{
+            enabled: props.autoSpeakEnabled,
+            onToggleEnabled: props.onToggleAutoSpeak,
+            reachable: ttsReachable,
+          }}
+          conversationMode={{
+            enabled: props.conversationModeEnabled,
+            onToggleEnabled: props.onToggleConversationMode,
+            reachable: asrReachable && ttsReachable,
+          }}
+          wakeWord={{
+            requireEnabled: props.requireWakeWordEnabled,
+            onToggleRequireEnabled: props.onToggleRequireWakeWord,
+            phrase: props.wakePhrase,
+            onChangePhrase: props.onChangeWakePhrase,
+            conversationModeEnabled: props.conversationModeEnabled,
           }}
           modelFolder={modelFolder}
           modelFolderDownloadUrl={modelConfig.downloadUrl}
