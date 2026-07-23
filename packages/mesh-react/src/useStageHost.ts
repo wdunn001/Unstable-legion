@@ -1064,16 +1064,26 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               {
                 useMemoryShardStore: req.useMemoryShardStore,
                 localFolderHandle: req.localFolderHandle,
-                // GATED ROLLOUT (#47): opt into the incremental shard-by-shard
-                // loader via ?incrementalLoad=1. Needs per-shard roles (the
-                // artifact-slice manifest path) — a legacy full.gguf open has
-                // none and stays on the monolithic loadStage. Read here (main
+                // INCREMENTAL LOAD (#47): use the shard-by-shard begin/add_shard/
+                // finish loader instead of the monolithic loadStage. Needs
+                // per-shard roles (the artifact-slice manifest path) — a legacy
+                // full.gguf open has none and stays on loadStage. Read here (main
                 // thread) so no flag has to thread through every hook.
+                //
+                // Default ON for streaming-capable packages — those that ship a
+                // per-layer tensor offset index (`shardTensorIndex`), which lets
+                // the loader place expert tensors one at a time (peak = one
+                // tensor, not the whole ~1.5 GB fragment). Only the 235B MoE
+                // package carries this today; 8B/14B/32B have no per-layer index
+                // and stay on the monolithic path unless ?incrementalLoad=1 is
+                // set to force the rollout for them too.
                 incrementalLoad:
                   !!req.shardRoles &&
                   req.shardRoles.length === req.shardUrls.length &&
-                  typeof location !== 'undefined' &&
-                  new URLSearchParams(location.search).get('incrementalLoad') === '1',
+                  ((Array.isArray(req.shardTensorIndex) &&
+                    req.shardTensorIndex.some((t) => t && t.length > 0)) ||
+                    (typeof location !== 'undefined' &&
+                      new URLSearchParams(location.search).get('incrementalLoad') === '1')),
               },
               (progress) => {
                 progressTick();

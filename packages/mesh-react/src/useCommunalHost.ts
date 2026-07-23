@@ -450,14 +450,23 @@ export async function resolveCommunalShardPlan(
   // Base URL for relative fragment paths = the WINNING source, not the
   // primary — a manifest served by the fallback origin must pull its
   // weights from that same origin (absolute paths are unaffected).
-  // INCREMENTAL LOAD (#47): under ?incrementalLoad=1, request the header-only
-  // TYPE-index metadata fragment (metadata-index.gguf) that loadStageIncremental's
-  // begin() needs. fragmentsForRange falls back to the KV-only metadata.gguf if
-  // the manifest has no metadata_index, so this is safe on older packages. Read
-  // on the main thread (no per-hook flag plumbing); useStageHost reads the same
-  // param to actually pick loadStageIncremental.
+  // INCREMENTAL LOAD (#47): request the header-only TYPE-index metadata fragment
+  // (metadata-index.gguf) that loadStageIncremental's begin() needs. Default ON
+  // for streaming-capable packages — those that ship BOTH a shared.metadata_index
+  // AND a per-layer tensor offset index (only the 235B MoE today) — so the
+  // incremental/streaming path runs without any query flag. fragmentsForRange
+  // falls back to the KV-only metadata.gguf when the manifest has no
+  // metadata_index, so this stays safe on older packages. ?incrementalLoad=1
+  // still forces it for packages that lack the per-layer index (8B/14B/32B).
+  // useStageHost reads the mirror signal (shardTensorIndex) to actually pick
+  // loadStageIncremental.
+  const streamingCapable =
+    !!manifest.shared.metadata_index &&
+    manifest.layers.some((l) => Array.isArray(l.tensors) && l.tensors.length > 0);
   const useMetadataIndex =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).get('incrementalLoad') === '1';
+    streamingCapable ||
+    (typeof location !== 'undefined' &&
+      new URLSearchParams(location.search).get('incrementalLoad') === '1');
   const fragments = fragmentsForRange(
     manifest,
     cache.url,
