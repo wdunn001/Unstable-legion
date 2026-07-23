@@ -1095,8 +1095,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 const monotonicShards = completedShardIdx.size;
                 let monotonicBytes = progress.bytesFetched;
                 if (shardSizes && shardSizes.length > 0) {
-                  monotonicBytes = 0;
-                  for (const idx of completedShardIdx) monotonicBytes += shardSizes[idx - 1] ?? 0;
+                  let completedBytes = 0;
+                  for (const idx of completedShardIdx) completedBytes += shardSizes[idx - 1] ?? 0;
+                  // Take the larger of (a) exact sizes of fully-completed shards
+                  // and (b) the loader's own running byte total. During a long
+                  // per-tensor STREAMING load the current layer shard isn't
+                  // "completed" yet, so (a) alone sits frozen — (b) carries the
+                  // in-progress bytes. Both are monotonic, so max() stays monotonic
+                  // and snaps to exact sizes at each shard boundary.
+                  monotonicBytes = Math.max(completedBytes, progress.bytesFetched);
                 }
                 const monotonic: StageWorkerLoadProgress = {
                   ...progress,
