@@ -203,6 +203,9 @@ export interface UseStageHostOptions {
     /** Per-shard manifest role — carried for the incremental loader (see
      * stage-runtime StageDescriptor.shardRoles). */
     shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+    /** Per-fragment tensor offset index (expert-streaming) — threaded to
+     * StageDescriptor.shardTensorIndex so indexed layers stream tensor-by-tensor. */
+    shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
     useMemoryShardStore?: boolean;
     /**
      * LOCAL-MODEL-FOLDER — a `FileSystemDirectoryHandle` this host should
@@ -414,6 +417,8 @@ interface PendingOpen {
   shardBytes?: readonly number[];
   /** M3 preload only — per-shard manifest role for the incremental loader. */
   shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+  /** M3 preload only — per-fragment tensor offset index (expert-streaming). */
+  shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
   /** M3 preload only — see stageWorkerProtocol.ts's doc comment. */
   useMemoryShardStore?: boolean;
   /** M3 preload only (`opts.preloadStage.localFolderHandle`, see that
@@ -1049,6 +1054,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 shardHashes: req.shardHashes,
                 shardBytes: req.shardBytes,
                 shardRoles: req.shardRoles,
+                shardTensorIndex: req.shardTensorIndex,
                 ctxSize: req.ctxSize,
                 // +1: legion_stage_open always creates one FUSED session
                 // internally (used here only for the warm-up dispatch below) —
@@ -1058,16 +1064,26 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
               {
                 useMemoryShardStore: req.useMemoryShardStore,
                 localFolderHandle: req.localFolderHandle,
-                // GATED ROLLOUT (#47): opt into the incremental shard-by-shard
-                // loader via ?incrementalLoad=1. Needs per-shard roles (the
-                // artifact-slice manifest path) — a legacy full.gguf open has
-                // none and stays on the monolithic loadStage. Read here (main
+                // INCREMENTAL LOAD (#47): use the shard-by-shard begin/add_shard/
+                // finish loader instead of the monolithic loadStage. Needs
+                // per-shard roles (the artifact-slice manifest path) — a legacy
+                // full.gguf open has none and stays on loadStage. Read here (main
                 // thread) so no flag has to thread through every hook.
+                //
+                // Default ON for streaming-capable packages — those that ship a
+                // per-layer tensor offset index (`shardTensorIndex`), which lets
+                // the loader place expert tensors one at a time (peak = one
+                // tensor, not the whole ~1.5 GB fragment). Only the 235B MoE
+                // package carries this today; 8B/14B/32B have no per-layer index
+                // and stay on the monolithic path unless ?incrementalLoad=1 is
+                // set to force the rollout for them too.
                 incrementalLoad:
                   !!req.shardRoles &&
                   req.shardRoles.length === req.shardUrls.length &&
-                  typeof location !== 'undefined' &&
-                  new URLSearchParams(location.search).get('incrementalLoad') === '1',
+                  ((Array.isArray(req.shardTensorIndex) &&
+                    req.shardTensorIndex.some((t) => t && t.length > 0)) ||
+                    (typeof location !== 'undefined' &&
+                      new URLSearchParams(location.search).get('incrementalLoad') === '1')),
               },
               (progress) => {
                 progressTick();
@@ -1079,8 +1095,15 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                 const monotonicShards = completedShardIdx.size;
                 let monotonicBytes = progress.bytesFetched;
                 if (shardSizes && shardSizes.length > 0) {
-                  monotonicBytes = 0;
-                  for (const idx of completedShardIdx) monotonicBytes += shardSizes[idx - 1] ?? 0;
+                  let completedBytes = 0;
+                  for (const idx of completedShardIdx) completedBytes += shardSizes[idx - 1] ?? 0;
+                  // Take the larger of (a) exact sizes of fully-completed shards
+                  // and (b) the loader's own running byte total. During a long
+                  // per-tensor STREAMING load the current layer shard isn't
+                  // "completed" yet, so (a) alone sits frozen — (b) carries the
+                  // in-progress bytes. Both are monotonic, so max() stays monotonic
+                  // and snaps to exact sizes at each shard boundary.
+                  monotonicBytes = Math.max(completedBytes, progress.bytesFetched);
                 }
                 const monotonic: StageWorkerLoadProgress = {
                   ...progress,
@@ -1190,6 +1213,7 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
         shardHashes: req.shardHashes,
         shardBytes: req.shardBytes,
         shardRoles: req.shardRoles,
+        shardTensorIndex: req.shardTensorIndex,
         useMemoryShardStore: req.useMemoryShardStore,
         localFolderHandle: req.localFolderHandle,
       };

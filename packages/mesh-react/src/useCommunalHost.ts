@@ -376,6 +376,11 @@ interface ShardPlan {
    * so the incremental loader can tell the metadata fragment from data shards
    * (see stage-runtime's StageDescriptor.shardRoles / loadStageIncremental). */
   shardRoles?: readonly ('metadata' | 'embeddings' | 'output' | 'layer')[];
+  /** Per-fragment tensor offset index (expert-streaming) — aligned with
+   * shardUrls, undefined per fragment without one. Threaded to
+   * StageDescriptor.shardTensorIndex so loadStageIncremental streams indexed
+   * layers tensor-by-tensor instead of whole-fragment. */
+  shardTensorIndex?: readonly (readonly import('@unstable-legion/stage-runtime').LayerPackageTensorMeta[] | undefined)[];
   useMemoryShardStore: boolean;
 }
 
@@ -445,14 +450,23 @@ export async function resolveCommunalShardPlan(
   // Base URL for relative fragment paths = the WINNING source, not the
   // primary — a manifest served by the fallback origin must pull its
   // weights from that same origin (absolute paths are unaffected).
-  // INCREMENTAL LOAD (#47): under ?incrementalLoad=1, request the header-only
-  // TYPE-index metadata fragment (metadata-index.gguf) that loadStageIncremental's
-  // begin() needs. fragmentsForRange falls back to the KV-only metadata.gguf if
-  // the manifest has no metadata_index, so this is safe on older packages. Read
-  // on the main thread (no per-hook flag plumbing); useStageHost reads the same
-  // param to actually pick loadStageIncremental.
+  // INCREMENTAL LOAD (#47): request the header-only TYPE-index metadata fragment
+  // (metadata-index.gguf) that loadStageIncremental's begin() needs. Default ON
+  // for streaming-capable packages — those that ship BOTH a shared.metadata_index
+  // AND a per-layer tensor offset index (only the 235B MoE today) — so the
+  // incremental/streaming path runs without any query flag. fragmentsForRange
+  // falls back to the KV-only metadata.gguf when the manifest has no
+  // metadata_index, so this stays safe on older packages. ?incrementalLoad=1
+  // still forces it for packages that lack the per-layer index (8B/14B/32B).
+  // useStageHost reads the mirror signal (shardTensorIndex) to actually pick
+  // loadStageIncremental.
+  const streamingCapable =
+    !!manifest.shared.metadata_index &&
+    manifest.layers.some((l) => Array.isArray(l.tensors) && l.tensors.length > 0);
   const useMetadataIndex =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).get('incrementalLoad') === '1';
+    streamingCapable ||
+    (typeof location !== 'undefined' &&
+      new URLSearchParams(location.search).get('incrementalLoad') === '1');
   const fragments = fragmentsForRange(
     manifest,
     cache.url,
@@ -470,6 +484,11 @@ export async function resolveCommunalShardPlan(
       shardHashes: fragments.map((f) => f.sha256),
       shardBytes: fragments.map((f) => f.bytes),
       shardRoles: fragments.map((f) => f.role),
+      // Per-tensor offset index (expert-streaming): present on layer fragments
+      // whose manifest carries `tensors`, undefined otherwise. Threaded to the
+      // descriptor as shardTensorIndex so loadStageIncremental streams those
+      // layers tensor-by-tensor instead of staging the whole ~1.5 GB fragment.
+      shardTensorIndex: fragments.map((f) => f.tensors),
       useMemoryShardStore,
     },
     manifestCache: cache,
@@ -996,6 +1015,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
           shardHashes: plan.shardHashes,
           shardBytes: plan.shardBytes,
           shardRoles: plan.shardRoles,
+          shardTensorIndex: plan.shardTensorIndex,
           useMemoryShardStore: plan.useMemoryShardStore,
           localFolderHandle: localFolderHandleRef.current,
         });
