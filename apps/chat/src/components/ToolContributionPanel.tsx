@@ -40,8 +40,21 @@ export interface ToolContributionSpeechProps {
   error: string | null;
 }
 
-export function ToolContributionPanel(props: { tools: UseToolContributionHandle; speechHost: ToolContributionSpeechProps }) {
-  const { tools, speechHost } = props;
+export interface ToolContributionTtsProps {
+  enabled: boolean;
+  onToggleEnabled: (enabled: boolean) => void;
+  /** True once the Kokoro worker is loaded and the `synthesize` tool is
+   * registered/advertised — see `useTtsHost`. */
+  ready: boolean;
+  error: string | null;
+}
+
+export function ToolContributionPanel(props: {
+  tools: UseToolContributionHandle;
+  speechHost: ToolContributionSpeechProps;
+  ttsHost: ToolContributionTtsProps;
+}) {
+  const { tools, speechHost, ttsHost } = props;
   const [mcpUrl, setMcpUrl] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
@@ -130,6 +143,21 @@ export function ToolContributionPanel(props: { tools: UseToolContributionHandle;
           <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
         )}
         {speechHost.error && <span className="tool-contrib-speech-error">{speechHost.error}</span>}
+      </div>
+      <div className="tool-contrib-speech">
+        <label className="tool-contrib-row" title="Loads a local Kokoro TTS model and synthesizes speech for any peer that asks.">
+          <input
+            type="checkbox"
+            checked={ttsHost.enabled}
+            onChange={(e) => ttsHost.onToggleEnabled(e.target.checked)}
+          />
+          <span className="tool-contrib-name">🔊 Host text-to-speech (uses your GPU)</span>
+        </label>
+        <p className="tool-contrib-sub">Advertises tts.synthesize to the mesh so other tabs can have you speak their replies.</p>
+        {ttsHost.enabled && !ttsHost.ready && !ttsHost.error && (
+          <span className="tool-contrib-speech-status">initializing (downloading model on first use)…</span>
+        )}
+        {ttsHost.error && <span className="tool-contrib-speech-error">{ttsHost.error}</span>}
       </div>
     </section>
   );

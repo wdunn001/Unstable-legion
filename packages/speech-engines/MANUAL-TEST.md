@@ -3,7 +3,10 @@
 Mic capture, WebGPU/wasm engine init, and the actual mesh round-trip
 can't run headlessly in this environment. Follow these steps in a real
 browser (Chrome/Edge recommended for WebGPU) to verify the PoC end to
-end.
+end. Sections 1-3 cover ASR (voice input); section 4 covers TTS (voice
+output, Phase 2a) — the *capability* only (host toggle, speak button on a
+reply). The automatic voice loop (auto-send after speaking, auto-speak
+replies, barge-in) is Phase 2b and not covered here.
 
 ## 1. Local (host-own) path — one tab
 
@@ -105,6 +108,53 @@ LLM-loop change — the user still hits Send/Enter themselves.
    Expect a visible "Mic error: …" line under the composer, not a silent
    no-op.
 
+## 4. Chat app (apps/chat) — voice OUTPUT via the speak button (Phase 2a)
+
+Capability layer only: a peer opts in to hosting TTS, and any assistant
+reply can be spoken via a 🔊 button on its bubble. No auto-speak, no
+auto-send after speaking — those are Phase 2b.
+
+### 4a. Local (host-own) path — one tab
+
+1. From the repo root: `npm run dev -w @unstable-legion/chat`.
+2. Open the app, pick a nick, join.
+3. In the mesh sidebar's **Tool contributions** card, below the ASR
+   toggle, toggle **🔊 Host text-to-speech (uses your GPU)** on.
+   - Expect `initializing (downloading model on first use)…` while the
+     Kokoro worker loads (first run: tens of MB — the ONNX model weights
+     plus a small per-voice style vector, watch the Network tab if it
+     seems stuck), then the status line clears once ready (no error
+     line).
+4. Send a message and wait for an assistant reply to finish streaming.
+5. Once the reply has settled (not mid-stream — the speak button only
+   appears on a finished bubble), click its 🔊 button.
+   - Expect the button to read `synthesizing…` briefly, then switch to
+     `⏹ stop` and start playing audible speech through your speakers/
+     headphones matching the reply text.
+6. Click `⏹ stop` mid-playback. Expect audio to cut immediately and the
+   button to revert to 🔊.
+7. Click 🔊 on a second reply while a first hasn't finished playing (or
+   click it again quickly). Expect the first clip to stop and only the
+   second to play — never two clips overlapping.
+8. Toggle TTS host back off and confirm the 🔊 buttons on existing bubbles
+   become disabled (tooltip: "Enable Host text-to-speech, or wait for a
+   peer that offers it") once no peer advertises `tts.synthesize` either.
+
+### 4b. Mesh path — two tabs
+
+1. Tab A: as in 4a, enable **Host text-to-speech**, leave it ready.
+2. Tab B: open the same chat URL/room with a different nick, leave its
+   TTS host toggle **off**.
+3. In Tab B, once Tab A's peer roster entry shows up advertising
+   `tts.synthesize`, the 🔊 buttons on Tab B's assistant bubbles should
+   become enabled.
+4. Click 🔊 on a reply in Tab B. Expect a mesh round trip to Tab A (slower
+   than the local path in 4a, but not multi-second under normal
+   conditions) and audible playback in Tab B.
+5. Turn Tab A's TTS host toggle off, then click 🔊 in Tab B again. Expect
+   a visible synthesis error (not a silent hang) once the roster updates
+   to show no TTS peer.
+
 ## Known limitations to note while testing (not bugs)
 
 - First model load per browser profile is slow (network fetch); repeat
@@ -119,3 +169,12 @@ LLM-loop change — the user still hits Send/Enter themselves.
   `maxMs`) in apps/demo's SpeechPanel — long dictation isn't the point of
   that PoC. apps/chat's Composer passes `maxMs: 30_000` since a real chat
   message is often longer than a 6s clip.
+- TTS voice-vector `.bin` fetches (one per distinct `voice` used) are
+  hardcoded by `kokoro-js` itself to `huggingface.co` — they do NOT obey
+  `LEGION_MODEL_FALLBACK_HOST`/`modelSources` the way the ONNX model
+  weights do. If `huggingface.co` is unreachable, expect TTS host init to
+  fail on voice loading even if the model itself loaded from the Legion
+  CDN fallback. See `kokoroEngine.ts`'s doc comment.
+- The speak button only appears once a reply has finished streaming
+  (`!streaming`) — speaking a reply mid-generation isn't supported in
+  this phase.

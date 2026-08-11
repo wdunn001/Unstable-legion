@@ -568,6 +568,34 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+.msg-speak {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.msg-speak-btn {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+}
+.msg-speak-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.msg-speak-btn-active {
+  background: var(--warn);
+  color: #fff;
+}
+.msg-speak-error {
+  color: var(--warn);
+  font-size: 11px;
+}
+
 /* ── Composer ─────────────────────────────────────────────────────── */
 .composer {
   border-top: 1px solid var(--border);

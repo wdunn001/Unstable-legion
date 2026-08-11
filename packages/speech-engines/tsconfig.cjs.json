@@ -4,7 +4,16 @@
     "outDir": "dist/cjs",
     "module": "CommonJS",
     "moduleResolution": "Node",
-    "declaration": false
+    "declaration": false,
+    // `kokoro-js`'s package.json only declares `types` inside its
+    // `exports` map (no legacy top-level `types` field), which legacy
+    // `moduleResolution: "Node"` (required here for CommonJS output)
+    // doesn't consult — hence an explicit `paths` pointer to the same
+    // `.d.ts` the `esm`/`types` builds already resolve fine under
+    // `moduleResolution: "Bundler"` (which DOES read `exports`).
+    "paths": {
+      "kokoro-js": ["../../node_modules/kokoro-js/types/kokoro.d.ts"]
+    }
   },
   "include": ["src/**/*"]
 }

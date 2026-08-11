@@ -80,6 +80,13 @@ export default defineConfig({
           // host mode) is ~21MB — far past what the "app shell" precache
           // budget below is sized for. Same treatment as the gguf/webllm
           // exclusions above: fetched at runtime, never precached.
+          // kokoro-js (the TTS engine, ttsWorker.ts) pins
+          // @huggingface/transformers ^3.5.1, satisfied by the ^3.8.1
+          // already pinned above — npm dedupes both to ONE
+          // @huggingface/transformers copy (verify with `npm ls
+          // @huggingface/transformers` after install), so this same
+          // ort-*.wasm glob already covers Kokoro's onnxruntime-web
+          // fetch too; no separate TTS wasm exclusion needed.
           '**/ort-*.wasm',
         ],
         // legion-stage.wasm is ~4.3MB (the stage-runtime wasm glue, part
@@ -150,9 +157,13 @@ export default defineConfig({
       '@unstable-legion/react',
       '@unstable-legion/stage-runtime',
       // Same lazy-discovery gotcha as stage-runtime above, for the same
-      // reason: only imported from src/workers/speechWorker.ts, a
-      // separate module graph entry point Vite doesn't crawl from the
-      // main thread until the ASR-host toggle actually constructs one.
+      // reason: only imported from src/workers/speechWorker.ts AND
+      // src/workers/ttsWorker.ts, separate module graph entry points
+      // Vite doesn't crawl from the main thread until the ASR/TTS-host
+      // toggle actually constructs one. This single entry pre-bundles
+      // BOTH workers' transitive deps (transformers.js for ASR, kokoro-js
+      // + transformers.js + phonemizer for TTS) — same pattern as
+      // @huggingface/transformers itself not needing its own line here.
       '@unstable-legion/speech',
       '@codecai/web',
       '@codecai/web-llm',

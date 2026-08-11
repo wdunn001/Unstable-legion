@@ -30,13 +30,17 @@ import {
   useMeshTools,
   usePersona,
   useSpeechHost,
+  useTtsHost,
   type MeshPeerCap,
   type MeshProviderProps,
   type UseSpeechHostHandle,
+  type UseTtsHostHandle,
 } from '@unstable-legion/react';
 import {
   ASR_SKILL,
   ASR_TOOL_NAME,
+  TTS_SKILL,
+  TTS_TOOL_NAME,
   buildCommunalTopology,
   findPeersByTool,
   firstToolCall,
@@ -163,6 +167,30 @@ function saveAsrHostEnabled(enabled: boolean): void {
   }
 }
 
+// Sticky "host TTS for the mesh" opt-in — own key, same '1'/removed
+// discipline as ASR_HOST_STORAGE_KEY above (default off: spins up a
+// GPU-resident Kokoro worker, independent lifecycle from the ASR one).
+const TTS_HOST_STORAGE_KEY = 'unstable-legion-chat:tts-host-enabled-v1';
+
+function loadTtsHostEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(TTS_HOST_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveTtsHostEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (enabled) localStorage.setItem(TTS_HOST_STORAGE_KEY, '1');
+    else localStorage.removeItem(TTS_HOST_STORAGE_KEY);
+  } catch {
+    /* quota / privacy — silent */
+  }
+}
+
 export function App() {
   const { persona, update: updatePersona } = usePersona(PERSONA_STORAGE_KEY);
   const [joined, setJoined] = useState(false);
@@ -195,21 +223,52 @@ export function App() {
     createWorker: createSpeechWorker,
   });
 
+  // TTS mesh-capability — opt-in "host text-to-speech for the mesh".
+  // Same rationale/placement as the ASR wiring above (registers on the
+  // SAME registry, lives above MeshProvider so readiness feeds straight
+  // into `cap`) — a fully independent lifecycle from ASR (own worker, own
+  // toggle, own storage key; see useTtsHost's doc comment).
+  const [ttsHostEnabled, setTtsHostEnabled] = useState(() => loadTtsHostEnabled());
+  const setTtsHostEnabledPersisted = useCallback((enabled: boolean) => {
+    setTtsHostEnabled(enabled);
+    saveTtsHostEnabled(enabled);
+  }, []);
+  const createTtsWorker = useCallback(
+    () => new Worker(new URL('./workers/ttsWorker.ts', import.meta.url), { type: 'module' }),
+    [],
+  );
+  const ttsHost = useTtsHost({
+    registry: toolContribution.registry,
+    enabled: ttsHostEnabled,
+    createWorker: createTtsWorker,
+  });
+
   const cap: (Omit<MeshPeerCap, 'ts'> & { ts?: number }) | null = useMemo(() => {
     if (!persona.nick) return null;
+    const skills = [...(speechHost.ready ? [ASR_SKILL] : []), ...(ttsHost.ready ? [TTS_SKILL] : [])];
+    const tools = [
+      ...toolContribution.descriptors,
+      ...(speechHost.ready && speechHost.descriptor ? [speechHost.descriptor] : []),
+      ...(ttsHost.ready && ttsHost.descriptor ? [ttsHost.descriptor] : []),
+    ];
     return {
       v: 1,
       nick: persona.nick,
       modelId: modelConfig.modelId,
       available: true,
-      skills: speechHost.ready ? [ASR_SKILL] : [],
+      skills,
       systemPromptSummary: 'Unstable Legion communal chat client',
-      tools:
-        speechHost.ready && speechHost.descriptor
-          ? [...toolContribution.descriptors, speechHost.descriptor]
-          : [...toolContribution.descriptors],
+      tools,
     };
-  }, [persona.nick, modelConfig.modelId, toolContribution.descriptors, speechHost.ready, speechHost.descriptor]);
+  }, [
+    persona.nick,
+    modelConfig.modelId,
+    toolContribution.descriptors,
+    speechHost.ready,
+    speechHost.descriptor,
+    ttsHost.ready,
+    ttsHost.descriptor,
+  ]);
 
   if (!joined || !cap) {
     return (
@@ -251,6 +310,9 @@ export function App() {
         speechHost={speechHost}
         asrHostEnabled={asrHostEnabled}
         onToggleAsrHost={setAsrHostEnabledPersisted}
+        ttsHost={ttsHost}
+        ttsHostEnabled={ttsHostEnabled}
+        onToggleTtsHost={setTtsHostEnabledPersisted}
       />
     </MeshProvider>
   );
@@ -266,6 +328,9 @@ function Dashboard(props: {
   speechHost: UseSpeechHostHandle;
   asrHostEnabled: boolean;
   onToggleAsrHost: (enabled: boolean) => void;
+  ttsHost: UseTtsHostHandle;
+  ttsHostEnabled: boolean;
+  onToggleTtsHost: (enabled: boolean) => void;
 }) {
   const { modelConfig } = props;
   const { peer } = useMeshContext();
@@ -485,13 +550,18 @@ function Dashboard(props: {
 
   // ── TOOL-NODES wiring ─────────────────────────────────────────────
   // Serve inbound tool calls this tab opted in to (docs/TOOL-NODES.md).
-  // ASR host mode opts this tab into serving inbound `transcribe` calls
-  // too — the tool itself is registered on the same registry by
-  // `useSpeechHost` (App level), this just adds it to the served set.
-  const { toolContribution, speechHost, asrHostEnabled } = props;
+  // ASR/TTS host mode opts this tab into serving inbound `transcribe`/
+  // `synthesize` calls too — the tools themselves are registered on the
+  // same registry by `useSpeechHost`/`useTtsHost` (App level), this just
+  // adds them to the served set.
+  const { toolContribution, speechHost, asrHostEnabled, ttsHost, ttsHostEnabled } = props;
   const meshToolsHandle = useMeshTools({
     registry: toolContribution.registry,
-    optedIn: asrHostEnabled ? [...toolContribution.optedIn, ASR_TOOL_NAME] : toolContribution.optedIn,
+    optedIn: [
+      ...toolContribution.optedIn,
+      ...(asrHostEnabled ? [ASR_TOOL_NAME] : []),
+      ...(ttsHostEnabled ? [TTS_TOOL_NAME] : []),
+    ],
   });
   // Tools the MODEL may call: the union advertised across the live
   // roster (self included — a solo tab can consume its own contribution).
@@ -878,6 +948,7 @@ function Dashboard(props: {
             chat.abort('user stopped');
           }}
           speechHost={speechHost}
+          ttsHost={ttsHost}
           callTool={meshToolsHandle.callTool}
         />
         <MeshSidebar
@@ -925,6 +996,12 @@ function Dashboard(props: {
             onToggleEnabled: props.onToggleAsrHost,
             ready: speechHost.ready,
             error: speechHost.error,
+          }}
+          ttsHost={{
+            enabled: ttsHostEnabled,
+            onToggleEnabled: props.onToggleTtsHost,
+            ready: ttsHost.ready,
+            error: ttsHost.error,
           }}
           pipelineHandoff={{
             stages: chat.plan?.stages ?? [],
