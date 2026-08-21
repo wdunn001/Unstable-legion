@@ -55,6 +55,11 @@ let stage: StageHandle | undefined;
 // numbers lanes internally.
 const sessions = new Map<string, StageSessionHandle>();
 
+// Total layer count of the loaded model — needed to derive an island's
+// include_embeddings / include_output flags at session creation (a per-session
+// stage-range override, #63). Set on 'load'.
+let loadedTotalLayers = 0;
+
 function requireSession(sessionId: string): StageSessionHandle {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`no session ${sessionId} on this worker (never created, or already freed)`);
@@ -90,6 +95,7 @@ async function handle(req: StageWorkerRequest): Promise<void> {
     switch (req.type) {
       case 'load': {
         const descriptor = req.descriptor as StageDescriptor;
+        loadedTotalLayers = descriptor.totalLayers;
         // Checkpoint logging: a worker the browser kills (OOM/GPU) dies with
         // NO ErrorEvent — the last checkpoint printed localizes the death.
         const mem = () => {
@@ -256,6 +262,21 @@ async function handle(req: StageWorkerRequest): Promise<void> {
       case 'sessionCreate': {
         if (!stage) throw new Error('stage not loaded');
         const session = await stage.createSession();
+        if (req.island) {
+          // Singleton multi-range (#63): this session serves ONLY
+          // [layerStart, layerEnd) of the loaded (union) model — one island on
+          // a shared unified-KV context, its own seq lane. include_embeddings
+          // is true only for the front island (starts at layer 0); include_output
+          // only for the final island (ends at the model's last layer). A middle
+          // island runs neither and emits a boundary activation to relay.
+          const { layerStart, layerEnd } = req.island;
+          await session.setStageRange(
+            layerStart,
+            layerEnd,
+            layerStart === 0,
+            layerEnd === loadedTotalLayers,
+          );
+        }
         sessions.set(req.sessionId, session);
         post({ type: 'result', reqId: req.reqId, kind: 'sessionCreate' });
         return;

@@ -119,7 +119,16 @@ export type StageWorkerRequest =
    * model's lane_count (StageDescriptor.maxSessions) is exhausted — the
    * worker surfaces that as a normal `{type:'error'}` response, same as
    * any other native-call failure. */
-  | { type: 'sessionCreate'; reqId: number; sessionId: string }
+  | {
+      type: 'sessionCreate';
+      reqId: number;
+      sessionId: string;
+      // Singleton multi-range (#63): when present, this session serves only the
+      // island [layerStart, layerEnd) of the loaded (union) model, via a
+      // per-session stage-range override on its own seq lane. Absent = the whole
+      // loaded stage (the pre-#63 single-range behaviour).
+      island?: { layerStart: number; layerEnd: number };
+    }
   | { type: 'sessionFree'; reqId: number; sessionId: string };
 
 export type StageWorkerResponse =
