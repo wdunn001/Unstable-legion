@@ -260,17 +260,36 @@ export function joinMesh(opts: PeerOptions): Peer {
   const toolListeners = new Set<(frame: MeshToolFrame, peerId: string) => void>();
   const stageFrameListeners = new Set<(bytes: Uint8Array, peerId: string) => void>();
 
-  // ── Debug logging — ON by default while we diagnose roster /
-  //    chat-doesn't-work reports. To silence:
-  //      window.__legion_debug = false
-  //    To re-enable mid-session:
-  //      window.__legion_debug = true
-  //    (Default true; explicit false silences. We'll flip the default
-  //    once mesh is stable.)
+  // ── Logging, two tiers ───────────────────────────────────────────────
+  //
+  // `debug` = LIFECYCLE, on by default. One line per thing that actually
+  // happened: joined a room, a peer arrived or left, a frame failed its
+  // guard. These are rare and are what you want in a bug report.
+  //   window.__legion_debug = false     silences them.
+  //
+  // `trace` = PER-TICK CHATTER, off by default (2026-08-31). The heartbeat
+  // fires every few seconds and each one printed a broadcast line plus a
+  // `cap RECEIVED` line per peer. That buried every real signal in the
+  // console. Chat receipts moved here too. That line printed MESSAGE TEXT
+  // to the console on every inbound message. That has no business being on
+  // by default.
+  //   window.__legion_debug = true      turns them on mid-session.
+  //
+  // The flag is deliberately tri-state. `false` silences both tiers.
+  // `true` enables both. Unset keeps lifecycle only.
   const debug = (...args: unknown[]): void => {
     try {
       const flag = (globalThis as { __legion_debug?: unknown }).__legion_debug;
       if (flag === false) return;
+      // eslint-disable-next-line no-console
+      console.info('[legion-mesh]', ...args);
+    } catch {
+      /* ignore */
+    }
+  };
+  const trace = (...args: unknown[]): void => {
+    try {
+      if ((globalThis as { __legion_debug?: unknown }).__legion_debug !== true) return;
       // eslint-disable-next-line no-console
       console.info('[legion-mesh]', ...args);
     } catch {
@@ -284,12 +303,12 @@ export function joinMesh(opts: PeerOptions): Peer {
       debug('cap REJECTED from', peerId, '— guard failed; raw:', raw);
       return;
     }
-    debug('cap RECEIVED from', peerId, '· nick=', raw.nick, '· tools=', raw.tools.length);
+    trace('cap RECEIVED from', peerId, '· nick=', raw.nick, '· tools=', raw.tools.length);
     roster.upsert(peerId, raw);
   });
 
   onChat((raw, peerId) => {
-    debug('chat RECEIVED from', peerId, '· text=', (raw as { text?: string })?.text);
+    trace('chat RECEIVED from', peerId, '· text=', (raw as { text?: string })?.text);
     if (!isMeshChatMessage(raw)) {
       debug('chat REJECTED — guard failed; raw:', raw);
       return;
@@ -357,7 +376,7 @@ export function joinMesh(opts: PeerOptions): Peer {
     typeof setInterval !== 'undefined'
       ? setInterval(() => {
           currentCap = { ...currentCap, ts: Date.now() };
-          debug('heartbeat cap broadcast');
+          trace('heartbeat cap broadcast');
           void sendCap(currentCap);
           upsertSelf();
         }, heartbeatMs)
@@ -371,7 +390,7 @@ export function joinMesh(opts: PeerOptions): Peer {
   if (typeof document !== 'undefined') {
     visibilityHandler = () => {
       if (document.visibilityState !== 'visible') return;
-      debug('tab visible — re-broadcasting cap');
+      trace('tab visible — re-broadcasting cap');
       currentCap = { ...currentCap, ts: Date.now() };
       void sendCap(currentCap);
       upsertSelf();

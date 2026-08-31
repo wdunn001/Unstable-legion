@@ -96,6 +96,8 @@ async function handle(req: StageWorkerRequest): Promise<void> {
           const m = (performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
           return m ? `heap=${(m.usedJSHeapSize / 1048576).toFixed(0)}MB/${(m.jsHeapSizeLimit / 1048576).toFixed(0)}MB` : 'heap=n/a';
         };
+        let lastCheckpoint = '';
+        let lastCheckpointAt = 0;
         console.log(`[stage-worker] load start layers=[${descriptor.layerStart},${descriptor.layerEnd}) ${mem()}`);
         const { default: createLegionStageModule } = await import(
           /* @vite-ignore */ new URL('/wasm/legion-stage.js', self.location.origin).toString()
@@ -143,9 +145,20 @@ async function handle(req: StageWorkerRequest): Promise<void> {
           // download-progress UI and the stall watchdog (see
           // useStageHost.ts) instead of only this console.log.
           onProgress: (progress) => {
-            console.log(
-              `[stage-worker] shard ${progress.shardsFetched}/${progress.totalShards} ${mem()}`,
-            );
+            // Checkpoint logging, throttled. This line exists to localize a
+            // worker the browser kills silently. It must therefore keep
+            // printing during the long GPU upload. It must not print the SAME line on
+            // every event either: once the shard counters are pinned at their
+            // totals and `performance.memory` is unavailable (`heap=n/a`,
+            // every non-Chrome browser) each event composed an identical
+            // line. Emit on change, otherwise at most once per 5s.
+            const checkpoint = `[stage-worker] shard ${progress.shardsFetched}/${progress.totalShards} ${mem()}`;
+            const nowMs = Date.now();
+            if (checkpoint !== lastCheckpoint || nowMs - lastCheckpointAt >= 5000) {
+              lastCheckpoint = checkpoint;
+              lastCheckpointAt = nowMs;
+              console.log(checkpoint);
+            }
             post({
               type: 'progress',
               reqId: req.reqId,

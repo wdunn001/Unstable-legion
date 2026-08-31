@@ -855,6 +855,9 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
     if (!peer || !enabled) return;
     const meshPeer: Peer = peer;
     const log = (line: string) => logRef.current(line);
+    // Last console line emitted by the load-progress callback below.
+    // Repeated identical progress events collapse to one line.
+    let lastProgressLine = '';
 
     // Worker/session/load state lives on the hook-lifetime `engineRef` (see
     // StageEngine's doc), NOT as effect-local `let`s — so a re-subscribe of
@@ -1123,12 +1126,25 @@ export function useStageHost(opts: UseStageHostOptions): UseStageHostHandle {
                   progress.phase ??
                   (monotonic.totalShards > 0 && monotonic.shardsFetched >= monotonic.totalShards ? 'opening' : 'downloading');
                 notifyDriverLoadProgress(monotonic, phase);
-                log(
+                // Log only when the rendered line CHANGES. Progress events keep
+                // arriving all through `legion_stage_open`, but both counters are
+                // monotonic and already pinned at their totals by then. Every one
+                // of those events therefore composed a byte-identical line. A
+                // cache-warm 8B load printed "3/3 shards (251/251 MB)" fourteen
+                // times and buried the surrounding signal. The UI still updates on every
+                // event via `setLoadProgress` above; this only de-duplicates the
+                // console. Phase is part of the key. The downloading->opening
+                // transition therefore still prints.
+                const progressLine =
                   `[stage-host] load progress: ${monotonic.shardsFetched}/${monotonic.totalShards} shards` +
-                    (monotonic.totalBytes
-                      ? ` (${(monotonic.bytesFetched / 1048576).toFixed(0)}/${(monotonic.totalBytes / 1048576).toFixed(0)} MB)`
-                      : ''),
-                );
+                  (monotonic.totalBytes
+                    ? ` (${(monotonic.bytesFetched / 1048576).toFixed(0)}/${(monotonic.totalBytes / 1048576).toFixed(0)} MB)`
+                    : '') +
+                  ` [${phase}]`;
+                if (progressLine !== lastProgressLine) {
+                  lastProgressLine = progressLine;
+                  log(progressLine);
+                }
               },
             ),
           { stallMs: LOAD_STALL_MS, ceilingMs: LOAD_CEILING_MS },
