@@ -85,7 +85,13 @@ const MIRROR_CONFIG = {
 
 const RELAY_URLS = mergeRelayUrls({
   defaults: defaultRelayUrls,
-  blockedHosts: ['test.mosquitto.org', 'broker-cn.emqx.io'],
+  // public.cloud.shiftr.io blocked 2026-08-31. It accepts the WebSocket
+  // upgrade and then closes the socket at once. MQTT therefore never gets a
+  // CONNACK. Trystero read that as `connack timeout` and reconnected in a
+  // tight loop, flooding the console on every session. The other defaults
+  // (broker.emqx.io, broker.hivemq.com) hold the socket open and still serve
+  // as a fallback behind the self-hosted relay.
+  blockedHosts: ['test.mosquitto.org', 'broker-cn.emqx.io', 'public.cloud.shiftr.io'],
   max: 6,
 });
 // Build-time TURN config — see apps/demo/Dockerfile. STUN-only by
