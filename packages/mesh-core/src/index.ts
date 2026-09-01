@@ -98,7 +98,37 @@ export {
   type StageSessionOpenPayload,
   type StageSessionAcceptPayload,
   type StageSessionBusyPayload,
+  isStageSnapshotRequestPayload,
+  isStageSnapshotOfferPayload,
+  isStageRestorePayload,
+  isStageRestoreAckPayload,
+  makeStageSnapshotRequest,
+  makeStageSnapshotOffer,
+  makeStageRestore,
+  makeStageRestoreAck,
+  type StageSnapshotRequestPayload,
+  type StageSnapshotOfferPayload,
+  type StageRestorePayload,
+  type StageRestoreAckPayload,
 } from './stageControl.js';
+
+// ── P1: session-state snapshots so a stage can move between peers ───
+export {
+  isSnapshotIdentity,
+  isSessionSnapshotEnvelope,
+  snapshotRestoreVerdict,
+  encodeSnapshotChunk,
+  decodeSnapshotChunk,
+  SnapshotReassembler,
+  type SnapshotIdentity,
+  type SessionSnapshotEnvelope,
+  type RestoreRefusal,
+  type RestoreVerdict,
+  type SnapshotChunk,
+  planSnapshotHandoff,
+  type HandoffDecision,
+  type HandoffOptions,
+} from './sessionSnapshot.js';
 
 // ── M2: sessionId envelope for the `sf` activation-frame channel ────
 export {

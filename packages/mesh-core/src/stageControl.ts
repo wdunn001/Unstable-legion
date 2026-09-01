@@ -32,6 +32,8 @@
 import type { MeshToolCall, MeshToolFrame, MeshToolResult } from './types.js';
 import { MESH_PROTOCOL_VERSION } from './types.js';
 import { newCallId } from './tools.js';
+import type { RestoreRefusal, SessionSnapshotEnvelope } from './sessionSnapshot.js';
+import { isSessionSnapshotEnvelope } from './sessionSnapshot.js';
 
 // ── Payload shapes ──────────────────────────────────────────────────────
 
@@ -144,6 +146,47 @@ export interface StageSessionBusyPayload {
   estWaitMs?: number;
 }
 
+/**
+ * P1 — ask a host to capture the state of a running session so it can be
+ * moved. Sent by the driver when a host signals departure, when its
+ * `hostStabilityScore` inputs degrade, or on a periodic cadence so a
+ * sudden drop has something recent to fall back to.
+ */
+export interface StageSnapshotRequestPayload {
+  sessionId: string;
+}
+
+/**
+ * The host's answer. Carries the compatibility identity and the transfer
+ * shape; the bytes themselves follow as `sf` frames encoded with
+ * `encodeSnapshotChunk`, so neither peer holds the whole state twice.
+ */
+export type StageSnapshotOfferPayload = SessionSnapshotEnvelope;
+
+/**
+ * Offer a captured snapshot to a peer that is taking the segment over.
+ * `sessionId` is the session the ADOPTING host will run; `envelope.sessionId`
+ * names the session it was captured from. They differ whenever the driver
+ * re-keys a session across a replan, which `stageTokenCallId` requires it
+ * to do.
+ */
+export interface StageRestorePayload {
+  sessionId: string;
+  envelope: SessionSnapshotEnvelope;
+}
+
+/**
+ * The adopting host's verdict, from `snapshotRestoreVerdict`. A refusal is
+ * not an error: it means the driver must re-prefill this segment instead,
+ * and `reason` says which of the four identity fields disagreed.
+ */
+export interface StageRestoreAckPayload {
+  sessionId: string;
+  accepted: boolean;
+  reason?: RestoreRefusal;
+  detail?: string;
+}
+
 export type StageControlKind =
   | 'stage.load'
   | 'stage.ready'
@@ -154,10 +197,21 @@ export type StageControlKind =
   | 'stage.token'
   | 'stage.session.open'
   | 'stage.session.accept'
-  | 'stage.session.busy';
+  | 'stage.session.busy'
+  | 'stage.snapshot.request'
+  | 'stage.snapshot.offer'
+  | 'stage.restore'
+  | 'stage.restore.ack';
 
 /** "call"-shaped kinds — the asking side initiates these. */
-const CALL_KINDS: ReadonlySet<StageControlKind> = new Set(['stage.load', 'stage.ping', 'stage.stop', 'stage.session.open']);
+const CALL_KINDS: ReadonlySet<StageControlKind> = new Set([
+  'stage.load',
+  'stage.ping',
+  'stage.stop',
+  'stage.session.open',
+  'stage.snapshot.request',
+  'stage.restore',
+]);
 /** "result"-shaped kinds — a response or unsolicited push from a host. */
 const RESULT_KINDS: ReadonlySet<StageControlKind> = new Set([
   'stage.ready',
@@ -166,6 +220,8 @@ const RESULT_KINDS: ReadonlySet<StageControlKind> = new Set([
   'stage.token',
   'stage.session.accept',
   'stage.session.busy',
+  'stage.snapshot.offer',
+  'stage.restore.ack',
 ]);
 
 // A genuine discriminated union (one interface per `kind`) so TS narrows
@@ -188,7 +244,11 @@ export type StageControlMessage =
   | StageControlMessageOf<'stage.token', StageTokenPayload>
   | StageControlMessageOf<'stage.session.open', StageSessionOpenPayload>
   | StageControlMessageOf<'stage.session.accept', StageSessionAcceptPayload>
-  | StageControlMessageOf<'stage.session.busy', StageSessionBusyPayload>;
+  | StageControlMessageOf<'stage.session.busy', StageSessionBusyPayload>
+  | StageControlMessageOf<'stage.snapshot.request', StageSnapshotRequestPayload>
+  | StageControlMessageOf<'stage.snapshot.offer', StageSnapshotOfferPayload>
+  | StageControlMessageOf<'stage.restore', StageRestorePayload>
+  | StageControlMessageOf<'stage.restore.ack', StageRestoreAckPayload>;
 
 export type StageControlMessageFor<K extends StageControlKind> = Extract<StageControlMessage, { kind: K }>;
 
@@ -326,6 +386,32 @@ export function isStageSessionBusyPayload(x: unknown): x is StageSessionBusyPayl
   return true;
 }
 
+export function isStageSnapshotRequestPayload(x: unknown): x is StageSnapshotRequestPayload {
+  if (!isRecord(x)) return false;
+  return typeof x.sessionId === 'string' && !!x.sessionId;
+}
+
+export function isStageSnapshotOfferPayload(x: unknown): x is StageSnapshotOfferPayload {
+  return isSessionSnapshotEnvelope(x);
+}
+
+export function isStageRestorePayload(x: unknown): x is StageRestorePayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  return isSessionSnapshotEnvelope(x.envelope);
+}
+
+export function isStageRestoreAckPayload(x: unknown): x is StageRestoreAckPayload {
+  if (!isRecord(x)) return false;
+  if (typeof x.sessionId !== 'string' || !x.sessionId) return false;
+  if (typeof x.accepted !== 'boolean') return false;
+  // An acceptance carries no reason; a refusal must name one.
+  if (x.accepted && x.reason !== undefined) return false;
+  if (!x.accepted && typeof x.reason !== 'string') return false;
+  if (x.detail !== undefined && typeof x.detail !== 'string') return false;
+  return true;
+}
+
 const PAYLOAD_GUARDS: { [K in StageControlKind]: (x: unknown) => boolean } = {
   'stage.load': isStageLoadPayload,
   'stage.ready': isStageReadyPayload,
@@ -337,6 +423,10 @@ const PAYLOAD_GUARDS: { [K in StageControlKind]: (x: unknown) => boolean } = {
   'stage.session.open': isStageSessionOpenPayload,
   'stage.session.accept': isStageSessionAcceptPayload,
   'stage.session.busy': isStageSessionBusyPayload,
+  'stage.snapshot.request': isStageSnapshotRequestPayload,
+  'stage.snapshot.offer': isStageSnapshotOfferPayload,
+  'stage.restore': isStageRestorePayload,
+  'stage.restore.ack': isStageRestoreAckPayload,
 };
 
 // ── Encode ───────────────────────────────────────────────────────────────
@@ -462,4 +552,33 @@ export function makeStageSessionBusy(
   callId: string,
 ): StageControlMessageFor<'stage.session.busy'> {
   return { kind: 'stage.session.busy', callId, sessionId, payload: { ...payload, sessionId } };
+}
+
+// ── P1: snapshot / restore constructors ─────────────────────────────────
+
+export function makeStageSnapshotRequest(
+  sessionId: string,
+  callId = newCallId(),
+): StageControlMessageFor<'stage.snapshot.request'> {
+  return { kind: 'stage.snapshot.request', callId, sessionId, payload: { sessionId } };
+}
+export function makeStageSnapshotOffer(
+  envelope: StageSnapshotOfferPayload,
+  callId: string,
+): StageControlMessageFor<'stage.snapshot.offer'> {
+  return { kind: 'stage.snapshot.offer', callId, sessionId: envelope.sessionId, payload: envelope };
+}
+export function makeStageRestore(
+  sessionId: string,
+  envelope: SessionSnapshotEnvelope,
+  callId = newCallId(),
+): StageControlMessageFor<'stage.restore'> {
+  return { kind: 'stage.restore', callId, sessionId, payload: { sessionId, envelope } };
+}
+export function makeStageRestoreAck(
+  sessionId: string,
+  payload: Omit<StageRestoreAckPayload, 'sessionId'>,
+  callId: string,
+): StageControlMessageFor<'stage.restore.ack'> {
+  return { kind: 'stage.restore.ack', callId, sessionId, payload: { ...payload, sessionId } };
 }
