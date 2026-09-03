@@ -1,15 +1,15 @@
-# AGENTS.md — Unstable Legion
+# AGENTS.md: Unstable Legion
 
 Guidance for AI coding agents (Cursor, Claude Code, Codex, etc.) working in this
-repo. **The detailed concerns and patterns live in [`.cursor/rules/`](.cursor/rules/)**
-— this file orients you and points there; that directory is the source of truth,
+repo. **The detailed concerns and patterns live in [`.cursor/rules/`](.cursor/rules/).**
+This file orients you and points there. That directory is the source of truth,
 kept in sync so Cursor auto-applies it and other agents can read it directly.
 
 ## What this project is (read first)
 
-Unstable Legion is ONE Qwen3-8B **split across browser tabs** — pipeline
-parallelism over WebRTC, with hidden-state **activations** on the wire, not a
-chatbot-per-peer. If you internalize one thing, make it that. Full picture:
+Unstable Legion is ONE Qwen3-8B **split across browser tabs**: pipeline
+parallelism over WebRTC, with hidden-state **activations** on the wire.
+If you internalize one thing, make it that. Full picture:
 [`.cursor/rules/architecture.mdc`](.cursor/rules/architecture.mdc) and `README.md`.
 
 ## The rules (concerns + patterns)
@@ -25,9 +25,9 @@ chatbot-per-peer. If you internalize one thing, make it that. Full picture:
 
 1. **Guards must stay additive.** A too-strict guard drops a version-skewed peer
    from the whole mesh. New fields optional; default at ingestion. (mesh-protocol)
-2. **Signaling is upstream of ICE/TURN.** Empty ICE-state connections = discovery
-   (MQTT signaling) is dead, not TURN. Diagnose signaling first. (mesh-protocol)
-3. **No third-party STUN / MQTT brokers** — self-hosted off-ISP only. (infra)
+2. **Signaling is upstream of ICE/TURN.** Empty ICE-state connections mean discovery
+   (MQTT signaling) is dead. Diagnose signaling first. (mesh-protocol)
+3. **No third-party STUN / MQTT brokers**: self-hosted off-ISP only. (infra)
 4. **`.env` must bake TURN + relay** at build; a missing `.env` silently ships a
    broken bundle. Run `scripts/verify-turn-baked.sh`. (infra)
 5. **Commit to GitHub `main`** (Forgejo is a read-only mirror); **no AI
