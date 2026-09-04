@@ -4,7 +4,7 @@
  * per-tick loop, (b) turn a raw failure into a human, model-named message
  * for the UI, and (c) emit vendor-neutral telemetry events at the same
  * failure/lifecycle points (the app maps these onto whatever analytics
- * stack it wants — OpenPanel today, see apps/chat/src/telemetry.ts).
+ * stack it wants — the RUM beacon today, see apps/chat/src/telemetry.ts).
  *
  * Everything here is intentionally DOM-free / React-free / mesh-free so it
  * can be unit-tested directly (test/meshResilience.test.ts) with a mock
@@ -147,7 +147,7 @@ export type MeshTelemetryEvent =
 export type MeshTelemetryEventName = MeshTelemetryEvent['name'];
 
 /** A consumer of telemetry events. Supplied by the app (mapped onto
- * OpenPanel etc.); the hooks never see the analytics vendor. Always
+ * a RUM beacon etc.); the hooks never see the analytics vendor. Always
  * called defensively — a throwing/absent sink must never break the mesh. */
 export type MeshTelemetrySink = (event: MeshTelemetryEvent) => void;
 

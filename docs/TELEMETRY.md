@@ -1,35 +1,50 @@
-# Telemetry (OpenPanel): apps/chat
+# Telemetry (RUM beacon): apps/chat
 
-`apps/chat` (the flagship product at `legion.codecai.net`) reports
-pageview/RUM plus a small set of custom **failure/lifecycle** events to
-**OpenPanel**. OpenPanel is the project's ONLY analytics stack. This exists so
-the live app is *observable*. When a user's hosting or chat fails, we get
-a report.
+`apps/chat` (the flagship product at `legion.codecai.net`) reports pageview
+plus a small set of custom **failure/lifecycle** events to the fleet RUM
+beacon, the project's ONLY analytics stack. This exists so the live app is
+*observable*. When a user's hosting or chat fails, we get a report.
 
 ## Where it goes
 
 | Purpose | Host | Auth |
 |---|---|---|
-| Ingest (tracker script + `/api/*`) | your OpenPanel ingest host (`VITE_OPENPANEL_API_URL` / `VITE_OPENPANEL_SCRIPT_URL`) | ungated (expose only the tracker asset + `/v1/*`; 403 everything else) |
-| Dashboard | your OpenPanel dashboard host | put it behind your own SSO |
+| Ingest | `/rum` on the app's own origin (`VITE_RUM_API_URL`, default `/rum`) | none needed; POST only, body capped, nginx forwards it |
+| Storage | VictoriaLogs on the fleet metrics host | LAN only, never publicly named |
+| Reading it | LogsQL, and the analytics card on `ops.quasarke.net` | behind the usual SSO |
 
-The tracker (`op1.js`) is **self-served by our own OpenPanel instance**: no
-CDN, no third-party host. `apps/chat` loads it via OpenPanel's standard
-`window.op` command-queue snippet (no npm SDK dependency), pointed at the
-camouflaged, tracker-list-resistant paths above.
+Same origin is the design. A beacon posted to the site's own domain needs no
+CORS preflight, no second certificate, and no public hostname pointing at the
+log store. nginx-proxy holds the only route to VictoriaLogs, and the stream
+fields are fixed server-side so a hostile client cannot invent new index
+dimensions.
+
+There is no tracker script. Nothing is fetched, so there is no CDN, no
+third-party host, and no npm SDK.
 
 ## How it's wired
 
-- `apps/chat/src/telemetry.ts` is a small, **pure** wrapper. `createTelemetry(config)`
-  installs the `window.op` queue, calls `op('init', { clientId, apiUrl, … })`,
-  injects the tracker `<script>`, and exposes `track(name, props)` /
-  `trackEvent(event)`. **Unit-tested** (`test/telemetry.test.ts`): correct
-  event shapes, and a **hard no-op** when no client id is configured (so the
-  app never breaks if analytics is unconfigured/down/offline).
+- `apps/chat/src/telemetry.ts` is a small, **pure** wrapper.
+  `createTelemetry(config)` returns `track(name, props)` / `trackEvent(event)`,
+  and each call POSTs one JSON line via `navigator.sendBeacon`. **Unit-tested**
+  (`test/telemetry.test.ts`): correct payload shapes, and a **hard no-op** when
+  no site id is configured, so the app never breaks if analytics is
+  unconfigured, down or offline.
+- The session id lives in `sessionStorage` under `_rv`, the same key the
+  nginx-injected beacon writes. Sharing it is what lets an event from the app
+  land on the same session as the page views the edge recorded. It dies with
+  the tab and follows nobody between visits.
 - `packages/mesh-react` emits vendor-neutral `MeshTelemetryEvent`s (see
-  `meshResilience.ts`) from the same points its hooks surface an error/
-  lifecycle change. `App.tsx` passes `telemetry.trackEvent` as the sink.
-  The mesh library never knows the analytics vendor.
+  `meshResilience.ts`) from the same points its hooks surface an error or
+  lifecycle change. `App.tsx` passes `telemetry.trackEvent` as the sink. The
+  mesh library never knows the analytics vendor.
+
+### History
+
+This replaced OpenPanel in September 2026. OpenPanel needed a tracker script,
+a CORS allow-list per origin, and a minted client id. An edge-injected copy of
+that script plus the bundled copy once ran `site.js` twice and threw on the
+second bootstrap, which is the failure the same-origin beacon makes impossible.
 
 ## Events
 
@@ -61,13 +76,16 @@ host in both `script-src` (the tracker) and `connect-src` (event ingest).
 
 ## USER ACTION REQUIRED to turn it on
 
-Tracking is a no-op until a real client id is set. To enable it:
+Tracking is a no-op until a real site id is set. To enable it:
 
-1. In your OpenPanel dashboard, create a project and copy its **public client
-   id**.
-2. Add your deployment's origin to that project's **CORS allow-list**
-   (OpenPanel matches origins EXACTLY: no subdomain wildcards).
-3. Set `VITE_OPENPANEL_CLIENT_ID=<that id>` in your build `.env` (see
-   `.env.example`) and rebuild `legion-chat`.
+1. Set `VITE_RUM_SITE_ID=<this deployment's hostname>` in your build `.env`
+   (see `.env.example`) and rebuild `legion-chat`. Events are grouped by that
+   value, so use the public hostname.
+2. Confirm the edge forwards `/rum`. nginx-proxy needs a server-level
+   `vhost.d/<host>` file containing the `location /rum` block. See
+   `stacks/rum-edge` in the homelab repo.
 
-Until then the app ships and runs normally with analytics disabled.
+There is no dashboard project to create, no client id to mint, and no CORS
+allow-list to maintain. Same origin removes all three.
+
+Until a site id is set the app ships and runs normally with analytics disabled.

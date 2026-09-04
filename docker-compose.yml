@@ -35,12 +35,12 @@ services:
         VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-}
         VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-}
         VITE_TURN_USE_DEFAULT: ${VITE_TURN_USE_DEFAULT:-}
-        # OpenPanel analytics (self-hosted — see docs/TELEMETRY.md). Leave
-        # CLIENT_ID blank to ship WITHOUT tracking (a no-op). Set it from your
-        # OpenPanel project to enable RUM + failure events.
-        VITE_OPENPANEL_CLIENT_ID: ${VITE_OPENPANEL_CLIENT_ID:-}
-        VITE_OPENPANEL_API_URL: ${VITE_OPENPANEL_API_URL:-}
-        VITE_OPENPANEL_SCRIPT_URL: ${VITE_OPENPANEL_SCRIPT_URL:-}
+        # RUM analytics (self-hosted — see docs/TELEMETRY.md). Leave
+        # VITE_RUM_SITE_ID blank to build without tracking; set it to this
+        # deployment's hostname to enable RUM + failure events. Events POST to
+        # /rum on the app's own origin, which nginx forwards to VictoriaLogs.
+        VITE_RUM_SITE_ID: ${VITE_RUM_SITE_ID:-}
+        VITE_RUM_API_URL: ${VITE_RUM_API_URL:-}
     container_name: unstable-legion-chat
     restart: unless-stopped
     expose:

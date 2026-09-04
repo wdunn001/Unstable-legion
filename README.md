@@ -142,7 +142,7 @@ checkouts those symlinks materialize as text stubs.
   every cross-NAT peer. Run `scripts/verify-turn-baked.sh` after the build to
   fail loudly instead.
 - `VITE_RELAY_URLS`: signaling brokers (MQTT-over-WSS).
-- `VITE_OPENPANEL_CLIENT_ID`: analytics; a hard no-op when absent
+- `VITE_RUM_SITE_ID`: analytics; a hard no-op when absent
   (`docs/TELEMETRY.md`).
 
 Model weights are **not** in the image. Point the deployment at a per-layer
