@@ -1,8 +1,8 @@
 /**
- * telemetry unit tests — the OpenPanel wrapper's contract: a hard no-op
+ * telemetry unit tests — the RUM beacon wrapper's contract: a hard no-op
  * when unconfigured, correctly-shaped events when configured, and a strict
  * PII guard (no message content / tokens can reach the wire). Driven with
- * an injected `op` sink so no DOM/window is needed.
+ * an injected `send` sink so no DOM/window is needed.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,10 +14,12 @@ import {
   type TelemetryConfig,
 } from '../src/telemetry.ts';
 
-function spyOp() {
-  const calls: unknown[][] = [];
-  const op = (...args: unknown[]) => calls.push(args);
-  return { op, calls };
+function spySend() {
+  const calls: { url: string; payload: Record<string, unknown> }[] = [];
+  const send = (url: string, payload: Record<string, unknown>) => {
+    calls.push({ url, payload });
+  };
+  return { send, calls };
 }
 
 // ── configured / unconfigured ────────────────────────────────────────────
@@ -31,9 +33,9 @@ test('isConfigured: real id yes; empty/placeholder no', () => {
   assert.ok(!isConfigured({ clientId: 'REPLACE_ME' }));
 });
 
-test('createTelemetry: unconfigured → hard no-op (never calls op, never throws)', () => {
-  const { op, calls } = spyOp();
-  const t = createTelemetry({}, { op, loadScript: () => undefined });
+test('createTelemetry: unconfigured → hard no-op (never sends, never throws)', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({}, { send });
   assert.equal(t.enabled, false);
   t.track('anything', { a: 1 });
   t.trackEvent({ name: 'chat_started', props: { modelId: 'm' } });
@@ -41,52 +43,83 @@ test('createTelemetry: unconfigured → hard no-op (never calls op, never throws
 });
 
 test('createTelemetry: placeholder client id is treated as unconfigured', () => {
-  const { op, calls } = spyOp();
-  const t = createTelemetry({ clientId: 'YOUR_CLIENT_ID' }, { op });
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'YOUR_CLIENT_ID' }, { send });
   assert.equal(t.enabled, false);
   t.track('x');
   assert.equal(calls.length, 0);
 });
 
-test('createTelemetry: configured → init fires once with clientId + apiUrl', () => {
-  const { op, calls } = spyOp();
+test('createTelemetry: configured → one pageview to the default path', () => {
+  const { send, calls } = spySend();
   const cfg: TelemetryConfig = { clientId: 'abc-123' };
-  const t = createTelemetry(cfg, { op });
+  const t = createTelemetry(cfg, { send });
   assert.equal(t.enabled, true);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'init');
-  const initArg = calls[0][1] as Record<string, unknown>;
-  assert.equal(initArg.clientId, 'abc-123');
-  assert.equal(initArg.apiUrl, DEFAULT_API_URL);
-  assert.equal(initArg.trackScreenViews, true);
+  assert.equal(calls[0].url, DEFAULT_API_URL);
+  assert.equal(calls[0].payload.event, 'pageview');
+  assert.equal(calls[0].payload.site, 'abc-123');
+});
+
+test('createTelemetry: trackScreenViews false sends nothing on create', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'abc-123', trackScreenViews: false }, { send });
+  assert.equal(t.enabled, true);
+  assert.equal(calls.length, 0);
 });
 
 test('createTelemetry: respects a custom apiUrl', () => {
-  const { op, calls } = spyOp();
-  createTelemetry({ clientId: 'abc-123', apiUrl: 'https://example.test/v1' }, { op });
-  assert.equal((calls[0][1] as Record<string, unknown>).apiUrl, 'https://example.test/v1');
+  const { send, calls } = spySend();
+  createTelemetry({ clientId: 'abc-123', apiUrl: 'https://example.test/v1' }, { send });
+  assert.equal(calls[0].url, 'https://example.test/v1');
 });
 
 // ── event shapes ─────────────────────────────────────────────────────────
 
-test('track: fires op("track", name, sanitizedProps)', () => {
-  const { op, calls } = spyOp();
-  const t = createTelemetry({ clientId: 'abc-123' }, { op });
+test('track: sends the event name with sanitized props', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'abc-123', trackScreenViews: false }, { send });
   t.track('button_clicked', { where: 'hero', count: 3, on: true });
-  const trackCall = calls.find((c) => c[0] === 'track');
-  assert.ok(trackCall);
-  assert.equal(trackCall![1], 'button_clicked');
-  assert.deepEqual(trackCall![2], { where: 'hero', count: 3, on: true });
+  assert.equal(calls.length, 1);
+  const p = calls[0].payload;
+  assert.equal(p.event, 'button_clicked');
+  assert.equal(p.where, 'hero');
+  assert.equal(p.count, 3);
+  assert.equal(p.on, true);
 });
 
-test('trackEvent: maps a typed mesh event to op("track", name, props)', () => {
-  const { op, calls } = spyOp();
-  const t = createTelemetry({ clientId: 'abc-123' }, { op });
+test('trackEvent: maps a typed mesh event onto the beacon payload', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'abc-123', trackScreenViews: false }, { send });
   t.trackEvent({ name: 'host_load_failed', props: { modelId: 'qwen3-8b-q4', layerRange: '2-13', reason: 'boom', httpStatus: 404 } });
-  const trackCall = calls.find((c) => c[0] === 'track');
-  assert.ok(trackCall);
-  assert.equal(trackCall![1], 'host_load_failed');
-  assert.deepEqual(trackCall![2], { modelId: 'qwen3-8b-q4', layerRange: '2-13', reason: 'boom', httpStatus: 404 });
+  assert.equal(calls.length, 1);
+  const p = calls[0].payload;
+  assert.equal(p.event, 'host_load_failed');
+  assert.equal(p.modelId, 'qwen3-8b-q4');
+  assert.equal(p.layerRange, '2-13');
+  assert.equal(p.reason, 'boom');
+  assert.equal(p.httpStatus, 404);
+});
+
+// ── envelope guard ───────────────────────────────────────────────────────
+
+test('envelope wins: caller props cannot overwrite site, event, path or vid', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'real-site', trackScreenViews: false }, { send });
+  // A caller that names a prop after an envelope field must not be able to
+  // file its event against another site or rename the event. Those are the
+  // fields the log store indexes on.
+  t.track('chat_failed', {
+    site: 'someone-elses-site',
+    event: 'pageview',
+    vid: 'forged',
+    reason: 'timeout',
+  } as Record<string, unknown>);
+  const p = calls[0].payload;
+  assert.equal(p.site, 'real-site');
+  assert.equal(p.event, 'chat_failed');
+  assert.notEqual(p.vid, 'forged');
+  assert.equal(p.reason, 'timeout');
 });
 
 // ── PII guard ────────────────────────────────────────────────────────────
@@ -119,12 +152,11 @@ test('sanitizeProps: undefined props → empty object', () => {
 });
 
 test('trackEvent PII guard: a malicious extra field with message content is stripped before send', () => {
-  const { op, calls } = spyOp();
-  const t = createTelemetry({ clientId: 'abc-123' }, { op });
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'abc-123', trackScreenViews: false }, { send });
   // Simulate an event whose props were accidentally polluted with content.
   t.track('chat_failed', { reason: 'timeout', messageText: 'secret user prompt', tokenIds: [42, 7] } as Record<string, unknown>);
-  const trackCall = calls.find((c) => c[0] === 'track');
-  const props = trackCall![2] as Record<string, unknown>;
+  const props = calls[0].payload;
   assert.equal(props.reason, 'timeout');
   // arrays are dropped; a plain string field survives (it's the caller's job
   // not to put content in string fields — but arrays/objects can never leak).

@@ -1,77 +1,81 @@
 /**
- * telemetry — a small, pure wrapper around OpenPanel's web tracker
- * (`op1.js`), the ONE analytics stack this project uses (self-hosted;
- * ingest + dashboard are both self-hosted (see docs/TELEMETRY.md)
- * behind Authentik). The tracker is loaded via OpenPanel's standard
- * `window.op` command-queue snippet — NO npm SDK dependency, NO CDN: the
- * script is self-served by our own instance, and the whole thing is a
- * strict no-op unless a real client id is configured, so the app can never
- * break because analytics is down / unconfigured / offline.
+ * telemetry — a small, pure wrapper around the fleet RUM beacon, the ONE
+ * analytics stack this project uses (self-hosted; see docs/TELEMETRY.md).
  *
- * Privacy: only counts / states / reasons are ever sent — `sanitizeProps`
- * drops any nested object/array and truncates strings, so message content
- * or raw tokens can't leak into an event even by accident. See the
- * `analytics-openpanel-flipt` memory + docs/TELEMETRY.md.
+ * Events are POSTed to `/rum` on the app's own origin. nginx-proxy forwards
+ * that path into VictoriaLogs, so there is no CORS preflight, no third-party
+ * script, no npm SDK and no CDN. The whole module is a strict no-op unless a
+ * real site id is configured, so the app can never break because analytics is
+ * down, unconfigured or offline.
  *
- * The concrete tracker (`window.op`) and the script-injector are injectable
- * (`createTelemetry`'s second arg) so this module is unit-testable with no
- * DOM — see test/telemetry.test.ts.
+ * This replaced OpenPanel's `window.op` command queue. The queue only existed
+ * to buffer calls until a remote tracker script arrived; with a same-origin
+ * beacon there is nothing to wait for, so the queue, the injected `<script>`
+ * and the double-load hazard it carried all go away. That hazard was real: an
+ * edge-injected copy plus the bundled copy ran `site.js` twice and threw on
+ * the second bootstrap.
+ *
+ * Privacy is unchanged and is the reason `sanitizeProps` exists: only counts,
+ * states and reasons are ever sent. Nested objects and arrays are dropped and
+ * strings truncated, so message content and raw tokens cannot leak into an
+ * event even by accident.
+ *
+ * The transport is injectable (`createTelemetry`'s second arg) so this module
+ * is unit-testable with no DOM — see test/telemetry.test.ts.
  */
 import type { MeshTelemetryEvent } from '@unstable-legion/react';
 
 export interface TelemetryConfig {
-  /** OpenPanel "Legion Chat" project client id (public). Build-time env
-   * `VITE_OPENPANEL_CLIENT_ID`. Absent/placeholder → telemetry is a no-op. */
+  /** Site id, and the enable gate. Build-time env `VITE_RUM_SITE_ID`.
+   * Absent/placeholder → telemetry is a hard no-op. */
   clientId?: string;
-  /** Ingest endpoint. Default the camouflaged tracker-list-resistant path
-   * on the public edge (`/v1/*` → op-api `/api/*`), per the deployed
-   * OpenPanel setup. */
+  /** Ingest path. Defaults to the same-origin `/rum` that nginx forwards into
+   * VictoriaLogs. Same origin is what removes CORS from the picture. */
   apiUrl?: string;
-  /** URL of the self-served tracker script. Default the camouflaged
-   * `/assets/site.js` (→ op1.js) on the same edge. */
-  scriptUrl?: string;
-  /** Automatic pageview/RUM tracking. Default true. */
+  /** Automatic pageview tracking. Default true. */
   trackScreenViews?: boolean;
 }
 
-export const DEFAULT_API_URL = 'https://telemetry.quasarke.net/v1';
-export const DEFAULT_SCRIPT_URL = 'https://telemetry.quasarke.net/assets/site.js';
+/** Same origin on purpose: no preflight, no certificate, no public log host. */
+export const DEFAULT_API_URL = '/rum';
 
-/** Values that are clearly not a real, operator-provided client id. */
+/** Values that are clearly not a real, operator-provided site id. */
 const PLACEHOLDER_IDS = new Set(['', 'REPLACE_ME', 'YOUR_CLIENT_ID', 'CHANGEME', 'TODO', 'undefined', 'null']);
 
 const MAX_STRING_LEN = 256;
 
-/** True iff `cfg` carries a real (non-placeholder) client id. */
+/** Shared with the nginx-injected beacon so both halves of a visit join up. */
+const SESSION_KEY = '_rv';
+
+/** True iff `cfg` carries a real (non-placeholder) site id. */
 export function isConfigured(cfg: TelemetryConfig): boolean {
   const id = (cfg.clientId ?? '').trim();
   return id.length > 0 && !PLACEHOLDER_IDS.has(id);
 }
 
 /**
- * Reduce arbitrary props to analytics-safe scalars: keep string / number /
- * boolean, DROP everything else (nested objects, arrays, functions,
- * null/undefined), and hard-truncate strings. This is the PII guard — even
- * if a caller mistakenly passes message text or a token array, it can't
- * reach the wire as-is.
+ * Scalars only. Nested objects, arrays, functions and null are dropped rather
+ * than serialised, and strings are truncated, so message content cannot ride
+ * along inside an event.
  */
 export function sanitizeProps(props?: Record<string, unknown>): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   if (!props) return out;
-  for (const [key, value] of Object.entries(props)) {
-    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
-    else if (typeof value === 'boolean') out[key] = value;
-    else if (typeof value === 'string') out[key] = value.length > MAX_STRING_LEN ? `${value.slice(0, MAX_STRING_LEN)}…` : value;
-    // everything else (object/array/function/null/undefined) is intentionally dropped
+  for (const [k, v] of Object.entries(props)) {
+    if (typeof v === 'string') out[k] = v.length > MAX_STRING_LEN ? v.slice(0, MAX_STRING_LEN) : v;
+    else if (typeof v === 'number' || typeof v === 'boolean') out[k] = v;
   }
   return out;
 }
 
-/** The `window.op` command function OpenPanel's snippet installs. */
-export type OpCommand = (...args: unknown[]) => void;
+/** One serialised event, exactly as it goes on the wire. */
+export type RumPayload = Record<string, string | number | boolean>;
+
+/** The transport. Tests pass a spy; the default posts to `/rum`. */
+export type SendFn = (url: string, payload: RumPayload) => void;
 
 export interface Telemetry {
-  /** True when a real client id is configured and tracking is live. */
+  /** True when a real site id is configured and tracking is live. */
   readonly enabled: boolean;
   /** Fire a custom event (props sanitized). No-op when disabled. */
   track(name: string, props?: Record<string, unknown>): void;
@@ -80,164 +84,94 @@ export interface Telemetry {
 }
 
 export interface TelemetryDeps {
-  /** The command sink — defaults to the real `window.op` (installing the
-   * proxy-queue snippet + injecting the script on first use). Tests pass a
-   * spy. */
-  op?: OpCommand;
-  /** Injects the tracker `<script>` — defaults to a real DOM injection;
-   * tests pass a no-op/spy. */
-  loadScript?: (url: string) => void;
-}
-
-/**
- * Install OpenPanel's proxy command-queue (idempotent) and return the
- * `window.op` function. Mirrors the official snippet verbatim so a real
- * op1.js drains the queue once it loads. Browser-only — callers must guard.
- */
-function ensureWindowOp(): OpCommand {
-  const w = window as unknown as { op?: OpCommand & { q?: unknown[] } };
-  if (!w.op) {
-    const queue: unknown[][] = [];
-    w.op = new Proxy(
-      function (this: unknown, ...args: unknown[]) {
-        if (args.length) queue.push(args);
-      } as OpCommand,
-      {
-        get(target, prop) {
-          if (prop === 'q') return queue;
-          return (...args: unknown[]) => queue.push([prop as string, ...args]);
-        },
-        has(_target, prop) {
-          return prop === 'q';
-        },
-      },
-    ) as OpCommand;
-  }
-  return w.op;
-}
-
-/**
- * Install one-time global listeners that swallow uncaught errors originating
- * from the tracker, so a bug inside OpenPanel's script (e.g. its self-init
- * reading `document.currentScript`, null for a dynamically-inserted async
- * script — the observed `Cannot read properties of undefined (reading '1')`)
- * can never surface as an app-level "Uncaught" error or trip a framework error
- * overlay. Closes the one hole in "analytics can never break the app":
- * `safeCall` contains errors from OUR calls into `op`, but an error thrown
- * while the browser EVALUATES the async script runs off our stack.
- *
- * Matched by tracker ORIGIN, not the exact URL: the script we inject
- * (`.../site.js`) itself loads a SECOND file (`op1.js`) from the same host, and
- * the real throw comes from THAT filename — an exact-URL match misses it (the
- * bug this widening fixes). Origin scoping stays narrow: the telemetry host
- * serves only the tracker, so no unrelated app error is ever suppressed. Also
- * nets the same error arriving as an unhandled promise rejection. Idempotent.
- */
-function installTrackerErrorGuard(url: string): void {
-  const w = window as unknown as { __opTrackerGuardOrigins?: Set<string> };
-  const matches = (s: string | undefined): boolean =>
-    !!s && !!w.__opTrackerGuardOrigins && [...w.__opTrackerGuardOrigins].some((o) => s.startsWith(o) || s.includes(o));
-  if (!w.__opTrackerGuardOrigins) {
-    w.__opTrackerGuardOrigins = new Set<string>();
-    window.addEventListener(
-      'error',
-      (event) => {
-        // `filename` is the script URL the error was thrown from — suppress any
-        // error whose source is on a registered tracker origin (site.js OR the
-        // op1.js it loads).
-        if (matches(event.filename)) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }
-      },
-      true,
-    );
-    window.addEventListener('unhandledrejection', (event) => {
-      const reason = event.reason as { stack?: string } | undefined;
-      if (matches(reason?.stack)) event.preventDefault();
-    });
-  }
-  try {
-    w.__opTrackerGuardOrigins.add(new URL(url, typeof location !== 'undefined' ? location.href : undefined).origin);
-  } catch {
-    // Non-absolute/opaque URL — fall back to guarding by the raw string.
-    w.__opTrackerGuardOrigins.add(url);
-  }
-}
-
-function defaultLoadScript(url: string): void {
-  if (typeof document === 'undefined') return;
-  if (document.querySelector(`script[data-op-tracker="${url}"]`)) return;
-  installTrackerErrorGuard(url);
-  const el = document.createElement('script');
-  el.src = url;
-  el.async = true;
-  el.defer = true;
-  el.setAttribute('data-op-tracker', url);
-  // A load/parse failure of best-effort analytics must also stay silent.
-  el.onerror = () => undefined;
-  document.head.appendChild(el);
+  /** The transport — defaults to a real `sendBeacon` POST. Tests pass a spy. */
+  send?: SendFn;
 }
 
 const NOOP_TELEMETRY: Telemetry = {
   enabled: false,
-  track: () => undefined,
-  trackEvent: () => undefined,
+  track() {},
+  trackEvent() {},
 };
 
 /**
- * Build a telemetry handle. When `cfg` has no real client id (the common
- * case in dev / when the OpenPanel project hasn't been created yet) this
- * returns a hard no-op — the tracker script is never loaded, `track` does
- * nothing, and nothing ever throws.
+ * Read, or lazily create, the session id the nginx beacon also uses.
+ *
+ * sessionStorage dies with the tab, so this follows nobody between visits.
+ * Sharing the key is what lets an event from this module land on the same
+ * session as the page views the edge beacon recorded.
  */
+function sessionId(): string {
+  try {
+    let v = sessionStorage.getItem(SESSION_KEY);
+    if (!v) {
+      v = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      sessionStorage.setItem(SESSION_KEY, v);
+    }
+    return v;
+  } catch {
+    return 'na';
+  }
+}
+
+/** Fire and forget. Never blocks navigation, never throws into the app. */
+function defaultSend(url: string, payload: RumPayload): void {
+  try {
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/stream+json' });
+    navigator.sendBeacon(url, blob);
+  } catch {
+    // analytics is best-effort — never surface a transport error to the app
+  }
+}
+
 export function createTelemetry(cfg: TelemetryConfig, deps: TelemetryDeps = {}): Telemetry {
   if (!isConfigured(cfg)) return NOOP_TELEMETRY;
 
   const apiUrl = cfg.apiUrl ?? DEFAULT_API_URL;
-  const scriptUrl = cfg.scriptUrl ?? DEFAULT_SCRIPT_URL;
   const hasWindow = typeof window !== 'undefined';
-  const op = deps.op ?? (hasWindow ? ensureWindowOp() : undefined);
-  const loadScript = deps.loadScript ?? defaultLoadScript;
+  const send = deps.send ?? (hasWindow ? defaultSend : undefined);
 
-  if (!op) return NOOP_TELEMETRY; // no window and no injected sink → nothing to do
+  if (!send) return NOOP_TELEMETRY; // no window and no injected sink → nothing to do
 
-  const safeCall = (...args: unknown[]): void => {
+  const emit = (name: string, props: RumPayload): void => {
     try {
-      op(...args);
+      // Caller props go FIRST so the envelope always wins. Spreading them last
+      // would let an event prop named `site` or `event` overwrite the real one,
+      // and those are the fields the log store indexes on. A caller cannot
+      // rename its own events or file them against another site.
+      send(apiUrl, {
+        ...props,
+        ts: new Date().toISOString(),
+        site: cfg.clientId as string,
+        event: name,
+        path: hasWindow ? window.location.pathname : '',
+        vid: hasWindow ? sessionId() : 'na',
+      });
     } catch {
-      // analytics is best-effort — never surface a tracker error to the app
+      // never surface a telemetry error to the app
     }
   };
 
-  safeCall('init', {
-    clientId: cfg.clientId,
-    apiUrl,
-    trackScreenViews: cfg.trackScreenViews ?? true,
-    trackOutgoingLinks: false,
-    trackAttributes: false,
-  });
-  // Only inject the real script when we're driving the actual window.op
-  // (in tests, `deps.op` is supplied and we skip the DOM entirely).
-  if (!deps.op) loadScript(scriptUrl);
+  if (cfg.trackScreenViews ?? true) emit('pageview', {});
 
   return {
     enabled: true,
     track(name: string, props?: Record<string, unknown>): void {
-      safeCall('track', name, sanitizeProps(props));
+      emit(name, sanitizeProps(props));
     },
     trackEvent(event: MeshTelemetryEvent): void {
-      safeCall('track', event.name, sanitizeProps(event.props as Record<string, unknown>));
+      emit(event.name, sanitizeProps(event.props as Record<string, unknown>));
     },
   };
 }
 
-/** Read the build-time OpenPanel config from Vite env. */
+/** Read the build-time RUM config from Vite env. */
 export function telemetryConfigFromEnv(env: ImportMetaEnv): TelemetryConfig {
   return {
-    clientId: env.VITE_OPENPANEL_CLIENT_ID,
-    apiUrl: env.VITE_OPENPANEL_API_URL || DEFAULT_API_URL,
-    scriptUrl: env.VITE_OPENPANEL_SCRIPT_URL || DEFAULT_SCRIPT_URL,
+    clientId: env.VITE_RUM_SITE_ID,
+    apiUrl: env.VITE_RUM_API_URL || DEFAULT_API_URL,
+    // Stated rather than left to createTelemetry's default, so changing that
+    // default cannot silently turn pageviews off for the deployed app.
     trackScreenViews: true,
   };
 }

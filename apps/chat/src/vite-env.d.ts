@@ -6,11 +6,10 @@ interface ImportMetaEnv {
   readonly VITE_TURN_USERNAME?: string;
   readonly VITE_TURN_CREDENTIAL?: string;
   readonly VITE_TURN_USE_DEFAULT?: string;
-  // OpenPanel analytics (self-hosted). CLIENT_ID is required to
-  // enable tracking — created in the OpenPanel dashboard; absent → no-op.
-  readonly VITE_OPENPANEL_CLIENT_ID?: string;
-  readonly VITE_OPENPANEL_API_URL?: string;
-  readonly VITE_OPENPANEL_SCRIPT_URL?: string;
+  // RUM analytics (self-hosted). SITE_ID is required to enable tracking;
+  // absent or placeholder means the telemetry module is a hard no-op.
+  readonly VITE_RUM_SITE_ID?: string;
+  readonly VITE_RUM_API_URL?: string;
 }
 
 interface ImportMeta {

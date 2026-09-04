@@ -536,8 +536,8 @@ function Dashboard(props: {
   const standingLedger = standingLedgerRef.current;
   const priorityScore = useMemo(() => bindPriorityScore(standingLedger, () => Date.now()), [standingLedger]);
 
-  // One OpenPanel telemetry handle per Dashboard mount — the ONLY analytics
-  // stack (self-hosted). A hard no-op unless VITE_OPENPANEL_CLIENT_ID
+  // One RUM telemetry handle per Dashboard mount — the ONLY analytics
+  // stack (self-hosted). A hard no-op unless VITE_RUM_SITE_ID
   // is set at build time, so the app never depends on analytics being up.
   const telemetryRef = useRef<ReturnType<typeof createTelemetry> | null>(null);
   if (telemetryRef.current === null) telemetryRef.current = createTelemetry(telemetryConfigFromEnv(import.meta.env));

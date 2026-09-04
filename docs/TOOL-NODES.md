@@ -1,32 +1,32 @@
-# TOOL-NODES — GPU-less peers that contribute tool calls
+# TOOL-NODES: GPU-less peers that contribute tool calls
 
 A peer with no GPU (or one that simply chooses not to host model layers) can
 still be a **first-class mesh participant** by advertising `cap.tools[]` and
 executing tool calls for others. It earns **standing** (`docs/ECONOMY.md`)
-the same way a layer-serving host does, so a contribution that costs no VRAM
+the same way a layer-serving host does. A contribution that costs no VRAM
 still buys real routing priority.
 
-This needs nothing new on the wire: the tool system already exists —
+This needs nothing new on the wire. The tool system already exists:
 `MeshToolDescriptor` in `cap.tools[]`, the `tc` action, `MeshToolCall` /
 `MeshToolResult`, `ToolRegistry.dispatch`, `PendingToolCallTracker`,
 `routing.findPeersByTool`, and the MCP bridge (`mcp.ts`). A peer advertises
-`cap.tools[]` whether or not it advertises `cap.stageHost` — the two are
+`cap.tools[]` whether or not it advertises `cap.stageHost`. The two are
 independent fields on `MeshPeerCap`. A GPU-less tool node just publishes the
 former and omits the latter.
 
-## What landed (this PR) — one tool round-trip + economy
+## What landed (this PR): one tool round-trip + economy
 
-### 1. Detection — `toolLoop.ts` (mesh-core)
+### 1. Detection: `toolLoop.ts` (mesh-core)
 
 `parseToolCalls(text)` / `firstToolCall(text)` scan a span of **generated,
 detokenized** text for `<tool_call>{"name": "...", "arguments": {...}}
 </tool_call>` blocks — the exact convention `mesh-react`'s `useDirector`
-already emits (and the codec `tool_watcher` grammar targets), so a model
-prompted for either surface interoperates. Malformed blocks are skipped, not
-thrown (a partial block mid-stream self-corrects on the next chunk).
+already emits (and the codec `tool_watcher` grammar targets). A model
+prompted for either surface interoperates. Malformed blocks are skipped
+silently (a partial block mid-stream self-corrects on the next chunk).
 Unit-tested in `test/toolLoop.test.ts`.
 
-### 2. Round-trip — `runToolRoundTrip(opts)` (mesh-core)
+### 2. Round-trip: `runToolRoundTrip(opts)` (mesh-core)
 
 Routes ONE detected call to a live provider and returns its result:
 
@@ -36,27 +36,27 @@ Routes ONE detected call to a live provider and returns its result:
    timeoutMs)`, `peer.sendTool(call)`, await the correlated `MeshToolResult`.
 3. A provider that vanishes (timeout / send failure) falls through to the
    next candidate. An empty/exhausted provider set is a graceful
-   `no-provider` / `timeout` — **never a hang**.
+   `no-provider` / `timeout` (never a hang).
 4. Returns `{ status, providerPeerId, result, resultBlock, ... }` where
    `resultBlock` is a `<tool_result>…</tool_result>` string ready for the
    driver to **re-prefill** into the model's context and continue
    generating.
 
 The function owns a private `PendingToolCallTracker` + `onTool` subscription
-for the round trip, keyed by a fresh `callId`, so it composes cleanly
+for the round trip, keyed by a fresh `callId`. It composes cleanly
 alongside a stage session's own tracker with no cross-talk.
 
-### 3. Economy — `standing.ts`
+### 3. Economy: `standing.ts`
 
 - `recordToolService({ providerPeerId, succeeded }, now)` credits the
   provider a flat `DEFAULT_TOOL_SERVICE_CREDIT` on an `ok` result, into the
-  **same decayed accumulator** as `recordService` — so a tool node's
-  standing is directly comparable to a layer host's and feeds one
+  **same decayed accumulator** as `recordService`. This makes a tool node's
+  standing directly comparable to a layer host's, feeding one
   `priorityScore`. A failed/denied/timed-out call marks the provider "seen"
-  (no newcomer re-farming) but credits nothing — parity with
+  (no newcomer re-farming) but credits nothing. This is parity with
   `recordService`'s completion gate.
 - `recordToolConsumption({ consumerPeerId }, now)` debits the asker a flat
-  `DEFAULT_TOOL_CONSUME_DEBIT`, not gated on success (you occupied the
+  `DEFAULT_TOOL_CONSUME_DEBIT` unconditionally (you occupied the
   provider's turn regardless).
 
 `runToolRoundTrip` applies both when a `standingLedger` is supplied. Proven
@@ -64,16 +64,16 @@ in `test/toolLoop.test.ts`: a served call lifts a GPU-less provider above an
 unseen peer; a failed call credits nothing but still debits the consumer;
 the consumer carries a debit.
 
-## Follow-up (documented, not wired this PR)
+## Follow-up (documented, pending wiring)
 
-A **coherent single round-trip beats a sprawling loop**, so this PR lands the
+A **coherent single round-trip beats a sprawling loop**. This PR lands the
 building blocks and ONE proven round-trip. The following compose from the
 pieces above but are deliberately left for a follow-up:
 
 - **The full multi-round agentic loop inside `useCommunalChat`.** Wiring
   `firstToolCall` against the live decode stream, pausing generation,
-  `runToolRoundTrip`, re-prefilling `resultBlock`, and resuming — repeated N
-  rounds — is the browser-runtime integration step. The driver would detect a
+  `runToolRoundTrip`, re-prefilling `resultBlock`, and resuming (repeated N
+  rounds) is the browser-runtime integration step. The driver would detect a
   tool call in its own generated span (it already detokenizes every token
   for on-screen text), call `runToolRoundTrip`, then feed the `<tool_result>`
   block back through the same continue-from-history re-prefill the churn path
@@ -94,9 +94,9 @@ pieces above but are deliberately left for a follow-up:
 ## ChatML / Qwen3 integration (post-rebase note, 2026-07-16)
 
 `apps/chat` now prompts the communal model in **Qwen3 ChatML**
-(`apps/chat/src/chatPrompt.ts`) — which is good news for this workstream:
+(`apps/chat/src/chatPrompt.ts`). This is good news for this workstream:
 `<tool_call>{"name": ..., "arguments": ...}</tool_call>` is Qwen3's NATIVE
-tool-call emission format, so `parseToolCalls` matches what the deployed
+tool-call emission format. `parseToolCalls` matches what the deployed
 model actually produces without any adapter. Two things the
 `useCommunalChat` wiring step must do when it lands:
 
@@ -104,7 +104,7 @@ model actually produces without any adapter. Two things the
    blocks when the system prompt lists the available functions (its template
    wraps them in a `<tools>…</tools>` JSON block). `buildPrompt` needs an
    optional tools parameter fed from the mesh's advertised tool registry
-   (`findPeersByTool` sources — see `routing.ts`).
+   (`findPeersByTool` sources; see `routing.ts`).
 2. **Re-prefill results the way Qwen3 expects.** Qwen3's template renders a
    tool result as a user-side `<tool_response>…</tool_response>` turn, NOT
    a bare `<tool_result>` block. `buildToolResultBlock`'s output is the
