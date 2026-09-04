@@ -135,13 +135,17 @@ export function createTelemetry(cfg: TelemetryConfig, deps: TelemetryDeps = {}):
 
   const emit = (name: string, props: RumPayload): void => {
     try {
+      // Caller props go FIRST so the envelope always wins. Spreading them last
+      // would let an event prop named `site` or `event` overwrite the real one,
+      // and those are the fields the log store indexes on. A caller cannot
+      // rename its own events or file them against another site.
       send(apiUrl, {
+        ...props,
         ts: new Date().toISOString(),
         site: cfg.clientId as string,
         event: name,
         path: hasWindow ? window.location.pathname : '',
         vid: hasWindow ? sessionId() : 'na',
-        ...props,
       });
     } catch {
       // never surface a telemetry error to the app
@@ -166,5 +170,8 @@ export function telemetryConfigFromEnv(env: ImportMetaEnv): TelemetryConfig {
   return {
     clientId: env.VITE_RUM_SITE_ID,
     apiUrl: env.VITE_RUM_API_URL || DEFAULT_API_URL,
+    // Stated rather than left to createTelemetry's default, so changing that
+    // default cannot silently turn pageviews off for the deployed app.
+    trackScreenViews: true,
   };
 }

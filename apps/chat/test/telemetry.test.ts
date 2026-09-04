@@ -101,6 +101,27 @@ test('trackEvent: maps a typed mesh event onto the beacon payload', () => {
   assert.equal(p.httpStatus, 404);
 });
 
+// ── envelope guard ───────────────────────────────────────────────────────
+
+test('envelope wins: caller props cannot overwrite site, event, path or vid', () => {
+  const { send, calls } = spySend();
+  const t = createTelemetry({ clientId: 'real-site', trackScreenViews: false }, { send });
+  // A caller that names a prop after an envelope field must not be able to
+  // file its event against another site or rename the event. Those are the
+  // fields the log store indexes on.
+  t.track('chat_failed', {
+    site: 'someone-elses-site',
+    event: 'pageview',
+    vid: 'forged',
+    reason: 'timeout',
+  } as Record<string, unknown>);
+  const p = calls[0].payload;
+  assert.equal(p.site, 'real-site');
+  assert.equal(p.event, 'chat_failed');
+  assert.notEqual(p.vid, 'forged');
+  assert.equal(p.reason, 'timeout');
+});
+
 // ── PII guard ────────────────────────────────────────────────────────────
 
 test('sanitizeProps: keeps scalars, DROPS nested objects/arrays/functions/null (no PII leak)', () => {
