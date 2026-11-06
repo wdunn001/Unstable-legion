@@ -239,6 +239,53 @@ export function collectCommunalAds(
   return ads;
 }
 
+export interface LiveHostRosterOptions {
+  /** Wall-clock reference (caller passes `Date.now()`; this module stays
+   * `Date.now()`-free so it remains a pure, resumable function). */
+  now: number;
+  /** A host whose roster entry has gone unheard longer than this (by
+   * `lastSeen` vs `now`) is treated as no longer hosting: its
+   * `loadedStages` are dropped from the returned view. */
+  hostAdStaleMs: number;
+}
+
+/**
+ * Return a roster view in which any entry unheard for longer than
+ * `hostAdStaleMs` has its hosting ads (`stageHost.loadedStages`) removed,
+ * while the entry itself is preserved for any non-hosting use.
+ *
+ * WHY THIS EXISTS (churn-recovery bug): a host that leaves CLEANLY fires
+ * Trystero's `onPeerLeave`, so `roster.remove` drops it at once and the
+ * next claim tick sees the gap. A host that dies SILENTLY — laptop sleep,
+ * Wi-Fi drop, a hard tab close that never fired `onPeerLeave` — lingers in
+ * the roster until the general stale prune (default 5 min, and PAUSED
+ * entirely while the tab is hidden). For those minutes its advertised
+ * layer range still reads as covered, so `buildCommunalTopology` reports no
+ * gap, no survivor re-claims, and the model is quietly un-servable with
+ * nothing trying to heal it. Filtering hosting ads on a much shorter
+ * liveness window makes the gap visible fast so the claim loop can recover.
+ *
+ * The window must tolerate Chrome throttling a backgrounded host's
+ * heartbeat to ~1/min, so it is deliberately several heartbeats wide, not
+ * one. It is still far shorter than the 5-min roster prune.
+ *
+ * Pure + clock-injected (same discipline as the rest of this module): the
+ * caller supplies `now`. Applied to the roster BEFORE it reaches
+ * `communalHostClaim` / `buildCommunalTopology`, so both the claim decision
+ * and the coverage read see the ghost's range as a gap.
+ */
+export function liveHostRoster(
+  roster: readonly MeshRosterEntry[],
+  opts: LiveHostRosterOptions,
+): MeshRosterEntry[] {
+  const cutoff = opts.now - opts.hostAdStaleMs;
+  return roster.map((entry) => {
+    if (entry.lastSeen >= cutoff) return entry;
+    if (!entry.stageHost?.loadedStages?.length) return entry;
+    return { ...entry, stageHost: { ...entry.stageHost, loadedStages: [] } };
+  });
+}
+
 export interface BuildCommunalTopologyRequest {
   modelId: string;
   totalLayers: number;

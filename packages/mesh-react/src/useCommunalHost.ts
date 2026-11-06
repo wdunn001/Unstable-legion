@@ -50,6 +50,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   communalHostClaim,
   hostStabilityScore,
+  liveHostRoster,
   type CommunalClaimRange,
   type MeshLoadedStage,
   type MeshPeerCap,
@@ -160,6 +161,14 @@ export interface UseCommunalHostOptions {
   /** How often to recompute `communalHostClaim` against the live roster.
    * Default 5000. */
   reassemblyIntervalMs?: number;
+  /** A host whose roster entry has gone unheard this long (ms) is treated
+   * as no longer hosting for claim/coverage purposes, so a silently-dead
+   * host's range becomes a visible gap and the mesh re-claims it instead of
+   * waiting out the 5-minute roster prune. Default
+   * `DEFAULT_HOST_AD_STALE_MS` (120000). Kept several heartbeats wide so a
+   * backgrounded host whose heartbeat Chrome throttles to ~1/min isn't
+   * evicted while still alive. See `liveHostRoster`. */
+  hostAdStaleMs?: number;
   /** Override the OPFS quota estimate (bytes) — mainly for tests. Default:
    * probe `navigator.storage.estimate()`, fall back to
    * `OPFS_QUOTA_CEILING_BYTES`. */
@@ -279,6 +288,15 @@ export interface UseCommunalHostHandle {
 
 const DEFAULT_REASSEMBLY_MS = 5000;
 const DEFAULT_GRACE_MS = 30_000;
+/** Default hosting-liveness window (see `hostAdStaleMs`). 120s = four
+ * 30s heartbeats, or two heartbeats at Chrome's throttled ~1/min
+ * background rate, so a live-but-backgrounded host survives while a truly
+ * dead one is evicted from coverage in well under the 5-min roster prune.
+ * Exported so the driver's routing (`useCommunalChat`) and the coverage
+ * display (`apps/chat` sidebar) apply the SAME window — otherwise a host
+ * the claim loop treats as dead could still be routed to or shown as
+ * present. */
+export const DEFAULT_HOST_AD_STALE_MS = 120_000;
 const DEFAULT_GIVE_UP_LABEL_AFTER = 4;
 
 /** Cheap, synchronous, side-effect-free mirror of
@@ -514,6 +532,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     fallbackShardUrls,
     avgLayerBytes,
     reassemblyIntervalMs = DEFAULT_REASSEMBLY_MS,
+    hostAdStaleMs = DEFAULT_HOST_AD_STALE_MS,
     priorityScore,
     opfsQuotaBytesOverride,
     colocationEnabled = true,
@@ -839,7 +858,13 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
       tickInFlightRef.current = true;
       try {
         const decision = communalHostClaim({
-          roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
+          // Evict silently-dead hosts' ads BEFORE the claim decision, so a
+          // peer that vanished without an onPeerLeave (sleep/Wi-Fi/hard
+          // close) stops reading as covering its range and the gap it left
+          // is re-claimed instead of waiting out the 5-min roster prune.
+          roster: liveHostRoster(rosterRef.current, { now: Date.now(), hostAdStaleMs }).filter(
+            (r) => r.peerId !== safePeer.selfId,
+          ),
           selfPeerId: safePeer.selfId,
           modelId,
           totalLayers,
@@ -967,7 +992,9 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
         // peer beat us to this gap, or the gap closed) and commit fresh.
         pendingClaimRef.current = null;
         const recheck = communalHostClaim({
-          roster: rosterRef.current.filter((r) => r.peerId !== safePeer.selfId),
+          roster: liveHostRoster(rosterRef.current, { now: Date.now(), hostAdStaleMs }).filter(
+            (r) => r.peerId !== safePeer.selfId,
+          ),
           selfPeerId: safePeer.selfId,
           modelId,
           totalLayers,
@@ -1052,7 +1079,7 @@ export function useCommunalHost(opts: UseCommunalHostOptions): UseCommunalHostHa
     // immediately rather than continuing to compute claims it'll never
     // act on usefully.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, supportThinDrivers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
+  }, [hostingActive, peer, supportState.ok, limits, modelId, totalLayers, driverLayers, supportThinDrivers, avgLayerBytes, manifestUrl, fallbackShardUrls, ctxSize, wireDtype, reassemblyIntervalMs, hostAdStaleMs, opts.contributionBudgetBytes, opts.maxLayersOverride]);
 
   useEffect(() => {
     if (!hostingActive) {

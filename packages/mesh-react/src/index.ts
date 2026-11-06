@@ -234,6 +234,7 @@ export {
   useCommunalHost,
   resolveCommunalShardPlan,
   OPFS_QUOTA_CEILING_BYTES,
+  DEFAULT_HOST_AD_STALE_MS,
   type UseCommunalHostOptions,
   type UseCommunalHostHandle,
   type CommunalHostPhase,

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { joinRoom, defaultRelayUrls, selfId } from '@trystero-p2p/mqtt';
 import {
+  DEFAULT_HOST_AD_STALE_MS,
   MeshProvider,
   StandingLedger,
   bindPriorityScore,
@@ -42,6 +43,7 @@ import {
   TTS_SKILL,
   TTS_TOOL_NAME,
   buildCommunalTopology,
+  liveHostRoster,
   findPeersByTool,
   firstToolCall,
   newCallId,
@@ -782,14 +784,25 @@ function Dashboard(props: {
   const meshTools = useMemo(() => collectMeshTools(roster), [roster]);
 
   // ── Mesh sidebar view-models ──────────────────────────────────────
+  // Coarse (5s) liveness clock so a silently-dead host's ad drops out of
+  // the displayed coverage within seconds of crossing the staleness window,
+  // not only when some other peer's heartbeat next changes roster identity.
+  const hostLivenessBucket = Math.floor(Date.now() / 5000);
   const topology = useMemo(
     () =>
-      buildCommunalTopology(roster, {
-        modelId: modelConfig.modelId,
-        totalLayers: modelConfig.totalLayers,
-        driverLayers: modelConfig.driverLayers,
-      }),
-    [roster, modelConfig],
+      buildCommunalTopology(
+        // Same ghost-host eviction the claim loop and router apply, so the
+        // crew/capacity/map show the real gap a dead host leaves instead of
+        // a full crew that silently can't serve.
+        liveHostRoster(roster, { now: Date.now(), hostAdStaleMs: DEFAULT_HOST_AD_STALE_MS }),
+        {
+          modelId: modelConfig.modelId,
+          totalLayers: modelConfig.totalLayers,
+          driverLayers: modelConfig.driverLayers,
+        },
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roster, modelConfig, hostLivenessBucket],
   );
   const capacity = useMemo(() => deriveCapacityView(topology, modelConfig.modelLabel), [topology, modelConfig.modelLabel]);
   const nickOf = useMemo(() => nickLookup(roster), [roster]);

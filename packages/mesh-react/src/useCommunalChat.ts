@@ -53,6 +53,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   buildCommunalTopology,
   communalAttachOrder,
+  liveHostRoster,
   planCommunalRoute,
   planThinDriverRoute,
   runCommunalDriverSession,
@@ -68,7 +69,7 @@ import { StageWorkerClient, warmUpStageWorker, type StageWorkerLog } from './sta
 import { emitTelemetry, type MeshTelemetrySink } from './meshResilience.js';
 import { acquireLeaderLock } from './useStagePipeline.js';
 import { detectWebGpuLimits } from './webgpuLimits.js';
-import { resolveCommunalShardPlan, OPFS_QUOTA_CEILING_BYTES } from './useCommunalHost.js';
+import { resolveCommunalShardPlan, OPFS_QUOTA_CEILING_BYTES, DEFAULT_HOST_AD_STALE_MS } from './useCommunalHost.js';
 import {
   STAGE_CTX_SIZE,
   STAGE_DRIVER_LAYERS,
@@ -728,7 +729,12 @@ export function useCommunalChat(opts: UseCommunalChatOptions): UseCommunalChatHa
        * rather than caching (`buildCommunalTopology`'s own doc comment:
        * "cheap to call on every roster change"). */
       function buildRoute(excludePeerIds: readonly string[]): CommunalRoute | null {
-        const roster = peer!.roster.snapshot();
+        // Drop silently-dead hosts' ads before planning: a host that
+        // vanished without an onPeerLeave lingers in the roster for the
+        // 5-min prune, and routing through it would stall on a HELLO that
+        // never answers. Same liveness window the host claim loop uses, so
+        // the driver never routes to a host the mesh already treats as gone.
+        const roster = liveHostRoster(peer!.roster.snapshot(), { now: Date.now(), hostAdStaleMs: DEFAULT_HOST_AD_STALE_MS });
         // Thin/textRelay drivers cover [0, totalLayers) and need a remote
         // isFirst host; capable drivers cover [driverLayers, totalLayers)
         // and host [0, driverLayers) locally. The `communalStart` + planner

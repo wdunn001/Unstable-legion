@@ -177,6 +177,7 @@ export {
 // ── M3: communal pipeline coverage/assembly (pure) ────────────────────
 export {
   buildCommunalTopology,
+  liveHostRoster,
   planCommunalRoute,
   communalAttachOrder,
   collectCommunalAds,
@@ -193,6 +194,7 @@ export {
   type CommunalTopology,
   type BuildCommunalTopologyRequest,
   type BuildCommunalTopologyOptions,
+  type LiveHostRosterOptions,
   type PlanCommunalRouteOptions,
 } from './communalTopology.js';
 export {

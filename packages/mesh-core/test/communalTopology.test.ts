@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommunalTopology,
+  liveHostRoster,
   planCommunalRoute,
   communalAttachOrder,
   deterministicHash,
@@ -34,12 +35,13 @@ function makePeer(
   }[],
   stability?: { keepalive?: boolean; visible?: boolean; uptimeMs?: number },
   failureDomainId?: string,
+  lastSeen: number = Date.now(),
 ): MeshRosterEntry {
   return {
     v: 1,
     ts: Date.now(),
     peerId,
-    lastSeen: Date.now(),
+    lastSeen,
     nick: peerId,
     modelId: 'n/a',
     available: true,
@@ -366,4 +368,46 @@ test('planCommunalRoute: maxStages does not reject the proven 2-stage route', ()
   const routed = planCommunalRoute(topo, { driverPeerId: 'drv', nEmbd: 1024, maxStages: 2 });
   assert.ok(routed, 'a single full-range host is 2 stages — within the cap');
   assert.equal(routed!.stages.length, 2);
+});
+
+// ── liveHostRoster: evict a silently-dead host's ads so the gap shows ────
+// Regression for the churn-recovery bug: a host that leaves without firing
+// Trystero's onPeerLeave lingers in the roster for the 5-min stale prune,
+// so its range reads as covered and no survivor re-claims it. Filtering on
+// a short liveness window exposes the gap.
+
+test('liveHostRoster: keeps a fresh host, strips a stale host\'s loadedStages', () => {
+  const NOW = 1_000_000;
+  const STALE = 120_000;
+  const fresh = makePeer('fresh', [{ layerStart: 2, layerEnd: 15 }], undefined, undefined, NOW - 10_000);
+  const dead = makePeer('dead', [{ layerStart: 15, layerEnd: 28 }], undefined, undefined, NOW - 200_000);
+  const view = liveHostRoster([fresh, dead], { now: NOW, hostAdStaleMs: STALE });
+  assert.equal(view.find((e) => e.peerId === 'fresh')!.stageHost!.loadedStages.length, 1, 'fresh host keeps its ad');
+  assert.equal(view.find((e) => e.peerId === 'dead')!.stageHost!.loadedStages.length, 0, 'dead host loses its ads');
+  // The source entries are not mutated.
+  assert.equal(dead.stageHost!.loadedStages.length, 1, 'input roster untouched');
+});
+
+test('liveHostRoster: a stale host at exactly the cutoff is still considered live', () => {
+  const NOW = 1_000_000;
+  const STALE = 120_000;
+  const atEdge = makePeer('edge', [{ layerStart: 2, layerEnd: 28 }], undefined, undefined, NOW - STALE);
+  const view = liveHostRoster([atEdge], { now: NOW, hostAdStaleMs: STALE });
+  assert.equal(view[0]!.stageHost!.loadedStages.length, 1, 'lastSeen === cutoff is not yet stale');
+});
+
+test('buildCommunalTopology sees a gap once a dead host is filtered out', () => {
+  const NOW = 1_000_000;
+  const STALE = 120_000;
+  const alive = makePeer('alive', [{ layerStart: 2, layerEnd: 15 }], undefined, undefined, NOW - 5_000);
+  const dead = makePeer('dead', [{ layerStart: 15, layerEnd: 28 }], undefined, undefined, NOW - 300_000);
+  const req = { modelId: MODEL, totalLayers: TOTAL_LAYERS, driverLayers: DRIVER_LAYERS };
+
+  // Raw roster: the dead host's [15,28) still reads as covered -> NO gap.
+  const raw = buildCommunalTopology([alive, dead], req);
+  assert.deepEqual(raw.gaps, [], 'ghost ad hides the gap');
+
+  // Filtered: the dead host's range becomes a visible gap.
+  const live = buildCommunalTopology(liveHostRoster([alive, dead], { now: NOW, hostAdStaleMs: STALE }), req);
+  assert.deepEqual(live.gaps, [{ layerStart: 15, layerEnd: 28 }], 'gap exposed after eviction');
 });
