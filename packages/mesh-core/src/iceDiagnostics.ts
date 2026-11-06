@@ -52,6 +52,14 @@ export interface IceConnectionRecord {
  * as abandoned (counted as failed, not connecting). A real ICE handshake
  * completes in well under 10s; 30s is a generous ceiling. */
 export const ICE_STALE_MS = 30_000;
+/** A connection whose ICE state never advances past `new` this long after
+ * creation is a dead offer, not a live join. ICE moves `new -> checking`
+ * within ~1s once an SDP answer arrives; a pc stuck at `new` means no
+ * answer ever came (the signature of an offer to a peer announced in
+ * signaling that is not actually there). Without this, a signaling room
+ * full of stale peer announcements reads as a large bogus "joining" count
+ * for the first ICE_STALE_MS after every page load. */
+export const ICE_NEW_GRACE_MS = 4_000;
 /** Hard cap on retained connection records so a long, churny session can't
  * grow `connections` without bound. Oldest terminal records drop first. */
 const MAX_ICE_RECORDS = 256;
@@ -97,9 +105,14 @@ export function classifyIceRecord(rec: IceConnectionRecord, now: number): 'conne
   if (state === 'connected' || state === 'completed') return 'connected';
   if (state === 'failed' || state === 'closed' || state === 'disconnected') return 'failed';
 
-  // Non-terminal (new/checking). Live only if it is still RECENT — an
-  // attempt frozen here past the window was closed/abandoned without an
-  // event (pc.close() dispatches none) and must not read as "joining".
+  // Non-terminal (new/checking). A connection whose ICE never left 'new'
+  // past the short grace is a dead offer (no SDP answer ever arrived), not
+  // a live join — the common case for ghost peer announcements, and what
+  // made the count read ~20 for 30s after every load.
+  if (state === 'new' && now - rec.createdAt > ICE_NEW_GRACE_MS) return 'failed';
+  // 'checking' (or 'new' within grace): live only while RECENT — an attempt
+  // frozen here past the window was closed/abandoned without an event
+  // (pc.close() dispatches none) and must not read as "joining".
   return now - rec.lastActivityAt > ICE_STALE_MS ? 'failed' : 'connecting';
 }
 

@@ -12,6 +12,7 @@ import {
   classifyIceRecord,
   summarizeIceConnections,
   ICE_STALE_MS,
+  ICE_NEW_GRACE_MS,
   type IceConnectionRecord,
 } from '../src/iceDiagnostics.ts';
 
@@ -66,5 +67,33 @@ test('summarizeIceConnections: 20 closed-but-frozen ghosts + 1 live attempt -> c
   const s = summarizeIceConnections([...ghosts, live], NOW);
   assert.equal(s.total, 21);
   assert.equal(s.connecting, 1, 'only the genuinely in-flight attempt counts as joining');
+  assert.equal(s.failed, 20);
+});
+
+// ── new-grace: an offer stuck at ICE 'new' is a ghost, not a join ───────
+
+test('classifyIceRecord: ICE never left "new" past the grace -> failed (dead offer, no SDP answer)', () => {
+  const r = rec({ createdAt: NOW - (ICE_NEW_GRACE_MS + 1), lastActivityAt: NOW - (ICE_NEW_GRACE_MS + 1), states: [{ state: 'new', at: NOW - (ICE_NEW_GRACE_MS + 1) }] });
+  assert.equal(classifyIceRecord(r, NOW), 'failed');
+});
+
+test('classifyIceRecord: brand-new "new" attempt within grace -> connecting', () => {
+  const r = rec({ createdAt: NOW - 1000, lastActivityAt: NOW - 1000, states: [{ state: 'new', at: NOW - 1000 }] });
+  assert.equal(classifyIceRecord(r, NOW), 'connecting');
+});
+
+test('classifyIceRecord: a recent "checking" attempt is a real join -> connecting', () => {
+  const r = rec({ createdAt: NOW - 20_000, lastActivityAt: NOW - 1000, states: [{ state: 'new', at: NOW - 20_000 }, { state: 'checking', at: NOW - 1000 }] });
+  assert.equal(classifyIceRecord(r, NOW), 'connecting');
+});
+
+test('summarizeIceConnections: 20 ghost offers stuck at "new" past grace + 1 real peer -> connecting 0, connected 1', () => {
+  const ghosts = Array.from({ length: 20 }, () =>
+    rec({ createdAt: NOW - 10_000, lastActivityAt: NOW - 10_000, states: [{ state: 'new', at: NOW - 10_000 }] }),
+  );
+  const real = rec({ connectionState: 'connected', states: [{ state: 'connected', at: NOW - 2000 }] });
+  const s = summarizeIceConnections([...ghosts, real], NOW);
+  assert.equal(s.connecting, 0, 'ghost offers at "new" are not joining');
+  assert.equal(s.connected, 1);
   assert.equal(s.failed, 20);
 });

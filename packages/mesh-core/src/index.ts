@@ -387,6 +387,7 @@ export {
   summarizeIceConnections,
   classifyIceRecord,
   ICE_STALE_MS,
+  ICE_NEW_GRACE_MS,
   type IceDiagSummary,
   type IceConnectionRecord,
 } from './iceDiagnostics.js';
