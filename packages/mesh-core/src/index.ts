@@ -384,6 +384,9 @@ export {
 // tests / non-mesh consumers) ────────────────────────────────────────
 export {
   installIceDiagnostics,
+  summarizeIceConnections,
+  classifyIceRecord,
+  ICE_STALE_MS,
   type IceDiagSummary,
   type IceConnectionRecord,
 } from './iceDiagnostics.js';

@@ -29,11 +29,32 @@
 
 export interface IceConnectionRecord {
   createdAt: number;
+  /** Updated on every observed state change — the staleness clock for
+   * `summarize`. A record whose last activity is far in the past and never
+   * reached a terminal state is an abandoned attempt, not a live one. */
+  lastActivityAt: number;
   states: { state: string; at: number }[];
   errors: { at: number; errorCode?: number; url?: string; errorText?: string }[];
   /** Set once on 'connected'/'failed' — nominated pair candidate types. */
   selectedPair?: { local?: string; remote?: string; localProtocol?: string; relayProtocol?: string };
+  /** Weak handle to the live pc so `summarize` can read its CURRENT
+   * `connectionState` — the only reliable close signal, because `pc.close()`
+   * does NOT dispatch an `iceconnectionstatechange` event, so a closed
+   * connection's ICE-state history freezes at `checking`/`new` and would
+   * otherwise count as "connecting" forever (the accumulating-ghost bug).
+   * A `deref()` of `undefined` (the pc was GC'd) likewise means "no longer
+   * a live attempt." Shaped as a minimal interface so unit tests can inject
+   * a fake without a real WeakRef/RTCPeerConnection. */
+  pcRef?: { deref: () => { connectionState?: string } | undefined };
 }
+
+/** An in-flight attempt older than this with no terminal state is treated
+ * as abandoned (counted as failed, not connecting). A real ICE handshake
+ * completes in well under 10s; 30s is a generous ceiling. */
+export const ICE_STALE_MS = 30_000;
+/** Hard cap on retained connection records so a long, churny session can't
+ * grow `connections` without bound. Oldest terminal records drop first. */
+const MAX_ICE_RECORDS = 256;
 
 export interface IceDiagSummary {
   total: number;
@@ -60,15 +81,37 @@ function lastState(rec: IceConnectionRecord): string {
   return rec.states[rec.states.length - 1]?.state ?? 'new';
 }
 
-function summarize(connections: IceConnectionRecord[]): IceDiagSummary {
+/** Bucket one record. `now` is injected so this stays deterministic for
+ * tests. Precedence: the pc's LIVE `connectionState` wins (the only
+ * reliable close/connect signal), then the ICE-state history, then a
+ * staleness check that retires an attempt stuck non-terminal past
+ * `ICE_STALE_MS`. */
+export function classifyIceRecord(rec: IceConnectionRecord, now: number): 'connecting' | 'connected' | 'failed' {
+  const live = rec.pcRef?.deref();
+  if (rec.pcRef && !live) return 'failed'; // pc GC'd — not a live attempt
+  const cs = live?.connectionState;
+  if (cs === 'connected') return 'connected';
+  if (cs === 'closed' || cs === 'failed') return 'failed';
+
+  const state = lastState(rec);
+  if (state === 'connected' || state === 'completed') return 'connected';
+  if (state === 'failed' || state === 'closed' || state === 'disconnected') return 'failed';
+
+  // Non-terminal (new/checking). Live only if it is still RECENT — an
+  // attempt frozen here past the window was closed/abandoned without an
+  // event (pc.close() dispatches none) and must not read as "joining".
+  return now - rec.lastActivityAt > ICE_STALE_MS ? 'failed' : 'connecting';
+}
+
+export function summarizeIceConnections(connections: IceConnectionRecord[], now: number): IceDiagSummary {
   let connecting = 0;
   let connected = 0;
   let failed = 0;
   let lastError: string | undefined;
   for (const rec of connections) {
-    const state = lastState(rec);
-    if (state === 'connected' || state === 'completed') connected += 1;
-    else if (state === 'failed' || state === 'closed' || state === 'disconnected') failed += 1;
+    const bucket = classifyIceRecord(rec, now);
+    if (bucket === 'connected') connected += 1;
+    else if (bucket === 'failed') failed += 1;
     else connecting += 1;
     const err = rec.errors[rec.errors.length - 1];
     if (err) lastError = `${err.errorCode ?? '?'} ${err.url ?? ''} ${err.errorText ?? ''}`.trim();
@@ -123,22 +166,48 @@ export function installIceDiagnostics(): void {
   installed = true;
 
   const connections: IceConnectionRecord[] = [];
-  g.__legionIce = { connections, snapshot: () => summarize(connections) };
+  g.__legionIce = { connections, snapshot: () => summarizeIceConnections(connections, Date.now()) };
 
   const Original = g.RTCPeerConnection;
   class InstrumentedRTCPeerConnection extends Original {
     constructor(...args: ConstructorParameters<typeof RTCPeerConnection>) {
       super(...args);
       try {
-        const rec: IceConnectionRecord = { createdAt: Date.now(), states: [], errors: [] };
+        const now = Date.now();
+        const rec: IceConnectionRecord = {
+          createdAt: now,
+          lastActivityAt: now,
+          states: [],
+          errors: [],
+          pcRef: typeof WeakRef === 'function' ? new WeakRef(this) : undefined,
+        };
+        // Bound retained records. Drop the oldest ones that have reached a
+        // terminal connectionState (closed/failed) first; never evict a
+        // still-live attempt just because the session is long.
+        if (connections.length >= MAX_ICE_RECORDS) {
+          const dropAt = connections.findIndex((r) => {
+            const s = r.pcRef?.deref()?.connectionState;
+            return !r.pcRef || !r.pcRef.deref() || s === 'closed' || s === 'failed';
+          });
+          connections.splice(dropAt >= 0 ? dropAt : 0, 1);
+        }
         connections.push(rec);
         this.addEventListener('iceconnectionstatechange', () => {
           const state = this.iceConnectionState;
           rec.states.push({ state, at: Date.now() });
+          rec.lastActivityAt = Date.now();
           debugLog('state:', state);
           if (state === 'connected' || state === 'completed' || state === 'failed') {
             void captureSelectedPair(this, rec);
           }
+        });
+        // connectionState (the aggregate) is the signal iceConnectionState
+        // misses — notably it goes 'closed' on pc.close(). Tracking it keeps
+        // lastActivityAt fresh through a real negotiation and gives
+        // `classifyIceRecord` a live close/connect read.
+        this.addEventListener('connectionstatechange', () => {
+          rec.lastActivityAt = Date.now();
+          debugLog('connectionState:', this.connectionState);
         });
         this.addEventListener('icecandidateerror', (ev) => {
           const e = ev as unknown as { errorCode?: number; url?: string; errorText?: string };
