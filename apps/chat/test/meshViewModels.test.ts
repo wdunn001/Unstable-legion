@@ -9,10 +9,13 @@ import assert from 'node:assert/strict';
 import { StandingLedger } from '@unstable-legion/core';
 import type { CommunalTopology, MeshRosterEntry } from '@unstable-legion/core';
 import {
+  channelCountLabel,
   deriveCapacityView,
+  deriveChannelCounts,
   deriveChatNotice,
   deriveCrewScale,
   deriveLeaderboard,
+  deriveMeshStatus,
   deriveOccupancy,
   deriveStandingView,
   deriveTopologySegments,
@@ -418,4 +421,60 @@ test('deriveLeaderboard: ranks by standing, marks self, prefers nick over peerId
   const self = board.find((b) => b.peerId === 'p2')!;
   assert.equal(self.isSelf, true);
   assert.equal(self.label, shortPeerId('p2'));
+});
+
+// ── Mesh status pill + channel occupancy (2026-11-06 honesty pass) ───────
+
+test('deriveMeshStatus: signaling down reads as offline, warn-toned', () => {
+  const view = deriveMeshStatus({ signaling: 'down', remoteCount: 0, iceConnecting: 0 });
+  assert.equal(view.text, 'mesh: offline');
+  assert.equal(view.tone, 'warn');
+  assert.match(view.title, /signaling/i);
+});
+
+test('deriveMeshStatus: still dialing the relay reads as connecting, warn-toned', () => {
+  const view = deriveMeshStatus({ signaling: 'connecting', remoteCount: 0, iceConnecting: 0 });
+  assert.equal(view.text, 'mesh: connecting…');
+  assert.equal(view.tone, 'warn');
+});
+
+test('deriveMeshStatus: connected and alone says ONLINE, never a cold zero', () => {
+  const view = deriveMeshStatus({ signaling: 'connected', remoteCount: 0, iceConnecting: 0 });
+  assert.equal(view.text, 'mesh: online · just you');
+  assert.equal(view.tone, 'solo');
+  assert.match(view.title, /discoverable/i);
+});
+
+test('deriveMeshStatus: connected with a WebRTC handshake in flight surfaces the joining count', () => {
+  const view = deriveMeshStatus({ signaling: 'connected', remoteCount: 0, iceConnecting: 3 });
+  assert.equal(view.text, 'mesh: online · 3 joining…');
+  assert.equal(view.tone, 'solo');
+  assert.match(view.title, /TURN/);
+});
+
+test('deriveMeshStatus: remote peers win over the joining count and read ok-toned', () => {
+  const view = deriveMeshStatus({ signaling: 'connected', remoteCount: 2, iceConnecting: 5 });
+  assert.equal(view.text, 'mesh: online · 2 remote');
+  assert.equal(view.tone, 'ok');
+});
+
+test('deriveChannelCounts groups the roster by modelId, self included', () => {
+  const roster = [
+    { peerId: 'self', modelId: 'qwen3-8b-q4' },
+    { peerId: 'p2', modelId: 'qwen3-8b-q4' },
+    { peerId: 'p3', modelId: 'qwen3-14b-q4' },
+    { peerId: 'p4', modelId: 'some-future-model' },
+  ] as unknown as readonly MeshRosterEntry[];
+  assert.deepEqual(deriveChannelCounts(roster), {
+    'qwen3-8b-q4': 2,
+    'qwen3-14b-q4': 1,
+    'some-future-model': 1,
+  });
+  assert.deepEqual(deriveChannelCounts([]), {});
+});
+
+test('channelCountLabel: "empty" for zero, "N here" otherwise', () => {
+  assert.equal(channelCountLabel(0), 'empty');
+  assert.equal(channelCountLabel(1), '1 here');
+  assert.equal(channelCountLabel(7), '7 here');
 });

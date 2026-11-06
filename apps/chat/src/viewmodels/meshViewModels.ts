@@ -433,3 +433,85 @@ export function deriveLeaderboard(
     isSelf: s.peerId === opts.selfId,
   }));
 }
+
+// ── Mesh status pill + channel occupancy ────────────────────────────────
+//
+// The header pill used to render ONLY peer-derived numbers, so "connected
+// and alone" and "signaling down, nobody can find me" both displayed as a
+// cold zero (product feedback 2026-11-06: "hard to tell if you're actually
+// connected or not"). These two derivations split that honestly: the
+// signaling transport state (fed from signalingStatus.ts's relay-socket
+// read) decides connected-vs-not, and peer counts only ever refine an
+// already-connected state. Pure data in, pure data out, same testability
+// rule as everything else in this module.
+
+export interface MeshStatusView {
+  /** Pill text, e.g. "mesh: online · just you". */
+  text: string;
+  /** Visual tone — the component maps this to a CSS class. 'ok' = peers
+   * connected, 'solo' = online but alone (still a GOOD state), 'warn' =
+   * signaling not connected (the only genuinely bad state). */
+  tone: 'ok' | 'solo' | 'warn';
+  /** Hover explanation. Always present so the pill is self-explaining. */
+  title: string;
+}
+
+export function deriveMeshStatus(input: {
+  signaling: 'connected' | 'connecting' | 'down';
+  remoteCount: number;
+  iceConnecting: number;
+}): MeshStatusView {
+  if (input.signaling === 'down') {
+    return {
+      text: 'mesh: offline',
+      tone: 'warn',
+      title: 'No signaling relay is reachable, so other peers cannot discover this tab. Check your network.',
+    };
+  }
+  if (input.signaling === 'connecting') {
+    return {
+      text: 'mesh: connecting…',
+      tone: 'warn',
+      title: 'Connecting to the signaling relay…',
+    };
+  }
+  if (input.remoteCount > 0) {
+    return {
+      text: `mesh: online · ${input.remoteCount} remote`,
+      tone: 'ok',
+      title: `Signaling connected. ${input.remoteCount} remote peer${input.remoteCount === 1 ? '' : 's'} in the room.`,
+    };
+  }
+  if (input.iceConnecting > 0) {
+    return {
+      text: `mesh: online · ${input.iceConnecting} joining…`,
+      tone: 'solo',
+      title:
+        'Signaling connected. A peer is mid-WebRTC-handshake; if this never completes, suspect a TURN/firewall problem.',
+    };
+  }
+  return {
+    text: 'mesh: online · just you',
+    tone: 'solo',
+    title: 'Signaling connected and this tab is discoverable. No other peers are in the room right now.',
+  };
+}
+
+/** Members currently present per model channel, keyed by `modelId` —
+ * includes self (the roster upserts self on every cap broadcast). All
+ * channels share ONE Trystero room and every cap carries its `modelId`,
+ * so cross-channel presence is already in the roster; this just groups
+ * it. Unknown/future modelIds count too — the picker simply won't look
+ * them up. */
+export function deriveChannelCounts(roster: readonly MeshRosterEntry[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of roster) {
+    counts[entry.modelId] = (counts[entry.modelId] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/** "3 here" / "1 here" / "empty" — the picker's per-channel presence copy. */
+export function channelCountLabel(count: number): string {
+  return count === 0 ? 'empty' : `${count} here`;
+}

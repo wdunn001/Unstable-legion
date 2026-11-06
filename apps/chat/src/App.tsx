@@ -70,13 +70,16 @@ import { formatVramLabel } from './gpuCatalog.js';
 import { buildPrompt } from './chatPrompt.js';
 import {
   deriveCapacityView,
+  deriveChannelCounts,
   deriveCrewScale,
   deriveChatNotice,
   deriveLeaderboard,
+  deriveMeshStatus,
   deriveStandingView,
   deriveTopologySegments,
   nickLookup,
 } from './viewmodels/meshViewModels.js';
+import { readSignalingStatus } from './signalingStatus.js';
 import { createTelemetry, telemetryConfigFromEnv } from './telemetry.js';
 import {
   ACK_PENDING_ROUTE,
@@ -1055,6 +1058,15 @@ function Dashboard(props: {
   const iceSummary = (globalThis as { __legionIce?: { snapshot: () => { connecting: number; failed: number; lastError?: string } } })
     .__legionIce?.snapshot();
   const iceConnecting = remoteCount === 0 && (iceSummary?.connecting ?? 0) > 0 ? iceSummary!.connecting : 0;
+  // Honest connectivity: the relay-socket state decides connected-vs-not;
+  // peer counts only refine an already-connected state. Read fresh each
+  // render; the 2s tick keeps it live. See signalingStatus.ts.
+  const signaling = readSignalingStatus();
+  const meshStatus = deriveMeshStatus({ signaling, remoteCount, iceConnecting });
+  // Present members per model channel (self included) — all channels share
+  // this one room, every cap carries its modelId, so the roster already
+  // knows who is on which channel.
+  const channelCounts = useMemo(() => deriveChannelCounts(roster), [roster]);
 
   useEffect(() => {
     (window as unknown as { __legionChat?: unknown }).__legionChat = {
@@ -1084,6 +1096,9 @@ function Dashboard(props: {
       telemetryEnabled: telemetry.enabled,
       remoteCount,
       ice: iceSummary,
+      signaling,
+      meshStatusText: meshStatus.text,
+      channelCounts,
     };
   }, [
     peer,
@@ -1118,15 +1133,18 @@ function Dashboard(props: {
           currentModelId={modelConfig.modelId}
           currentLabel={modelConfig.modelLabel}
           isTestModel={modelConfig.isTestModel}
+          counts={channelCounts}
         />
         <span className="app-header-sep">·</span>
         <span className="app-nick">@{props.nick}</span>
         <span className="app-header-sep">·</span>
         <span
-          className={`app-mesh-pill ${remoteCount > 0 ? 'app-mesh-ok' : 'app-mesh-cold'}`}
-          title={iceConnecting > 0 ? 'A peer is trying to connect but WebRTC has not completed — often a TURN/firewall issue.' : undefined}
+          className={`app-mesh-pill ${
+            meshStatus.tone === 'ok' ? 'app-mesh-ok' : meshStatus.tone === 'solo' ? 'app-mesh-solo' : 'app-mesh-cold'
+          }`}
+          title={meshStatus.title}
         >
-          {iceConnecting > 0 ? `mesh: connecting (${iceConnecting})…` : `mesh: ${remoteCount} remote`}
+          {meshStatus.text}
         </span>
         <span className="app-header-spacer" />
         <TrustBadge />

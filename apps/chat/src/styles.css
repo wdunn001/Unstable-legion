@@ -344,6 +344,12 @@ code {
   background: var(--chip-warn-bg);
   color: var(--warn);
 }
+/* Online but alone — a GOOD state (signaling connected, tab discoverable),
+ * visually calmer than -ok but never warn-toned. */
+.app-mesh-solo {
+  background: var(--chip);
+  color: var(--muted);
+}
 .app-header-spacer {
   flex: 1;
 }
